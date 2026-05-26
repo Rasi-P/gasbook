@@ -1,7 +1,11 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
-from .models import ActivityLog, Customer, CylinderType, Expense, Payment, Sale, SaleItem, Stock, StockLocation, StockMovement, User
+from .models import (
+    ActivityLog, Booking, Customer, CustomerCylinderRate, CustomerProfile,
+    CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
+    StaffProfile, Stock, StockLocation, StockMovement, User,
+)
 
 
 @admin.register(User)
@@ -20,3 +24,9 @@ admin.site.register(SaleItem)
 admin.site.register(Payment)
 admin.site.register(Expense)
 admin.site.register(ActivityLog)
+admin.site.register(CustomerProfile)
+admin.site.register(StaffProfile)
+admin.site.register(CustomerCylinderRate)
+admin.site.register(Booking)
+admin.site.register(Delivery)
+admin.site.register(Notification)

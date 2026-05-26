@@ -7,8 +7,10 @@ class User(AbstractUser):
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
         STAFF = "staff", "Staff"
+        CUSTOMER = "customer", "Customer"
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.STAFF)
+    plain_password = models.CharField(max_length=128, blank=True, default="")
 
 
 class TimeStampedModel(models.Model):
@@ -163,6 +165,114 @@ class ActivityLog(TimeStampedModel):
     description = models.CharField(max_length=255)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+# ── ERP Expansion ──────────────────────────────────────────────────────────────
+
+class CustomerProfile(TimeStampedModel):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="customer_profile")
+    linked_customer = models.OneToOneField(Customer, null=True, blank=True, on_delete=models.SET_NULL, related_name="profile")
+    phone = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
+    area = models.CharField(max_length=100, blank=True)
+    default_staff = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_customers")
+    credit_limit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    deposit_cylinders = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["user__username"]
+
+    def __str__(self):
+        return self.user.get_full_name() or self.user.username
+
+
+class StaffProfile(TimeStampedModel):
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="staff_profile")
+    assigned_area = models.CharField(max_length=100, blank=True)
+    vehicle_number = models.CharField(max_length=30, blank=True)
+    vehicle_location = models.ForeignKey(StockLocation, null=True, blank=True, on_delete=models.SET_NULL)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["user__username"]
+
+    def __str__(self):
+        return self.user.get_full_name() or self.user.username
+
+
+class CustomerCylinderRate(TimeStampedModel):
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="custom_rates")
+    cylinder_type = models.ForeignKey(CylinderType, on_delete=models.CASCADE)
+    custom_price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        unique_together = ("customer", "cylinder_type")
+
+    def __str__(self):
+        return f"{self.customer} - {self.cylinder_type}: {self.custom_price}"
+
+
+class Booking(TimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending Approval"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+        OUT_FOR_DELIVERY = "out_for_delivery", "Out for Delivery"
+        DELIVERED = "delivered", "Delivered"
+        CANCELLED = "cancelled", "Cancelled"
+
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="bookings")
+    cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
+    quantity = models.PositiveIntegerField(default=1)
+    note = models.CharField(max_length=300, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    assigned_staff = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_bookings")
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_bookings")
+    sale = models.OneToOneField(Sale, null=True, blank=True, on_delete=models.SET_NULL, related_name="booking")
+    approved_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Booking #{self.id} - {self.customer} - {self.status}"
+
+
+class Delivery(TimeStampedModel):
+    class Status(models.TextChoices):
+        ASSIGNED = "assigned", "Assigned"
+        OUT_FOR_DELIVERY = "out_for_delivery", "Out for Delivery"
+        DELIVERED = "delivered", "Delivered"
+        CANCELLED = "cancelled", "Cancelled"
+
+    booking = models.OneToOneField(Booking, on_delete=models.CASCADE, related_name="delivery")
+    staff = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="deliveries")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ASSIGNED)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    payment_collected = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    payment_method = models.CharField(max_length=10, choices=Sale.PaymentMode.choices, default=Sale.PaymentMode.CREDIT)
+    empty_collected = models.PositiveIntegerField(default=0)
+    note = models.CharField(max_length=300, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Delivery #{self.id} - {self.booking}"
+
+
+class Notification(TimeStampedModel):
+    recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
+    booking = models.ForeignKey(Booking, null=True, blank=True, on_delete=models.SET_NULL, related_name="notifications")
+    title = models.CharField(max_length=120)
+    body = models.CharField(max_length=300)
+    is_read = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["-created_at"]

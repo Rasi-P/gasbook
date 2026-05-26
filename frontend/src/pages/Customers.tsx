@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check } from 'lucide-react';
+import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { api } from '../lib/api';
 
 type Customer = {
@@ -68,6 +68,44 @@ export default function Customers() {
   const [editAddress, setEditAddress] = useState('');
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
+
+  // Credentials state
+  const [showCreds, setShowCreds] = useState(false);
+  const [creds, setCreds] = useState<{ username: string; full_name: string; plain_password: string } | null>(null);
+  const [credsError, setCredsError] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [showNewPw, setShowNewPw] = useState(false);
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwMsg, setPwMsg] = useState('');
+  const [lastSetPassword, setLastSetPassword] = useState('');
+
+  async function loadCreds(customerId: number) {
+    setCredsError(''); setCreds(null); setPwMsg('');
+    try {
+      const { data } = await api.get(`/customers/${customerId}/credentials/`);
+      setCreds(data);
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setCredsError(detail || 'No login account linked.');
+    }
+  }
+
+  async function resetPassword(customerId: number) {
+    if (!newPassword.trim()) return;
+    setPwSaving(true); setPwMsg('');
+    try {
+      await api.post(`/customers/${customerId}/credentials/`, { password: newPassword });
+      setPwMsg('Password updated successfully.');
+      setNewPassword('');
+      // Refresh creds so the new password shows immediately
+      const { data } = await api.get(`/customers/${customerId}/credentials/`);
+      setCreds(data);
+    } catch {
+      setPwMsg('Failed to update password.');
+    } finally {
+      setPwSaving(false);
+    }
+  }
 
   function startEdit(c: Customer) {
     setEditName(c.name); setEditPhone(c.phone); setEditAddress(c.address);
@@ -152,7 +190,7 @@ export default function Customers() {
       <div>
         <div className="page-title">
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button className="icon-button" onClick={() => { setSelected(null); setEditing(false); }}><ArrowLeft size={20} /></button>
+            <button className="icon-button" onClick={() => { setSelected(null); setEditing(false); setShowCreds(false); setCreds(null); }}><ArrowLeft size={20} /></button>
             <div>
               <h1>{customer.name}</h1>
               {customer.phone && <p>{customer.phone}</p>}
@@ -161,7 +199,76 @@ export default function Customers() {
           <button className="icon-button" onClick={() => editing ? setEditing(false) : startEdit(customer)}>
             {editing ? <X size={18} /> : <Pencil size={18} />}
           </button>
+          <button className="icon-button" onClick={() => {
+            setShowCreds((v) => !v);
+            if (!showCreds) loadCreds(customer.id);
+            else { setCreds(null); setCredsError(''); setPwMsg(''); setLastSetPassword(''); }
+          }}>
+            <KeyRound size={18} />
+          </button>
         </div>
+
+        {/* Credentials panel */}
+        {showCreds && (
+          <div className="card" style={{ marginBottom: '16px' }}>
+            <div className="section-head">
+              <h2>Login Credentials</h2>
+              <KeyRound size={18} style={{ color: 'var(--primary)' }} />
+            </div>
+            {credsError && <p className="form-error">{credsError}</p>}
+            {creds && (
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {/* Username row */}
+                <div style={{ background: 'var(--surface-muted)', borderRadius: 'var(--radius)', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <p style={{ fontSize: '0.8rem', marginBottom: '4px' }}>Username</p>
+                    <strong style={{ fontSize: '1rem', color: 'var(--text)' }}>{creds.username}</strong>
+                  </div>
+                  <button type="button" onClick={() => navigator.clipboard.writeText(creds.username)}
+                    style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', padding: '6px 10px', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer' }}>
+                    Copy
+                  </button>
+                </div>
+
+                {/* Password row */}
+                <div style={{ background: 'var(--surface-muted)', borderRadius: 'var(--radius)', padding: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <p style={{ fontSize: '0.8rem', marginBottom: '4px' }}>Password</p>
+                    <strong style={{ fontSize: '1rem', color: 'var(--text)', fontFamily: 'monospace' }}>
+                      {showNewPw ? creds.plain_password : '•'.repeat(Math.min(creds.plain_password.length, 12))}
+                    </strong>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button type="button" onClick={() => setShowNewPw((v) => !v)}
+                      style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', padding: '6px 10px', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      {showNewPw ? <EyeOff size={14} /> : <Eye size={14} />}
+                      {showNewPw ? 'Hide' : 'Show'}
+                    </button>
+                    <button type="button" onClick={() => navigator.clipboard.writeText(creds.plain_password)}
+                      style={{ background: 'var(--primary)', border: 'none', borderRadius: '6px', padding: '6px 10px', fontSize: '0.78rem', fontWeight: 700, color: 'white', cursor: 'pointer' }}>
+                      Copy
+                    </button>
+                  </div>
+                </div>
+
+                {/* Reset password */}
+                <label>
+                  <span>Set New Password</span>
+                  <input
+                    type="text"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Enter new password"
+                  />
+                </label>
+                {pwMsg && <p className={pwMsg.includes('success') ? 'form-note' : 'form-error'}>{pwMsg}</p>}
+                <button className="btn btn-primary" onClick={() => resetPassword(customer.id)} disabled={pwSaving || !newPassword.trim()}>
+                  <Check size={18} /> {pwSaving ? 'Saving…' : 'Update Password'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Edit form */}
         {editing && (

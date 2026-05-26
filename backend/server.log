@@ -1,69 +1,24 @@
-Performing system checks...
-
-System check identified no issues (0 silenced).
-May 10, 2026 - 02:08:37
-Django version 5.2.14, using settings 'gasbook.settings'
-Starting development server at http://127.0.0.1:8000/
-Quit the server with CTRL-BREAK.
-
-WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
-For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
-Performing system checks...
-
-System check identified no issues (0 silenced).
-May 11, 2026 - 12:58:23
-Django version 5.2.14, using settings 'gasbook.settings'
-Starting development server at http://127.0.0.1:8000/
-Quit the server with CTRL-BREAK.
-
-WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
-For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
-Performing system checks...
-
-System check identified no issues (0 silenced).
-
-You have 1 unapplied migration(s). Your project may not work properly until you apply the migrations for app(s): core.
-Run 'python manage.py migrate' to apply them.
-May 11, 2026 - 12:58:37
-Django version 5.2.14, using settings 'gasbook.settings'
-Starting development server at http://127.0.0.1:8000/
-Quit the server with CTRL-BREAK.
-
-WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
-For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
-Performing system checks...
-
-System check identified no issues (0 silenced).
-
-You have 1 unapplied migration(s). Your project may not work properly until you apply the migrations for app(s): core.
-Run 'python manage.py migrate' to apply them.
-May 11, 2026 - 13:00:18
-Django version 5.2.14, using settings 'gasbook.settings'
-Starting development server at http://127.0.0.1:8000/
-Quit the server with CTRL-BREAK.
-
-WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
-For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
-Performing system checks...
-
-System check identified no issues (0 silenced).
-
-You have 1 unapplied migration(s). Your project may not work properly until you apply the migrations for app(s): core.
-Run 'python manage.py migrate' to apply them.
-May 11, 2026 - 13:00:29
-Django version 5.2.14, using settings 'gasbook.settings'
-Starting development server at http://127.0.0.1:8000/
-Quit the server with CTRL-BREAK.
-
-WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
-For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
-Performing system checks...
-
-System check identified no issues (0 silenced).
-May 11, 2026 - 13:02:19
-Django version 5.2.14, using settings 'gasbook.settings'
-Starting development server at http://127.0.0.1:8000/
-Quit the server with CTRL-BREAK.
-
-WARNING: This is a development server. Do not use it in a production setting. Use a production WSGI or ASGI server instead.
-For more information on production servers see: https://docs.djangoproject.com/en/5.2/howto/deployment/
+C:\Users\ASUS\AppData\Local\Programs\Python\Python313\Lib\site-packages\django\core\handlers\base.py:61: UserWarning: No directory at: D:\Project\gas\backend\staticfiles\
+  mw_instance = middleware(adapted_handler)
+[26/May/2026 12:17:57] "GET /admin/ HTTP/1.1" 200 15845
+[26/May/2026 12:18:04] "POST /admin/logout/ HTTP/1.1" 200 3559
+[26/May/2026 12:18:06] "GET /admin/ HTTP/1.1" 302 0
+[26/May/2026 12:18:06] "GET /admin/login/?next=/admin/ HTTP/1.1" 200 4164
+[26/May/2026 12:18:13] "POST /admin/login/?next=/admin/ HTTP/1.1" 200 4325
+[26/May/2026 12:18:21] "GET /academic-year/?is_available=true&page_size=100 HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "GET /academic-year/?is_available=true&page_size=100 HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "GET /staff/354/ HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "OPTIONS /dashboard/quick_overview/?campus=all&start_date=2026-04-26T06%3A48%3A20.896Z&end_date=2026-05-26T06%3A48%3A20.896Z&academic_year=3 HTTP/1.1" 200 0
+[26/May/2026 12:18:21] "OPTIONS /dashboard/quick_overview/?campus=all&start_date=2026-04-26T06%3A48%3A20.896Z&end_date=2026-05-26T06%3A48%3A20.896Z&academic_year=3 HTTP/1.1" 200 0
+[26/May/2026 12:18:21] "GET /autopay/monitoring/overview/?academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "GET /dashboard/quick_overview/?campus=all&start_date=2026-04-26T06%3A48%3A20.896Z&end_date=2026-05-26T06%3A48%3A20.896Z&academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "GET /autopay/monitoring/overview/?academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "GET /dashboard/quick_overview/?campus=all&start_date=2026-04-26T06%3A48%3A20.896Z&end_date=2026-05-26T06%3A48%3A20.896Z&academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "GET /campus/ HTTP/1.1" 404 179
+[26/May/2026 12:18:21] "GET /dashboard/upcoming_emis/?campus=all&academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:22] "GET /campus/ HTTP/1.1" 404 179
+[26/May/2026 12:18:22] "GET /dashboard/upcoming_emis/?campus=all&academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:25] "GET /campus/ HTTP/1.1" 404 179
+[26/May/2026 12:18:25] "GET /dashboard/upcoming_emis/?campus=all&academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:29] "GET /dashboard/upcoming_emis/?campus=all&academic_year=3 HTTP/1.1" 404 179
+[26/May/2026 12:18:29] "GET /campus/ HTTP/1.1" 404 179

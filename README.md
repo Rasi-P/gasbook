@@ -56,7 +56,7 @@ npm run dev
 Set `frontend/.env` if your API URL is different:
 
 ```text
-VITE_API_BASE_URL=http://127.0.0.1:8000/api
+VITE_API_BASE_URL=http://127.0.0.1:8001/api
 ```
 
 ## MVP Features Included

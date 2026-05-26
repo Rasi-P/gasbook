@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
@@ -57,9 +57,28 @@ export async function login(username: string, password: string) {
   return data;
 }
 
+export async function getCurrentUser() {
+  const { data } = await api.get('/auth/me/');
+  localStorage.setItem('gasbook_role', data.role);
+  localStorage.setItem('gasbook_redirect', data.redirect);
+  return data;
+}
+
+export function getRole() {
+  return localStorage.getItem('gasbook_role') || '';
+}
+
+export function getRoleHome(role = getRole()) {
+  if (role === 'staff') return '/staff-dashboard';
+  if (role === 'customer') return '/customer-dashboard';
+  return '/admin-dashboard';
+}
+
 export function logout() {
   localStorage.removeItem('gasbook_access');
   localStorage.removeItem('gasbook_refresh');
+  localStorage.removeItem('gasbook_role');
+  localStorage.removeItem('gasbook_redirect');
 }
 
 export function isAuthenticated() {
