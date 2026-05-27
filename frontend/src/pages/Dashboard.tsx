@@ -23,6 +23,15 @@ export default function Dashboard() {
     api.get('/dashboard/')
       .then((response) => setData(response.data))
       .catch(() => undefined);
+
+    // Auto-refresh every 30 seconds so stock stays live across devices
+    const interval = setInterval(() => {
+      api.get('/dashboard/')
+        .then((response) => setData(response.data))
+        .catch(() => undefined);
+    }, 30000);
+
+    return () => clearInterval(interval);
   }, []);
 
   if (!data) return <p style={{ textAlign: 'center', padding: '40px' }}>Loading…</p>;
