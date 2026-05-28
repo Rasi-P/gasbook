@@ -77,7 +77,6 @@ export default function Customers() {
   const [showNewPw, setShowNewPw] = useState(false);
   const [pwSaving, setPwSaving] = useState(false);
   const [pwMsg, setPwMsg] = useState('');
-  const [lastSetPassword, setLastSetPassword] = useState('');
 
   async function loadCreds(customerId: number) {
     setCredsError(''); setCreds(null); setPwMsg('');
@@ -202,7 +201,7 @@ export default function Customers() {
           <button className="icon-button" onClick={() => {
             setShowCreds((v) => !v);
             if (!showCreds) loadCreds(customer.id);
-            else { setCreds(null); setCredsError(''); setPwMsg(''); setLastSetPassword(''); }
+            else { setCreds(null); setCredsError(''); setPwMsg(''); }
           }}>
             <KeyRound size={18} />
           </button>
