@@ -1,5 +1,17 @@
-import { useEffect, useState } from 'react';
-import { AlertTriangle, ArrowRightCircle, Boxes, IndianRupee, PackageCheck, Warehouse } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  ArrowRightCircle,
+  Boxes,
+  CalendarDays,
+  IndianRupee,
+  PackageCheck,
+  RefreshCw,
+  ShieldCheck,
+  ShoppingBag,
+  TrendingUp,
+  Warehouse,
+} from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../lib/api';
 
@@ -16,62 +28,188 @@ function money(value: number | string) {
   return `Rs. ${Number(value || 0).toLocaleString('en-IN')}`;
 }
 
+function percent(value: number, total: number) {
+  if (!total) return 0;
+  return Math.min(100, Math.round((value / total) * 100));
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
 
-  useEffect(() => {
+  const loadDashboard = useCallback(() => {
     api.get('/dashboard/')
       .then((response) => setData(response.data))
       .catch(() => undefined);
-
-    // Auto-refresh every 30 seconds so stock stays live across devices
-    const interval = setInterval(() => {
-      api.get('/dashboard/')
-        .then((response) => setData(response.data))
-        .catch(() => undefined);
-    }, 30000);
-
-    return () => clearInterval(interval);
   }, []);
 
-  if (!data) return <p style={{ textAlign: 'center', padding: '40px' }}>Loading…</p>;
+  useEffect(() => {
+    loadDashboard();
+
+    const interval = setInterval(loadDashboard, 30000);
+    return () => clearInterval(interval);
+  }, [loadDashboard]);
+
+  if (!data) return <p style={{ textAlign: 'center', padding: '40px' }}>Loading...</p>;
+
+  const filledPercent = percent(data.filled_cylinders, data.total_cylinders);
+  const emptyPercent = percent(data.empty_cylinders, data.total_cylinders);
+  const customerTotal = data.stock_rows.reduce((sum, item) => sum + item.with_customers, 0);
 
   return (
     <div>
-      <div className="page-title">
+      <div className="page-title dashboard-title">
         <div>
-          <h1>Today</h1>
-          <p>Shop, Kandam, sales, and pending money in one place.</p>
+          <h1>Overview</h1>
+          <p>Gas stock, sales, collections, and movement warnings in one place.</p>
+        </div>
+        <div className="dashboard-actions">
+          <select aria-label="Branch filter">
+            <option>All Branches</option>
+            <option>Main Shop</option>
+            <option>Kandam</option>
+          </select>
+          <button className="btn btn-compact" type="button" onClick={loadDashboard}>
+            <RefreshCw size={16} />
+            Refresh
+          </button>
         </div>
       </div>
 
       <section className="stat-grid">
-        <div className="metric-card strong">
+        <div className="metric-card strong purple">
           <IndianRupee />
           <span>Today Sales</span>
           <strong>{money(data.today_sales)}</strong>
+          <small>{money(data.today_collection)} collected</small>
         </div>
-        <div className="metric-card">
+        <div className="metric-card blue">
           <PackageCheck />
           <span>Filled</span>
           <strong>{data.filled_cylinders}</strong>
+          <small>{filledPercent}% of total cylinders</small>
         </div>
-        <div className="metric-card">
+        <div className="metric-card green">
           <Boxes />
           <span>Empty</span>
           <strong>{data.empty_cylinders}</strong>
+          <small>{emptyPercent}% ready to refill</small>
         </div>
-        <div className="metric-card">
-          <Warehouse />
-          <span>Kandam</span>
-          <strong>{data.kandam_stock}</strong>
+        <div className="metric-card orange">
+          <AlertTriangle />
+          <span>Pending Payments</span>
+          <strong>{money(data.pending_payments)}</strong>
+          <small>{data.low_stock.length} stock warnings</small>
         </div>
       </section>
 
-      <div className="card">
+      <section className="dashboard-section">
+        <div className="section-kicker">
+          <ShoppingBag size={18} />
+          <div>
+            <h2>Stock overview</h2>
+            <p>Status mix and cylinder location breakdown</p>
+          </div>
+        </div>
+
+        <div className="overview-grid">
+          <div className="card dashboard-card">
+            <div className="section-head">
+              <h2>Status breakdown</h2>
+              <span className="badge badge-success">{data.total_cylinders} total</span>
+            </div>
+            <div className="status-grid">
+              <div className="status-tile green">
+                <span>Filled</span>
+                <strong>{data.filled_cylinders}</strong>
+              </div>
+              <div className="status-tile orange">
+                <span>Empty</span>
+                <strong>{data.empty_cylinders}</strong>
+              </div>
+              <div className="status-tile blue">
+                <span>At shop</span>
+                <strong>{data.shop_stock}</strong>
+              </div>
+              <div className="status-tile purple">
+                <span>With customers</span>
+                <strong>{customerTotal}</strong>
+              </div>
+            </div>
+          </div>
+
+          <div className="card dashboard-card">
+            <div className="section-head">
+              <h2>Locations</h2>
+              <Warehouse size={18} />
+            </div>
+            <div className="progress-list">
+              <ProgressRow label="Main shop" value={data.shop_stock} total={data.total_cylinders} color="green" />
+              <ProgressRow label="Kandam" value={data.kandam_stock} total={data.total_cylinders} color="blue" />
+              <ProgressRow label="With customers" value={customerTotal} total={data.total_cylinders} color="orange" />
+            </div>
+          </div>
+
+          <div className="card dashboard-card">
+            <div className="section-head">
+              <h2>Top cylinder types</h2>
+              <TrendingUp size={18} />
+            </div>
+            <div className="progress-list">
+              {data.stock_rows.slice(0, 4).map((item) => (
+                <ProgressRow key={item.id} label={item.type} value={item.total} total={data.total_cylinders} color="green" />
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="dashboard-section">
+        <div className="section-kicker">
+          <ShieldCheck size={18} />
+          <div>
+            <h2>Operations overview</h2>
+            <p>Sales readiness, pending payments, and quick actions</p>
+          </div>
+        </div>
+
+        <section className="grid-2">
+          <div className="card dashboard-card">
+            <div className="section-head">
+              <h2>Readiness</h2>
+              <span className="badge">{filledPercent}% filled</span>
+            </div>
+            <div className="wide-progress">
+              <div className="wide-progress-row">
+                <span>Filled cylinders</span>
+                <strong>{data.filled_cylinders} / {data.total_cylinders}</strong>
+              </div>
+              <div className="bar-track">
+                <span className="bar-fill green" style={{ width: `${filledPercent}%` }} />
+              </div>
+            </div>
+            <div className="mini-metrics">
+              <span><strong>{data.today_collection}</strong> collected today</span>
+              <span><strong>{data.low_stock.length}</strong> low stock alerts</span>
+            </div>
+          </div>
+
+          <div className="card dashboard-card">
+            <div className="section-head">
+              <h2>Quick actions</h2>
+              <CalendarDays size={18} />
+            </div>
+            <div className="action-stack">
+              <Link className="btn btn-primary" to="/sales">Add Sale <ArrowRightCircle size={20} /></Link>
+              <Link className="btn btn-outline" to="/stock">Move Stock <ArrowRightCircle size={20} /></Link>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <div className="card dashboard-card">
         <div className="section-head">
-          <h2>Live Stock</h2>
-          <span className="badge badge-success">{data.total_cylinders} total</span>
+          <h2>Live stock</h2>
+          <span className="badge badge-success">{data.total_cylinders} cylinders</span>
         </div>
         <div className="table-wrap">
           <table>
@@ -101,7 +239,7 @@ export default function Dashboard() {
                   <td style={{ textAlign: 'right' }}>
                     {item.with_customers > 0
                       ? <span style={{ color: 'var(--warning)', fontWeight: 700 }}>{item.with_customers}</span>
-                      : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                      : <span style={{ color: 'var(--text-muted)' }}>-</span>}
                   </td>
                   <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{item.total}</td>
                 </tr>
@@ -110,24 +248,22 @@ export default function Dashboard() {
           </table>
         </div>
       </div>
+    </div>
+  );
+}
 
-      <section className="grid-2">
-        <div className="card alert-card">
-          <div className="section-head">
-            <h2>Pending</h2>
-            <AlertTriangle />
-          </div>
-          <strong>{money(data.pending_payments)}</strong>
-          <p>{data.low_stock.length} low stock warning</p>
-        </div>
-        <div className="card">
-          <h2>Quick Actions</h2>
-          <div className="action-stack">
-            <Link className="btn btn-primary" to="/sales">Add Sale <ArrowRightCircle size={20} /></Link>
-            <Link className="btn btn-outline" to="/stock">Move Stock <ArrowRightCircle size={20} /></Link>
-          </div>
-        </div>
-      </section>
+function ProgressRow({ label, value, total, color }: { label: string; value: number; total: number; color: 'green' | 'blue' | 'orange' }) {
+  const width = percent(value, total);
+
+  return (
+    <div className="progress-row">
+      <div>
+        <span>{label}</span>
+        <strong>{value} <small>/ {total}</small></strong>
+      </div>
+      <div className="bar-track">
+        <span className={`bar-fill ${color}`} style={{ width: `${width}%` }} />
+      </div>
     </div>
   );
 }

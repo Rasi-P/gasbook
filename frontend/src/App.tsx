@@ -1,7 +1,7 @@
 import { Navigate, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { BarChart3, Home, LogOut, Package, ShoppingCart, Users, UserCog } from 'lucide-react';
+import { BarChart3, Bell, CalendarDays, Home, LogOut, Package, ShoppingCart, Users, UserCog } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Stock from './pages/Stock';
 import Sales from './pages/Sales';
@@ -27,18 +27,28 @@ export default function App() {
   const location = useLocation();
   const isAuthPage = location.pathname === '/login';
   const [role, setRole] = useState('');
+  const [userName, setUserName] = useState('');
+  const today = new Date();
+  const monthLabel = today.toLocaleDateString('en-IN', { month: 'short', day: '2-digit' });
+  const yearLabel = today.getFullYear();
 
   useEffect(() => {
     if (!isAuthPage && isAuthenticated()) {
-      const stored = localStorage.getItem('gasbook_role');
-      if (stored) {
-        setRole(stored);
-      } else {
-        api.get('/auth/me/').then((r) => {
-          localStorage.setItem('gasbook_role', r.data.role);
-          setRole(r.data.role);
-        }).catch(() => undefined);
+      const storedRole = localStorage.getItem('gasbook_role');
+      const storedName = localStorage.getItem('gasbook_name');
+      if (storedRole) {
+        setRole(storedRole);
       }
+      if (storedName) {
+        setUserName(storedName);
+      }
+      
+      api.get('/auth/me/').then((r) => {
+        localStorage.setItem('gasbook_role', r.data.role);
+        localStorage.setItem('gasbook_name', r.data.name);
+        setRole(r.data.role);
+        setUserName(r.data.name);
+      }).catch(() => undefined);
     }
   }, [isAuthPage]);
 
@@ -65,18 +75,45 @@ export default function App() {
           <Package />
           GasBook
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-            {role.toUpperCase()}
+        <div className="topbar-tools">
+          <span className="topbar-date">
+            <CalendarDays size={14} />
+            {monthLabel}, {yearLabel}
           </span>
-          <button className="icon-button" title="Logout" onClick={() => { logout(); window.location.href = '/login'; }}>
-            <LogOut size={20} />
+          <span className="role-pill">{role}</span>
+          <button className="icon-button" title="Notifications" type="button">
+            <Bell size={18} />
           </button>
+          <div className="profile-avatar topbar-avatar">
+            {(userName || role).slice(0, 2).toUpperCase()}
+          </div>
         </div>
       </header>
 
       <aside className="side-nav">
+        <div className="sidebar-brand">
+          <Package />
+          <span>GasBook</span>
+        </div>
         <NavItems role={role} />
+        <div className="sidebar-profile">
+          <div className="profile-avatar">
+            {(userName || role).slice(0, 2).toUpperCase()}
+          </div>
+          <div className="profile-info">
+            <span className="profile-name" title={userName || 'User'}>
+              {userName || 'User'}
+            </span>
+            <span className="profile-role">{role}</span>
+          </div>
+          <button 
+            className="profile-logout" 
+            title="Logout" 
+            onClick={() => { logout(); window.location.href = '/login'; }}
+          >
+            <LogOut size={18} />
+          </button>
+        </div>
       </aside>
 
       <main className="page-container">
