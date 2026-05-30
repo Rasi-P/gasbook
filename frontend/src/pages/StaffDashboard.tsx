@@ -26,8 +26,12 @@ export default function StaffDashboard() {
   const [stock, setStock] = useState<Stock[]>([]);
   const [collections, setCollections] = useState<Record<number, { amount: string; method: string; empty: string }>>({});
   const [message, setMessage] = useState('');
+  const [userName, setUserName] = useState('');
+  const [vehicleLocation, setVehicleLocation] = useState('');
 
   function load() {
+    setUserName(localStorage.getItem('gasbook_name') || '');
+    setVehicleLocation(localStorage.getItem('gasbook_vehicle_location') || '');
     Promise.all([api.get('/deliveries/'), api.get('/stock/')])
       .then(([deliveryRes, stockRes]) => {
         const rows = deliveryRes.data.results ?? deliveryRes.data;
@@ -39,6 +43,13 @@ export default function StaffDashboard() {
   }
 
   useEffect(load, []);
+
+  // Filter filled stock to only vehicle stock
+  const vehicleFilledStock = stock
+    .filter((s) => s.location_name === vehicleLocation && s.status === 'filled')
+    .reduce((sum, s) => sum + s.quantity, 0);
+
+  const filteredStock = vehicleLocation ? stock.filter((s) => s.location_name === vehicleLocation) : stock;
 
   async function start(id: number) {
     await api.post(`/deliveries/${id}/start/`);
@@ -61,33 +72,35 @@ export default function StaffDashboard() {
     <div>
       <div className="page-title">
         <div>
-          <h1>Delivery App</h1>
-          <p>Assigned deliveries, customer details, collections, and vehicle stock.</p>
+          <h1>Welcome, {userName || 'Delivery Partner'}</h1>
+          <p>
+            {vehicleLocation ? `Vehicle Location: ${vehicleLocation}` : 'No vehicle location assigned'} · Assigned deliveries and collections.
+          </p>
         </div>
       </div>
 
       {message && <p className="form-note" style={{ marginBottom: 12 }}>{message}</p>}
 
       <section className="stat-grid">
-        <div className="metric-card strong">
+        <div className="metric-card strong purple">
           <Truck />
           <span>Assigned</span>
           <strong>{deliveries.filter((d) => d.status !== 'delivered').length}</strong>
         </div>
-        <div className="metric-card">
+        <div className="metric-card green">
           <PackageCheck />
-          <span>Delivered</span>
+          <span>Delivered Today</span>
           <strong>{deliveries.filter((d) => d.status === 'delivered').length}</strong>
         </div>
-        <div className="metric-card">
+        <div className="metric-card orange">
           <Banknote />
           <span>Pending Cash</span>
           <strong>{money(deliveries.reduce((sum, d) => sum + Number(d.pending_amount || 0), 0))}</strong>
         </div>
-        <div className="metric-card">
+        <div className="metric-card blue">
           <RotateCcw />
-          <span>Filled Stock</span>
-          <strong>{stock.filter((s) => s.status === 'filled').reduce((sum, s) => sum + s.quantity, 0)}</strong>
+          <span>Vehicle Stock (Filled)</span>
+          <strong>{vehicleFilledStock}</strong>
         </div>
       </section>
 
@@ -162,7 +175,7 @@ export default function StaffDashboard() {
 
         <div className="card">
           <div className="section-head">
-            <h2>Live Stock</h2>
+            <h2>{vehicleLocation || 'All Locations'} Stock</h2>
             <PackageCheck />
           </div>
           <div className="table-wrap">
@@ -171,7 +184,7 @@ export default function StaffDashboard() {
                 <tr><th>Location</th><th>Cylinder</th><th>Status</th><th style={{ textAlign: 'right' }}>Qty</th></tr>
               </thead>
               <tbody>
-                {stock.map((row) => (
+                {filteredStock.map((row) => (
                   <tr key={row.id}>
                     <td>{row.location_name}</td>
                     <td>{row.cylinder_type_name}</td>
@@ -179,6 +192,13 @@ export default function StaffDashboard() {
                     <td style={{ textAlign: 'right', fontWeight: 800 }}>{row.quantity}</td>
                   </tr>
                 ))}
+                {filteredStock.length === 0 && (
+                  <tr>
+                    <td colSpan={4} style={{ textAlign: 'center', padding: '12px', color: 'var(--text-muted)' }}>
+                      No cylinder stock found.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

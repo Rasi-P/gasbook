@@ -62,6 +62,8 @@ export default function Login() {
       await login(username, password);
       const { data } = await api.get('/auth/me/');
       localStorage.setItem('gasbook_role', data.role);
+      localStorage.setItem('gasbook_name', data.name);
+      localStorage.setItem('gasbook_vehicle_location', data.vehicle_location_name || '');
       window.location.href = getRoleHome(data.role);
     } catch {
       setLoginError('Wrong username or password.');

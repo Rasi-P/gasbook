@@ -9,6 +9,7 @@ import Reports from './pages/Reports';
 import Login from './pages/Login';
 import Customers from './pages/Customers';
 import Staff from './pages/Staff';
+import CustomerDashboard from './pages/CustomerDashboard';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';
 
@@ -46,6 +47,7 @@ export default function App() {
       api.get('/auth/me/').then((r) => {
         localStorage.setItem('gasbook_role', r.data.role);
         localStorage.setItem('gasbook_name', r.data.name);
+        localStorage.setItem('gasbook_vehicle_location', r.data.vehicle_location_name || '');
         setRole(r.data.role);
         setUserName(r.data.name);
       }).catch(() => undefined);
@@ -142,7 +144,7 @@ export default function App() {
             <RoleGuard allowed={['admin']} role={role}><Staff /></RoleGuard>
           } />
           <Route path="/customer-dashboard" element={
-            <RoleGuard allowed={['customer']} role={role}><CustomerHome /></RoleGuard>
+            <RoleGuard allowed={['customer']} role={role}><CustomerDashboard /></RoleGuard>
           } />
 
           <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
@@ -154,25 +156,6 @@ export default function App() {
       </nav>
       {role === 'admin' && <RatesPanel />}
     </Protected>
-  );
-}
-
-function CustomerHome() {
-  return (
-    <div>
-      <div className="page-title">
-        <div>
-          <h1>My Account</h1>
-          <p>Contact the shop for your cylinder orders.</p>
-        </div>
-      </div>
-      <div className="card" style={{ textAlign: 'center', padding: '40px 20px' }}>
-        <Package size={48} style={{ color: 'var(--primary)', marginBottom: '16px' }} />
-        <h2 style={{ marginBottom: '8px' }}>Welcome to GasBook</h2>
-        <p>Your account is managed by the shop admin.</p>
-        <p style={{ marginTop: '8px' }}>For orders or balance queries, contact the shop directly.</p>
-      </div>
-    </div>
   );
 }
 

@@ -176,7 +176,25 @@ export default function Stock() {
       const rows: { id: number; quantity: number; location: number; cylinder_type: number; status: string }[] =
         stockRes.data.results ?? stockRes.data;
 
-      // Update destination stock
+      // Locate empty stock row matching the type at the destination
+      const emptyStock = rows.find(
+        (r) => r.cylinder_type === loadCyl && r.location === loadTo && r.status === 'empty',
+      );
+      const emptyQty = emptyStock ? emptyStock.quantity : 0;
+
+      // Prevent Over-Refill: Block if refilling more than available empty cylinders
+      if (emptyQty < Number(loadQty)) {
+        setLoadErr(`Cannot refill more cylinders than available empty stock. Available empty stock at this location: ${emptyQty}.`);
+        setLoadSaving(false);
+        return;
+      }
+
+      // Deduct empty cylinders at destination
+      if (emptyStock) {
+        await api.patch(`/stock/${emptyStock.id}/`, { quantity: emptyStock.quantity - Number(loadQty) });
+      }
+
+      // Update destination filled stock
       const existing = rows.find(
         (r) => r.cylinder_type === loadCyl && r.location === loadTo && r.status === 'filled',
       );
@@ -203,7 +221,7 @@ export default function Stock() {
 
       const locName = locations.find((l) => l.id === loadTo)?.name ?? '';
       const cylName = cylinderTypes.find((c) => c.id === loadCyl)?.name ?? '';
-      setLoadMsg(`Added ${loadQty} × ${cylName} (filled) to ${locName}.`);
+      setLoadMsg(`Added ${loadQty} × ${cylName} (filled) and deducted ${loadQty} (empty) at ${locName}.`);
       setLoadQty('');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: unknown } })?.response?.data;

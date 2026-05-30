@@ -161,22 +161,22 @@ export default function Reports() {
           {tab === 'summary' && (
             <>
               <section className="stat-grid">
-                <div className="metric-card strong">
+                <div className="metric-card strong purple">
                   <IndianRupee />
                   <span>Sales</span>
                   <strong>{money(data.summary.sales)}</strong>
                 </div>
-                <div className="metric-card">
+                <div className="metric-card blue">
                   <WalletCards />
                   <span>Collection</span>
                   <strong>{money(data.summary.collection)}</strong>
                 </div>
-                <div className="metric-card">
+                <div className="metric-card orange">
                   <ReceiptText />
                   <span>Expenses</span>
                   <strong>{money(data.summary.expenses)}</strong>
                 </div>
-                <div className="metric-card">
+                <div className="metric-card green">
                   <Route />
                   <span>Movements</span>
                   <strong>{data.summary.movements}</strong>

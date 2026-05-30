@@ -329,6 +329,21 @@ th {
   color: var(--warning);
 }
 
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.badge-info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.badge-cyan {
+  background: var(--cyan-soft);
+  color: var(--cyan);
+}
+
 .alert-card strong {
   color: var(--danger);
   display: block;

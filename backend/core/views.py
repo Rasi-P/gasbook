@@ -457,6 +457,12 @@ def me(request):
         "staff": "/staff-dashboard",
         "customer": "/customer-dashboard",
     }
+    location_name = None
+    if request.user.role == "staff" and hasattr(request.user, "staff_profile"):
+        loc = request.user.staff_profile.vehicle_location
+        if loc:
+            location_name = loc.name
+            
     return Response(
         {
             "id": request.user.id,
@@ -464,6 +470,7 @@ def me(request):
             "name": request.user.get_full_name() or request.user.username,
             "role": request.user.role,
             "redirect": redirects.get(request.user.role, "/"),
+            "vehicle_location_name": location_name,
         }
     )
 
