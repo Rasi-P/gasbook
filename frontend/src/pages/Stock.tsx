@@ -172,56 +172,24 @@ export default function Stock() {
     setLoadMsg(''); setLoadErr('');
     setLoadSaving(true);
     try {
-      const stockRes = await api.get('/stock/');
-      const rows: { id: number; quantity: number; location: number; cylinder_type: number; status: string }[] =
-        stockRes.data.results ?? stockRes.data;
-
-      // Locate empty stock row matching the type at the destination
-      const emptyStock = rows.find(
-        (r) => r.cylinder_type === loadCyl && r.location === loadTo && r.status === 'empty',
-      );
-      const emptyQty = emptyStock ? emptyStock.quantity : 0;
-
-      // Prevent Over-Refill: Block if refilling more than available empty cylinders
-      if (emptyQty < Number(loadQty)) {
-        setLoadErr(`Cannot refill more cylinders than available empty stock. Available empty stock at this location: ${emptyQty}.`);
-        setLoadSaving(false);
+      // New load = fresh filled cylinders arriving from supplier.
+      // Just record the movement — backend adds stock automatically.
+      const supplier = locations.find((l) => l.code === 'supplier');
+      if (!supplier) {
+        setLoadErr('Supplier location not found. Run seed_demo first.');
         return;
       }
-
-      // Deduct empty cylinders at destination
-      if (emptyStock) {
-        await api.patch(`/stock/${emptyStock.id}/`, { quantity: emptyStock.quantity - Number(loadQty) });
-      }
-
-      // Update destination filled stock
-      const existing = rows.find(
-        (r) => r.cylinder_type === loadCyl && r.location === loadTo && r.status === 'filled',
-      );
-      if (existing) {
-        await api.patch(`/stock/${existing.id}/`, { quantity: existing.quantity + Number(loadQty) });
-      } else {
-        await api.post('/stock/', {
-          cylinder_type: loadCyl, location: loadTo, status: 'filled', quantity: Number(loadQty),
-        });
-      }
-
-      // Record movement from Supplier (backend skips stock deduction for supplier)
-      const supplier = locations.find((l) => l.code === 'supplier');
-      if (supplier) {
-        await api.post('/movements/', {
-          cylinder_type: loadCyl,
-          from_location: supplier.id,
-          to_location: loadTo,
-          status: 'filled',
-          quantity: Number(loadQty),
-          note: 'New supplier load',
-        });
-      }
-
+      await api.post('/movements/', {
+        cylinder_type: loadCyl,
+        from_location: supplier.id,
+        to_location: loadTo,
+        status: 'filled',
+        quantity: Number(loadQty),
+        note: 'New supplier load',
+      });
       const locName = locations.find((l) => l.id === loadTo)?.name ?? '';
       const cylName = cylinderTypes.find((c) => c.id === loadCyl)?.name ?? '';
-      setLoadMsg(`Added ${loadQty} × ${cylName} (filled) and deducted ${loadQty} (empty) at ${locName}.`);
+      setLoadMsg(`Added ${loadQty} × ${cylName} filled cylinders to ${locName}.`);
       setLoadQty('');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: unknown } })?.response?.data;
