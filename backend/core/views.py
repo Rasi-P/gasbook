@@ -100,6 +100,22 @@ class CustomerViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(Q(name__icontains=term) | Q(phone__icontains=term))
         return queryset
 
+    def perform_update(self, serializer):
+        customer = serializer.save()
+        profile = getattr(customer, "profile", None)
+        if profile:
+            profile.phone = customer.phone
+            profile.address = customer.address
+            profile.save(update_fields=["phone", "address", "updated_at"])
+
+            user = profile.user
+            parts = customer.name.split(" ", 1)
+            user.first_name = parts[0] if parts else ""
+            user.last_name = parts[1] if len(parts) > 1 else ""
+            user.phone = customer.phone
+            user.address = customer.address
+            user.save(update_fields=["first_name", "last_name", "phone", "address"])
+
     @action(detail=True, methods=["get"])
     def ledger(self, request, pk=None):
         customer = self.get_object()
@@ -414,7 +430,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         return Response(DeliverySerializer(delivery).data)
 
 
-@api_view(["GET", "POST"])
+@api_view(["GET", "POST", "DELETE"])
 @permission_classes([permissions.IsAuthenticated])
 def customer_credentials(request, pk):
     """GET: return username for a customer. POST: reset their password."""
@@ -434,14 +450,26 @@ def customer_credentials(request, pk):
             "username": user.username,
             "full_name": user.get_full_name() or user.username,
             "plain_password": user.plain_password or "(not available — set a new password)",
+            "is_active": user.is_active,
         })
+    if request.method == "DELETE":
+        profile.linked_customer = None
+        profile.is_active = False
+        profile.save(update_fields=["linked_customer", "is_active", "updated_at"])
+        user.is_active = False
+        user.set_unusable_password()
+        user.plain_password = ""
+        user.username = f"deleted-customer-{user.id}-{user.username}"
+        user.save(update_fields=["is_active", "password", "plain_password", "username"])
+        return Response({"detail": "Customer login credentials removed. Sales history was kept."})
     # POST — reset password
     new_password = request.data.get("password", "").strip()
     if not new_password:
         return Response({"detail": "Password required."}, status=drf_status.HTTP_400_BAD_REQUEST)
     user.set_password(new_password)
     user.plain_password = new_password
-    user.save(update_fields=["password", "plain_password"])
+    user.is_active = True
+    user.save(update_fields=["password", "plain_password", "is_active"])
     return Response({"detail": "Password updated.", "username": user.username})
 
 
@@ -481,8 +509,84 @@ def users_list(request):
     """List all staff users — admin only."""
     if request.user.role != "admin" and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
-    users = User.objects.all().order_by("username")
+    users = User.objects.exclude(role=User.Role.CUSTOMER).order_by("username")
     return Response(UserSerializer(users, many=True).data)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([permissions.IsAuthenticated])
+def user_detail(request, pk):
+    """Edit a staff/admin user — admin only."""
+    if request.user.role != "admin" and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
+    try:
+        user = User.objects.get(pk=pk)
+    except User.DoesNotExist:
+        return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+    if user.role == User.Role.CUSTOMER:
+        return Response({"detail": "Use customer credentials to manage customer accounts."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    if request.method == "DELETE":
+        user.is_active = False
+        user.set_unusable_password()
+        user.plain_password = ""
+        user.username = f"deleted-{user.role}-{user.id}-{user.username}"
+        user.save(update_fields=["is_active", "password", "plain_password", "username"])
+        if hasattr(user, "staff_profile"):
+            user.staff_profile.is_active = False
+            user.staff_profile.save(update_fields=["is_active", "updated_at"])
+        return Response({"detail": "Login credentials removed. History was kept."})
+
+    full_name = request.data.get("full_name")
+    phone = request.data.get("phone")
+    address = request.data.get("address")
+
+    if full_name is not None:
+        parts = full_name.strip().split(" ", 1)
+        user.first_name = parts[0] if parts else ""
+        user.last_name = parts[1] if len(parts) > 1 else ""
+    if phone is not None:
+        user.phone = phone.strip()
+        if not user.phone:
+            return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    if address is not None:
+        user.address = address.strip()
+
+    user.save(update_fields=["first_name", "last_name", "phone", "address"])
+
+    if user.role == User.Role.STAFF:
+        profile, _ = StaffProfile.objects.get_or_create(user=user)
+        profile.phone = user.phone
+        profile.address = user.address
+        profile.save(update_fields=["phone", "address", "updated_at"])
+
+    return Response(UserSerializer(user).data)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([permissions.IsAuthenticated])
+def user_credentials(request, pk):
+    """GET staff/admin credentials. POST reset password."""
+    if request.user.role != "admin" and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
+    try:
+        user = User.objects.exclude(role=User.Role.CUSTOMER).get(pk=pk)
+    except User.DoesNotExist:
+        return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+    if request.method == "GET":
+        return Response({
+            "username": user.username,
+            "full_name": user.get_full_name() or user.username,
+            "plain_password": user.plain_password or "(not available - set a new password)",
+            "is_active": user.is_active,
+        })
+    new_password = request.data.get("password", "").strip()
+    if not new_password:
+        return Response({"detail": "Password required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    user.set_password(new_password)
+    user.plain_password = new_password
+    user.is_active = True
+    user.save(update_fields=["password", "plain_password", "is_active"])
+    return Response({"detail": "Password updated.", "username": user.username})
 
 
 @api_view(["POST"])
@@ -500,6 +604,8 @@ def register(request):
     area = request.data.get("area", "").strip()
     if not username or not password:
         return Response({"detail": "Username and password required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    if not phone:
+        return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if User.objects.filter(username=username).exists():
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if role not in [choice[0] for choice in User.Role.choices]:
@@ -512,14 +618,31 @@ def register(request):
         last_name=parts[1] if len(parts) > 1 else "",
         role=role,
         plain_password=password,
+        phone=phone,
+        address=address,
     )
     if role == User.Role.CUSTOMER:
-        customer = Customer.objects.create(
-            name=full_name or username,
-            phone=phone,
-            address=address,
-            opening_balance=request.data.get("opening_balance") or 0,
-        )
+        linked_customer_id = request.data.get("linked_customer") or None
+        if linked_customer_id:
+            try:
+                customer = Customer.objects.get(pk=linked_customer_id)
+            except Customer.DoesNotExist:
+                user.delete()
+                return Response({"detail": "Selected customer history was not found."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            if getattr(customer, "profile", None):
+                user.delete()
+                return Response({"detail": "That customer history is already linked to login credentials."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            customer.name = full_name or customer.name
+            customer.phone = phone
+            customer.address = address
+            customer.save(update_fields=["name", "phone", "address", "updated_at"])
+        else:
+            customer = Customer.objects.create(
+                name=full_name or username,
+                phone=phone,
+                address=address,
+                opening_balance=request.data.get("opening_balance") or 0,
+            )
         CustomerProfile.objects.create(
             user=user,
             linked_customer=customer,
@@ -533,6 +656,8 @@ def register(request):
     elif role == User.Role.STAFF:
         StaffProfile.objects.create(
             user=user,
+            phone=phone,
+            address=address,
             assigned_area=area,
             vehicle_number=request.data.get("vehicle_number", "").strip(),
             vehicle_location_id=request.data.get("vehicle_location") or None,

@@ -131,8 +131,11 @@ export default function Customers() {
   // Add customer form
   const [showAdd, setShowAdd] = useState(false);
   const [addName, setAddName] = useState('');
+  const [addUsername, setAddUsername] = useState('');
+  const [addPassword, setAddPassword] = useState('');
   const [addPhone, setAddPhone] = useState('');
   const [addAddress, setAddAddress] = useState('');
+  const [linkedCustomerId, setLinkedCustomerId] = useState('');
   const [addSaving, setAddSaving] = useState(false);
   const [addError, setAddError] = useState('');
 
@@ -141,16 +144,26 @@ export default function Customers() {
     setAddError('');
     setAddSaving(true);
     try {
-      await api.post('/customers/', { name: addName.trim(), phone: addPhone.trim(), address: addAddress.trim() });
-      setAddName(''); setAddPhone(''); setAddAddress('');
+      await api.post('/auth/register/', {
+        full_name: addName.trim(),
+        username: addUsername.trim(),
+        password: addPassword,
+        phone: addPhone.trim(),
+        address: addAddress.trim(),
+        role: 'customer',
+        linked_customer: linkedCustomerId || undefined,
+      });
+      setAddName(''); setAddUsername(''); setAddPassword(''); setAddPhone(''); setAddAddress(''); setLinkedCustomerId('');
       setShowAdd(false);
       fetchCustomers();
-    } catch {
-      setAddError('Failed to save. Try again.');
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setAddError(detail || 'Failed to save. Try again.');
     } finally {
       setAddSaving(false);
     }
   }
+
 
   const fetchCustomers = useCallback(() => {
     const params = search ? { search } : {};
@@ -261,9 +274,14 @@ export default function Customers() {
                   />
                 </label>
                 {pwMsg && <p className={pwMsg.includes('success') ? 'form-note' : 'form-error'}>{pwMsg}</p>}
-                <button className="btn btn-primary" onClick={() => resetPassword(customer.id)} disabled={pwSaving || !newPassword.trim()}>
-                  <Check size={18} /> {pwSaving ? 'Saving…' : 'Update Password'}
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="btn btn-primary" onClick={() => resetPassword(customer.id)} disabled={pwSaving || !newPassword.trim()}>
+                    <Check size={18} /> {pwSaving ? 'Saving…' : 'Update Password'}
+                  </button>
+                  <button className="btn btn-secondary" type="button" onClick={() => { setShowCreds(false); setCreds(null); setCredsError(''); setPwMsg(''); setNewPassword(''); }}>
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -279,8 +297,8 @@ export default function Customers() {
                 <input value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus />
               </label>
               <label>
-                <span>Phone</span>
-                <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} />
+                <span>Phone *</span>
+                <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} required />
               </label>
             </div>
             <label>
@@ -288,9 +306,14 @@ export default function Customers() {
               <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
             </label>
             {editError && <p className="form-error">{editError}</p>}
-            <button className="btn btn-primary" type="submit" disabled={editSaving}>
-              <Check size={18} /> {editSaving ? 'Saving…' : 'Save Changes'}
-            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button className="btn btn-primary" type="submit" disabled={editSaving}>
+                <Check size={18} /> {editSaving ? 'Saving…' : 'Save Changes'}
+              </button>
+              <button className="btn btn-secondary" type="button" onClick={() => setEditing(false)} disabled={editSaving}>
+                Cancel
+              </button>
+            </div>
           </form>
         )}
 
@@ -426,8 +449,18 @@ export default function Customers() {
               <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="e.g. Ravi Kumar" required autoFocus />
             </label>
             <label>
-              <span>Phone</span>
-              <input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} placeholder="Optional" />
+              <span>Phone *</span>
+              <input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} placeholder="Required" required />
+            </label>
+          </div>
+          <div className="grid-2">
+            <label>
+              <span>Username</span>
+              <input value={addUsername} onChange={(e) => setAddUsername(e.target.value)} placeholder="e.g. ravi" required />
+            </label>
+            <label>
+              <span>Password</span>
+              <input value={addPassword} onChange={(e) => setAddPassword(e.target.value)} placeholder="Set a password" required />
             </label>
           </div>
           <label>

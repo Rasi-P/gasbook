@@ -11,6 +11,8 @@ class User(AbstractUser):
 
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.STAFF)
     plain_password = models.CharField(max_length=128, blank=True, default="")
+    phone = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
 
 
 class TimeStampedModel(models.Model):
@@ -192,6 +194,8 @@ class CustomerProfile(TimeStampedModel):
 
 class StaffProfile(TimeStampedModel):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="staff_profile")
+    phone = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
     assigned_area = models.CharField(max_length=100, blank=True)
     vehicle_number = models.CharField(max_length=30, blank=True)
     vehicle_location = models.ForeignKey(StockLocation, null=True, blank=True, on_delete=models.SET_NULL)

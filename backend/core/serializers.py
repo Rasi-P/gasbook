@@ -14,7 +14,7 @@ from .models import (
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "role", "plain_password"]
+        fields = ["id", "username", "first_name", "last_name", "role", "plain_password", "phone", "address"]
 
 
 class CylinderTypeSerializer(serializers.ModelSerializer):
@@ -100,6 +100,11 @@ class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
         fields = "__all__"
+
+    def validate_phone(self, value):
+        if not value.strip():
+            raise serializers.ValidationError("Phone required.")
+        return value.strip()
 
     def get_pending_balance(self, obj):
         sales_due = sum(sale.balance_due for sale in obj.sales.all())

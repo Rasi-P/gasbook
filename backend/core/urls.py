@@ -21,6 +21,8 @@ from .views import (
     me,
     register,
     reports,
+    user_detail,
+    user_credentials,
     users_list,
     customer_credentials,
 )
@@ -46,6 +48,8 @@ urlpatterns = [
     path("auth/me/", me),
     path("auth/register/", register),
     path("auth/users/", users_list),
+    path("auth/users/<int:pk>/", user_detail),
+    path("auth/users/<int:pk>/credentials/", user_credentials),
     path("dashboard/", dashboard),
     path("reports/", reports),
     path("customers/<int:pk>/credentials/", customer_credentials),

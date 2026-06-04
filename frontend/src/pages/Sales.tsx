@@ -233,7 +233,7 @@ export default function Sales() {
               </label>
               <label>
                 <span>Phone</span>
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Optional" />
+                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Required for new customer" required={Boolean(customerName.trim() && selectedCustomerId === null)} />
               </label>
             </div>
             <div style={{ marginTop: '12px' }}>
