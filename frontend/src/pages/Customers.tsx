@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy } from 'lucide-react';
+import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2 } from 'lucide-react';
 import { api } from '../lib/api';
 
 type Customer = {
@@ -271,9 +271,25 @@ export default function Customers() {
             <button className="icon-button" onClick={() => setSelected(null)}>
               <ArrowLeft size={20} />
             </button>
-            <div>
-              <h1>{customer.name}</h1>
-              {customer.phone && <p>{customer.phone}</p>}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <h1 style={{ margin: 0 }}>{customer.name}</h1>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                {customer.phone && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Phone size={14} /> {customer.phone}
+                  </span>
+                )}
+                {customer.email && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Mail size={14} /> {customer.email}
+                  </span>
+                )}
+                {customer.address && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <MapPin size={14} /> {customer.address}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -566,10 +582,16 @@ export default function Customers() {
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               padding: '14px 18px', borderBottom: '1px solid var(--border)',
             }}>
-              {/* Left: name + phone */}
+              {/* Left: customer details */}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <strong style={{ fontSize: '1rem' }}>{c.name}</strong>
-                {c.phone && <p style={{ fontSize: '0.82rem', marginTop: '2px', color: 'var(--text-muted)' }}>{c.phone}</p>}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                  <strong style={{ fontSize: '1rem' }}>{c.name}</strong>
+                </div>
+                <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                  {c.phone && <span>{c.phone}</span>}
+                  {c.email && <span>{c.email}</span>}
+                  {c.address && <span>{c.address}</span>}
+                </div>
               </div>
 
               {/* Right: badges + action buttons + ledger arrow */}
@@ -674,57 +696,127 @@ export default function Customers() {
             {/* ── Inline Credentials panel ── */}
             {credsId === c.id && (
               <div
-                className="form-stack"
                 style={{
-                  padding: '16px 18px',
+                  padding: '12px 18px',
                   borderBottom: '1px solid var(--border)',
                   background: 'var(--surface-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '16px'
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                  <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <KeyRound size={16} style={{ color: 'var(--primary)' }} /> Login Credentials
-                  </h3>
-                  <button className="icon-button" onClick={closeCreds}><X size={16} /></button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <KeyRound size={16} style={{ color: 'var(--primary)' }} />
+                  <span style={{ fontSize: '0.95rem', fontWeight: 500 }}>Login Credentials</span>
                 </div>
 
-                {credsError && <p className="form-error">{credsError}</p>}
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px', flex: 1, justifyContent: 'flex-end' }}>
+                  {credsError && <span className="form-error" style={{ margin: 0, paddingRight: '8px' }}>{credsError}</span>}
+                  
+                  {creds && !pwMsg && (
+                    <button
+                      className="btn btn-primary"
+                      type="button"
+                      onClick={() => resetPassword(c.id)}
+                      disabled={pwSaving}
+                      style={{ padding: '6px 16px', fontSize: '0.85rem', width: 'auto', margin: 0 }}
+                    >
+                      <Check size={14} style={{ marginRight: '6px' }} /> {pwSaving ? 'Generating…' : 'Generate Temporary Password'}
+                    </button>
+                  )}
 
-                {creds && (
-                  <div style={{ display: 'grid', gap: '10px' }}>
-                    <p style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
-                      Temporary passwords are generated securely and shown once for handoff.
-                    </p>
-
-                    {pwMsg && (
-                      <div style={{ background: 'var(--surface)', borderRadius: 'var(--radius)', padding: '12px', border: '1px solid var(--border)' }}>
-                        <p style={{ fontSize: '0.78rem', marginBottom: '4px', color: 'var(--text-muted)' }}>Temporary Password</p>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <strong style={{ fontSize: '1.05rem', wordBreak: 'break-all' }}>{pwMsg}</strong>
-                          <button
-                            className="icon-button"
-                            type="button"
-                            onClick={() => navigator.clipboard.writeText(pwMsg)}
-                            title="Copy Password"
+                  {creds && pwMsg && (
+                    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                      {/* USERNAME */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>USERNAME</span>
+                        <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem' }}>{creds.username}</span>
+                      </div>
+                      
+                      {/* TEMPORARY PASSWORD */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>TEMPORARY PASSWORD</span>
+                        <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem', letterSpacing: '0.5px' }}>{pwMsg}</span>
+                        
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button 
+                            className="icon-button" 
+                            style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                            title="Copy Details"
+                            onClick={() => {
+                              const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${creds.username}\nPassword: ${pwMsg}\n\nPlease login and change your password immediately.`;
+                              navigator.clipboard.writeText(msg);
+                              alert('Credentials copied to clipboard!');
+                            }}
                           >
-                            <Copy size={16} />
+                            <Copy size={14} />
+                          </button>
+                          <a
+                            href={c.email ? `mailto:${c.email}?subject=${encodeURIComponent('Your GasBook Account Details')}&body=${encodeURIComponent(`Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${creds.username}\nPassword: ${pwMsg}\n\nPlease login and change your password immediately.\n\nBest regards,\nGasBook Admin`)}` : '#'}
+                            className="icon-button"
+                            title={c.email ? "Email Details" : "No email saved"}
+                            style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'center', 
+                              textDecoration: 'none', 
+                              color: 'inherit', 
+                              background: 'var(--surface)', 
+                              border: '1px solid var(--border)', 
+                              width: '28px', 
+                              height: '28px', 
+                              borderRadius: '6px',
+                              opacity: c.email ? 1 : 0.5,
+                              pointerEvents: c.email ? 'auto' : 'none'
+                            }}
+                            onClick={(e) => {
+                              if (!c.email) {
+                                e.preventDefault();
+                                alert('No email address saved for this customer.');
+                              }
+                            }}
+                          >
+                            <Mail size={14} />
+                          </a>
+                          <button 
+                            className="icon-button" 
+                            type="button"
+                            style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                            title="Share Details"
+                            onClick={async () => {
+                              const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${creds.username}\nPassword: ${pwMsg}\n\nPlease login and change your password immediately.`;
+                              if (navigator.share) {
+                                try {
+                                  await navigator.share({
+                                    title: 'GasBook Login Details',
+                                    text: msg
+                                  });
+                                } catch (err) {
+                                  console.error('Error sharing', err);
+                                }
+                              } else {
+                                navigator.clipboard.writeText(msg);
+                                alert('Share not supported on this device. Credentials copied to clipboard instead!');
+                              }
+                            }}
+                          >
+                            <Share2 size={14} />
                           </button>
                         </div>
                       </div>
-                    )}
+                    </div>
+                  )}
 
-                    {!pwMsg && (
-                      <button
-                        className="btn btn-primary"
-                        style={{ width: 'auto', alignSelf: 'flex-start' }}
-                        onClick={() => resetPassword(c.id)}
-                        disabled={pwSaving}
-                      >
-                        <Check size={16} /> {pwSaving ? 'Generating…' : 'Generate Temporary Password'}
-                      </button>
-                    )}
-                  </div>
-                )}
+                  <button 
+                    className="icon-button" 
+                    onClick={closeCreds}
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', marginLeft: '4px', borderRadius: '6px' }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
               </div>
             )}
 

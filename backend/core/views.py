@@ -541,6 +541,7 @@ def user_detail(request, pk):
     full_name = request.data.get("full_name")
     phone = request.data.get("phone")
     address = request.data.get("address")
+    email = request.data.get("email")
 
     if full_name is not None:
         parts = full_name.strip().split(" ", 1)
@@ -552,14 +553,14 @@ def user_detail(request, pk):
             return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if address is not None:
         user.address = address.strip()
+    if email is not None:
+        user.email = email.strip()
 
-    user.save(update_fields=["first_name", "last_name", "phone", "address"])
+    user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
     if user.role == User.Role.STAFF:
-        profile, _ = StaffProfile.objects.get_or_create(user=user)
-        profile.phone = user.phone
-        profile.address = user.address
-        profile.save(update_fields=["phone", "address", "updated_at"])
+        # Just ensure the profile exists, no phone/address fields on StaffProfile
+        StaffProfile.objects.get_or_create(user=user)
 
     return Response(UserSerializer(user).data)
 

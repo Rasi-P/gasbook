@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy } from 'lucide-react';
+import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2 } from 'lucide-react';
 import { api } from '../lib/api';
 
 type StaffUser = {
@@ -91,6 +91,8 @@ export default function Staff() {
   }
 
   function startEdit(user: StaffUser) {
+    setCredUserId(null);
+    setCredMsg('');
     setEditingId(user.id);
     setEditName(fullName(user));
     setEditPhone(user.phone || '');
@@ -231,86 +233,171 @@ export default function Staff() {
                       {u.role.toUpperCase()}
                     </span>
                   </div>
-                  <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap', wordBreak: 'break-word' }}>
                     <span>{u.username}</span>
                     {u.phone && <span>{u.phone}</span>}
                     {u.email && <span>{u.email}</span>}
                     {u.address && <span>{u.address}</span>}
-                    <span style={{ color: 'var(--text-muted)' }}>Temporary password is generated on create/reset and shown once.</span>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                   <button
+                    className="icon-button"
+                    title="Edit"
                     onClick={() => editingId === u.id ? setEditingId(null) : startEdit(u)}
-                    style={{
-                      background: 'var(--surface-muted)', border: 'none', borderRadius: '6px',
-                      padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
-                      fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)',
-                    }}
+                    style={editingId === u.id ? { color: 'var(--primary)' } : {}}
                   >
-                    {editingId === u.id ? <X size={14} /> : <Pencil size={14} />}
-                    {editingId === u.id ? 'Cancel' : 'Edit'}
+                    {editingId === u.id ? <X size={16} /> : <Pencil size={16} />}
                   </button>
                   <button
+                    className="icon-button"
+                    title="Password"
                     onClick={() => {
                       if (protectedAdmin) return;
+                      setEditingId(null);
                       setCredUserId(credUserId === u.id ? null : u.id); setCredMsg('');
                     }}
                     disabled={protectedAdmin}
                     style={{
-                      background: 'var(--surface-muted)', border: 'none', borderRadius: '6px',
-                      padding: '6px 10px', cursor: protectedAdmin ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
-                      fontSize: '0.78rem', fontWeight: 700, color: protectedAdmin ? 'var(--text-muted)' : 'var(--text-muted)',
-                      opacity: protectedAdmin ? 0.6 : 1,
+                      ...(credUserId === u.id ? { color: 'var(--primary)' } : {}),
+                      opacity: protectedAdmin ? 0.3 : 1
                     }}
                   >
-                    <KeyRound size={14} />
-                    Password
+                    <KeyRound size={16} />
                   </button>
                   <button
+                    className="icon-button"
+                    title="Delete"
                     onClick={() => deleteCredentials(u)}
                     disabled={deletingId === u.id || protectedAdmin}
-                    style={{
-                      background: 'var(--danger-soft)', border: 'none', borderRadius: '6px',
-                      padding: '6px 10px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700, color: 'var(--danger)',
-                      display: 'flex', alignItems: 'center', gap: '4px',
+                    style={{ 
+                      color: 'var(--danger)',
+                      opacity: (deletingId === u.id || protectedAdmin) ? 0.3 : 1
                     }}
                   >
-                    <Trash2 size={14} />
-                    {deletingId === u.id ? 'Deleting...' : 'Delete'}
+                    <Trash2 size={16} />
                   </button>
                 </div>
               </div>
 
               {credUserId === u.id && (
-                <div className="form-stack" style={{ padding: '0 18px 16px 18px', borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)' }}>
-                  <h2>Login Credentials</h2>
-                  <div style={{ display: 'grid', gap: '10px' }}>
-                    <div style={{ background: 'var(--surface-muted)', borderRadius: 'var(--radius)', padding: '12px' }}>
-                      <p style={{ fontSize: '0.8rem', marginBottom: '4px' }}>Username</p>
-                      <strong>{u.username}</strong>
-                    </div>
-                    {credMsg && (
-                      <div style={{ background: 'var(--surface-muted)', borderRadius: 'var(--radius)', padding: '12px' }}>
-                        <p style={{ fontSize: '0.8rem', marginBottom: '4px' }}>Temporary Password</p>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <strong style={{ fontSize: '1.05rem', wordBreak: 'break-all' }}>{credMsg}</strong>
-                          <button className="icon-button" type="button" onClick={() => navigator.clipboard.writeText(credMsg)} title="Copy Password">
-                            <Copy size={16} />
-                          </button>
+                <div
+                  style={{
+                    padding: '12px 18px',
+                    borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)',
+                    background: 'var(--surface-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '16px'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <KeyRound size={16} style={{ color: 'var(--primary)' }} />
+                    <span style={{ fontSize: '0.95rem', fontWeight: 500 }}>Login Credentials</span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px', flex: 1, justifyContent: 'flex-end' }}>
+                    {!credMsg ? (
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        onClick={() => resetPassword(u.id)}
+                        disabled={credSaving}
+                        style={{ padding: '6px 16px', fontSize: '0.85rem', width: 'auto', margin: 0 }}
+                      >
+                        <Check size={14} style={{ marginRight: '6px' }} /> {credSaving ? 'Generating...' : 'Generate Temporary Password'}
+                      </button>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                        {/* USERNAME */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>USERNAME</span>
+                          <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem' }}>{u.username}</span>
+                        </div>
+                        
+                        {/* TEMPORARY PASSWORD */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>TEMPORARY PASSWORD</span>
+                          <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem', letterSpacing: '0.5px' }}>{credMsg}</span>
+                          
+                          <div style={{ display: 'flex', gap: '6px' }}>
+                            <button 
+                              className="icon-button" 
+                              style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                              title="Copy Details"
+                              onClick={() => {
+                                const msg = `Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
+                                navigator.clipboard.writeText(msg);
+                                alert('Credentials copied to clipboard!');
+                              }}
+                            >
+                              <Copy size={14} />
+                            </button>
+                            <a
+                              href={u.email ? `mailto:${u.email}?subject=${encodeURIComponent('Your GasBook Account Details')}&body=${encodeURIComponent(`Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.\n\nBest regards,\nGasBook Admin`)}` : '#'}
+                              className="icon-button"
+                              title={u.email ? "Email Details" : "No email saved"}
+                              style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'center', 
+                                textDecoration: 'none', 
+                                color: 'inherit', 
+                                background: 'var(--surface)', 
+                                border: '1px solid var(--border)', 
+                                width: '28px', 
+                                height: '28px', 
+                                borderRadius: '6px',
+                                opacity: u.email ? 1 : 0.5,
+                                pointerEvents: u.email ? 'auto' : 'none'
+                              }}
+                              onClick={(e) => {
+                                if (!u.email) {
+                                  e.preventDefault();
+                                  alert('No email address saved for this staff member.');
+                                }
+                              }}
+                            >
+                              <Mail size={14} />
+                            </a>
+                            <button 
+                              className="icon-button" 
+                              type="button"
+                              style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                              title="Share Details"
+                              onClick={async () => {
+                                const msg = `Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
+                                if (navigator.share) {
+                                  try {
+                                    await navigator.share({
+                                      title: 'GasBook Login Details',
+                                      text: msg
+                                    });
+                                  } catch (err) {
+                                    console.error('Error sharing', err);
+                                  }
+                                } else {
+                                  navigator.clipboard.writeText(msg);
+                                  alert('Share not supported on this browser. Credentials copied to clipboard instead!');
+                                }
+                              }}
+                            >
+                              <Share2 size={14} />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )}
-                    {!credMsg && (
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <button className="btn btn-primary" type="button" onClick={() => resetPassword(u.id)} disabled={credSaving}>
-                          <Check size={18} /> {credSaving ? 'Generating...' : 'Generate Temporary Password'}
-                        </button>
-                        <button className="btn btn-secondary" type="button" onClick={() => { setCredUserId(null); setCredMsg(''); }}>
-                          Cancel
-                        </button>
-                      </div>
-                    )}
+                    
+                    <button 
+                      className="icon-button" 
+                      onClick={() => { setCredUserId(null); setCredMsg(''); }}
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', marginLeft: '4px', borderRadius: '6px' }}
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
                 </div>
               )}
