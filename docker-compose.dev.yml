@@ -1,15 +1,31 @@
 services:
 
   db:
+    image: postgres:16-alpine
+    restart: unless-stopped
     ports:
       - "5432:5432"
+    environment:
+      POSTGRES_DB: gasbook
+      POSTGRES_USER: gasbook
+      POSTGRES_PASSWORD: gasbook123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
   redis:
+    image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
 
   backend:
     build: ./backend
+    develop:
+      watch:
+        - action: rebuild
+          path: ./backend/requirements.txt
     volumes:
       - ./backend:/app
     environment:
@@ -22,13 +38,19 @@ services:
     ports:
       - "8000:8000"
     command: >
-      sh -c "python manage.py migrate --noinput &&
+      sh -c "python manage.py makemigrations core &&
+             python manage.py migrate --noinput &&
              python manage.py seed_demo &&
              python manage.py runserver 0.0.0.0:8000"
 
   frontend:
     image: node:20-alpine
     working_dir: /app
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./frontend/package.json
+          target: /app/package.json
     volumes:
       - ./frontend:/app
     ports:
@@ -38,3 +60,7 @@ services:
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     depends_on:
       - backend
+
+volumes:
+  postgres_data:
+  redis_data:

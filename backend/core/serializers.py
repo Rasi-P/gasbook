@@ -2,19 +2,24 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
+from django.core.validators import RegexValidator
 from rest_framework import serializers
 
 from .models import (
-    ActivityLog, Booking, Customer, CustomerCylinderRate, CustomerProfile,
+    ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User,
 )
 
+phone_validator = RegexValidator(regex=r"^\d+$", message="Phone number must contain only digits.")
+
 
 class UserSerializer(serializers.ModelSerializer):
+    phone = serializers.CharField(validators=[phone_validator], required=False, allow_blank=True)
+
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "role", "plain_password", "phone", "address"]
+        fields = ["id", "username", "first_name", "last_name", "role", "is_active", "phone", "address", "email"]
 
 
 class CylinderTypeSerializer(serializers.ModelSerializer):
@@ -72,13 +77,14 @@ class StockMovementSerializer(serializers.ModelSerializer):
         from_location = validated_data["from_location"]
         quantity = validated_data["quantity"]
 
-        if from_location.code != "supplier":
+        if not from_location.is_main_supplier and from_location.code != "supplier":
             source = get_stock_row(validated_data["cylinder_type"], from_location, validated_data["status"])
             if source.quantity < quantity:
                 raise serializers.ValidationError("Not enough stock in source location.")
             source.quantity -= quantity
             source.save(update_fields=["quantity", "updated_at"])
 
+        if not validated_data["to_location"].is_main_supplier and validated_data["to_location"].code != "supplier":
             destination = get_stock_row(validated_data["cylinder_type"], validated_data["to_location"], validated_data["status"])
             destination.quantity += quantity
             destination.save(update_fields=["quantity", "updated_at"])
@@ -86,36 +92,11 @@ class StockMovementSerializer(serializers.ModelSerializer):
         movement = StockMovement.objects.create(moved_by=user, **validated_data)
         ActivityLog.objects.create(
             action="stock_moved",
-            description=f"Moved {quantity} {validated_data['status']} cylinders",
+            description=f"Moved {quantity} {validated_data['status']} cylinders from {from_location.name} to {validated_data['to_location'].name}",
             user=user,
             metadata={"movement_id": movement.id},
         )
         return movement
-
-
-class CustomerSerializer(serializers.ModelSerializer):
-    pending_balance = serializers.SerializerMethodField()
-    empties_owed = serializers.SerializerMethodField()
-
-    class Meta:
-        model = Customer
-        fields = "__all__"
-
-    def validate_phone(self, value):
-        if not value.strip():
-            raise serializers.ValidationError("Phone required.")
-        return value.strip()
-
-    def get_pending_balance(self, obj):
-        sales_due = sum(sale.balance_due for sale in obj.sales.all())
-        payments = sum(p.amount for p in obj.payments.filter(sale__isnull=True))
-        return obj.opening_balance + sales_due - payments
-
-    def get_empties_owed(self, obj):
-        given = sum(item.quantity for sale in obj.sales.all() for item in sale.items.all())
-        returned_at_sale = sum(item.empty_returned for sale in obj.sales.all() for item in sale.items.all())
-        collected_later = sum(p.empty_collected for p in obj.payments.all())
-        return max(given - returned_at_sale - collected_later, 0)
 
 
 class SaleItemSerializer(serializers.ModelSerializer):
@@ -128,13 +109,13 @@ class SaleItemSerializer(serializers.ModelSerializer):
 
 class SaleItemWriteSerializer(serializers.Serializer):
     cylinder_type = serializers.PrimaryKeyRelatedField(queryset=CylinderType.objects.all())
-    quantity = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=0)
     rate = serializers.DecimalField(max_digits=10, decimal_places=2)
     empty_returned = serializers.IntegerField(min_value=0, default=0)
 
 
 class SaleSerializer(serializers.ModelSerializer):
-    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    customer_name = serializers.CharField(source="customer.user.username", read_only=True, default="Guest")
     sold_by_name = serializers.CharField(source="sold_by.username", read_only=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
     items = SaleItemSerializer(many=True, read_only=True)
@@ -215,7 +196,7 @@ class SaleSerializer(serializers.ModelSerializer):
 
 
 class PaymentSerializer(serializers.ModelSerializer):
-    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    customer_name = serializers.CharField(source="customer.user.username", read_only=True)
 
     class Meta:
         model = Payment
@@ -259,8 +240,6 @@ class ActivityLogSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-# ── ERP Serializers ────────────────────────────────────────────────────────────
-
 class CustomerCylinderRateSerializer(serializers.ModelSerializer):
     cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
 
@@ -272,9 +251,18 @@ class CustomerCylinderRateSerializer(serializers.ModelSerializer):
 class CustomerProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     full_name = serializers.SerializerMethodField()
+    name = serializers.SerializerMethodField()
+    phone = serializers.CharField(source="user.phone", read_only=True)
+    email = serializers.EmailField(source="user.email", read_only=True)
+    address = serializers.CharField(source="user.address", read_only=True)
     pending_amount = serializers.SerializerMethodField()
+    pending_balance = serializers.SerializerMethodField()
     last_delivery_date = serializers.SerializerMethodField()
+    empties_owed = serializers.SerializerMethodField()
     custom_rates = CustomerCylinderRateSerializer(many=True, read_only=True)
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    sales_count = serializers.SerializerMethodField()
+    empty_credits = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomerProfile
@@ -283,13 +271,67 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     def get_full_name(self, obj):
         return obj.user.get_full_name() or obj.user.username
 
+    def get_name(self, obj):
+        return obj.user.get_full_name() or obj.user.username
+
     def get_pending_amount(self, obj):
-        customer = obj.linked_customer
-        if not customer:
-            return "0.00"
-        sales_due = sum(sale.balance_due for sale in customer.sales.all())
-        payments = sum(p.amount for p in customer.payments.filter(sale__isnull=True))
-        return str(customer.opening_balance + sales_due - payments)
+        sales_due = sum(sale.balance_due for sale in obj.sales.all())
+        payments = sum(p.amount for p in obj.payments.filter(sale__isnull=True))
+        return str(obj.opening_balance + sales_due - payments)
+
+    def get_pending_balance(self, obj):
+        return self.get_pending_amount(obj)
+
+    def get_empties_owed(self, obj):
+        balances = {}
+        for sale in obj.sales.prefetch_related('items__cylinder_type'):
+            for item in sale.items.all():
+                tid = item.cylinder_type_id
+                if tid not in balances:
+                    balances[tid] = {"refills_given": 0, "returned": 0}
+                
+                # Only count as a refill if the rate is closer to the refill_rate than the selling_price
+                # This prevents custom discounts on new shells from being miscategorized as refills
+                threshold = (item.cylinder_type.selling_price + item.cylinder_type.refill_rate) / 2
+                if item.rate <= threshold:
+                    balances[tid]["refills_given"] += item.quantity
+                    
+                balances[tid]["returned"] += item.empty_returned
+
+        # Calculate total debt across all cylinder types
+        total_owed = 0
+        for data in balances.values():
+            debt = data["refills_given"] - data["returned"]
+            if debt > 0:
+                total_owed += debt
+                
+        return total_owed
+
+    def get_sales_count(self, obj):
+        return obj.sales.count()
+
+    def get_empty_credits(self, obj):
+        credits = {}
+        for sale in obj.sales.prefetch_related('items__cylinder_type'):
+            for item in sale.items.all():
+                tid = item.cylinder_type_id
+                tname = item.cylinder_type.name
+                if tid not in credits:
+                    credits[tid] = {"refills_given": 0, "returned": 0, "name": tname}
+                
+                # Only count as a refill if the rate is closer to the refill_rate than the selling_price
+                threshold = (item.cylinder_type.selling_price + item.cylinder_type.refill_rate) / 2
+                if item.rate <= threshold:
+                    credits[tid]["refills_given"] += item.quantity
+                    
+                credits[tid]["returned"] += item.empty_returned
+        
+        final_credits = {}
+        for tid, data in credits.items():
+            credit = data["returned"] - data["refills_given"]
+            if credit > 0:
+                final_credits[tid] = {"credit": credit, "name": data["name"]}
+        return final_credits
 
     def get_last_delivery_date(self, obj):
         booking = obj.bookings.filter(status=Booking.Status.DELIVERED).order_by("-delivered_at").first()
@@ -297,9 +339,16 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
 
 class StaffProfileSerializer(serializers.ModelSerializer):
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    phone = serializers.CharField(source="user.phone", read_only=True)
+    email = serializers.EmailField(source="user.email", read_only=True)
+    address = serializers.CharField(source="user.address", read_only=True)
     username = serializers.CharField(source="user.username", read_only=True)
-    full_name = serializers.SerializerMethodField()
+    role = serializers.CharField(source="user.role", read_only=True)
+    is_active = serializers.BooleanField(source="user.is_active", read_only=True)
     vehicle_location_name = serializers.CharField(source="vehicle_location.name", read_only=True)
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
 
     class Meta:
         model = StaffProfile
@@ -334,10 +383,10 @@ class BookingSerializer(serializers.ModelSerializer):
         return obj.customer.user.get_full_name() or obj.customer.user.username
 
     def get_customer_phone(self, obj):
-        return obj.customer.phone
+        return obj.customer.user.phone
 
     def get_customer_address(self, obj):
-        return obj.customer.address
+        return obj.customer.user.address
 
     def get_customer_area(self, obj):
         return obj.customer.area
@@ -369,8 +418,8 @@ class BookingSerializer(serializers.ModelSerializer):
 
 class DeliverySerializer(serializers.ModelSerializer):
     customer_name = serializers.SerializerMethodField()
-    customer_phone = serializers.CharField(source="booking.customer.phone", read_only=True)
-    customer_address = serializers.CharField(source="booking.customer.address", read_only=True)
+    customer_phone = serializers.CharField(source="booking.customer.user.phone", read_only=True)
+    customer_address = serializers.CharField(source="booking.customer.user.address", read_only=True)
     customer_area = serializers.CharField(source="booking.customer.area", read_only=True)
     cylinder_type_name = serializers.CharField(source="booking.cylinder_type.name", read_only=True)
     quantity = serializers.IntegerField(source="booking.quantity", read_only=True)
@@ -399,9 +448,7 @@ class DeliverySerializer(serializers.ModelSerializer):
         return str(obj.booking.cylinder_type.selling_price)
 
     def get_pending_amount(self, obj):
-        customer = obj.booking.customer.linked_customer
-        if not customer:
-            return "0.00"
+        customer = obj.booking.customer
         sales_due = sum(sale.balance_due for sale in customer.sales.all())
         payments = sum(p.amount for p in customer.payments.filter(sale__isnull=True))
         return str(customer.opening_balance + sales_due - payments)

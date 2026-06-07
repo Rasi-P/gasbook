@@ -3,6 +3,8 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "5433:5432"
     environment:
       POSTGRES_DB: gasbook
       POSTGRES_USER: gasbook
@@ -40,7 +42,8 @@ services:
     expose:
       - "8000"
     command: >
-      sh -c "python manage.py migrate --noinput &&
+      sh -c "python manage.py makemigrations core &&
+             python manage.py migrate --noinput &&
              python manage.py seed_demo &&
              gunicorn gasbook.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
 

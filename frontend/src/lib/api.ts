@@ -57,6 +57,15 @@ export async function login(username: string, password: string) {
   return data;
 }
 
+export async function changePassword(currentPassword: string, newPassword: string, confirmPassword: string) {
+  const { data } = await api.post('/auth/change-password/', {
+    current_password: currentPassword,
+    new_password: newPassword,
+    confirm_new_password: confirmPassword,
+  });
+  return data;
+}
+
 export async function getCurrentUser() {
   const { data } = await api.get('/auth/me/');
   localStorage.setItem('gasbook_role', data.role);

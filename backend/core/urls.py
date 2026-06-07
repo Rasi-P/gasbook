@@ -6,7 +6,6 @@ from .views import (
     BookingViewSet,
     CustomerCylinderRateViewSet,
     CustomerProfileViewSet,
-    CustomerViewSet,
     CylinderTypeViewSet,
     DeliveryViewSet,
     ExpenseViewSet,
@@ -17,6 +16,7 @@ from .views import (
     StockLocationViewSet,
     StockMovementViewSet,
     StockViewSet,
+    change_password,
     dashboard,
     me,
     register,
@@ -32,8 +32,7 @@ router.register("cylinder-types", CylinderTypeViewSet)
 router.register("locations", StockLocationViewSet)
 router.register("stock", StockViewSet)
 router.register("movements", StockMovementViewSet)
-router.register("customers", CustomerViewSet)
-router.register("customer-profiles", CustomerProfileViewSet)
+router.register("customers", CustomerProfileViewSet, basename="customers")
 router.register("staff-profiles", StaffProfileViewSet)
 router.register("customer-rates", CustomerCylinderRateViewSet)
 router.register("bookings", BookingViewSet)
@@ -46,6 +45,7 @@ router.register("activity", ActivityLogViewSet)
 
 urlpatterns = [
     path("auth/me/", me),
+    path("auth/change-password/", change_password),
     path("auth/register/", register),
     path("auth/users/", users_list),
     path("auth/users/<int:pk>/", user_detail),
