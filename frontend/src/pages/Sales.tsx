@@ -105,7 +105,12 @@ export default function Sales() {
   // ── Item helpers ──────────────────────────────────────────────────────────
 
   function applyPricingRules(itemsToProcess: SaleItem[], customer: any | null): SaleItem[] {
-    const credits = customer?.empty_credits ? { ...customer.empty_credits } : {};
+    const credits: Record<number, any> = {};
+    if (customer?.empty_credits) {
+      for (const k of Object.keys(customer.empty_credits)) {
+        credits[Number(k)] = { ...customer.empty_credits[Number(k)] };
+      }
+    }
 
     const newItems: SaleItem[] = [];
 
@@ -116,12 +121,9 @@ export default function Sales() {
         continue;
       }
 
-      // 1. Check custom rate first
+      // 1. Determine applicable refill rate (custom or default)
       const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === item.cylinder_type);
-      if (custom) {
-        newItems.push({ ...item, rate: String(custom.custom_price) });
-        continue;
-      }
+      const applicableRefillRate = custom ? String(custom.custom_price) : String(t.refill_rate);
 
       // 2. Calculate available empty credits
       const availableCredit = credits[item.cylinder_type]?.credit || 0;
@@ -130,7 +132,7 @@ export default function Sales() {
       // 3. Determine pricing
       if (item.quantity <= refillAllowed) {
         // Entire row gets refill rate
-        newItems.push({ ...item, rate: String(t.refill_rate) });
+        newItems.push({ ...item, rate: applicableRefillRate });
         // Deduct used credits (only the portion that came from credits, not from empty_returned)
         const usedCredit = Math.max(0, item.quantity - item.empty_returned);
         if (credits[item.cylinder_type]) {
@@ -143,7 +145,7 @@ export default function Sales() {
           newItems.push({
             ...item,
             quantity: refillAllowed,
-            rate: String(t.refill_rate),
+            rate: applicableRefillRate,
             empty_returned: item.empty_returned // All empties stay with the refill row
           });
           if (credits[item.cylinder_type]) {
