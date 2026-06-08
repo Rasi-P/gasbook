@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
 from .models import (
-    ActivityLog, Booking, Customer, CustomerCylinderRate, CustomerProfile,
+    ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User,
 )
@@ -18,7 +18,6 @@ admin.site.register(CylinderType)
 admin.site.register(StockLocation)
 admin.site.register(Stock)
 admin.site.register(StockMovement)
-admin.site.register(Customer)
 admin.site.register(Sale)
 admin.site.register(SaleItem)
 admin.site.register(Payment)

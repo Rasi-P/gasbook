@@ -10,6 +10,7 @@ import Login from './pages/Login';
 import Customers from './pages/Customers';
 import Staff from './pages/Staff';
 import CustomerDashboard from './pages/CustomerDashboard';
+import ChangePassword from './pages/ChangePassword';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';
 
@@ -58,6 +59,7 @@ export default function App() {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/change-password" element={<ChangePassword />} />
       </Routes>
     );
   }
@@ -120,6 +122,7 @@ export default function App() {
 
       <main className="page-container">
         <Routes>
+          <Route path="/change-password" element={<ChangePassword />} />
           <Route path="/" element={<Navigate to={getRoleHome(role)} replace />} />
 
           <Route path="/admin-dashboard" element={

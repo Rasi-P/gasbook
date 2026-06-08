@@ -1,5 +1,8 @@
 from decimal import Decimal
 
+from django.contrib.auth import authenticate
+from django.contrib.auth.password_validation import validate_password
+from django.utils.crypto import get_random_string
 from django.db import transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
@@ -8,16 +11,16 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework import status as drf_status
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    ActivityLog, Booking, Customer, CustomerCylinderRate, CustomerProfile,
+    ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User,
 )
 from .serializers import (
     ActivityLogSerializer,
     BookingSerializer,
-    CustomerSerializer,
     CustomerCylinderRateSerializer,
     CustomerProfileSerializer,
     CylinderTypeSerializer,
@@ -33,6 +36,19 @@ from .serializers import (
     UserSerializer,
     get_stock_row,
 )
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        username = (request.data.get("username") or "").strip()
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return response
+        response.data["must_change_password"] = bool(getattr(user, "must_change_password", False))
+        response.data["user_id"] = user.id
+        return response
 
 
 class IsAdminOrReadOnly(permissions.BasePermission):
@@ -87,45 +103,89 @@ class StockMovementViewSet(viewsets.ModelViewSet):
     permission_classes = [IsStaffOrAdmin]
 
 
-class CustomerViewSet(viewsets.ModelViewSet):
-    queryset = Customer.objects.prefetch_related("sales__items", "payments")
-    serializer_class = CustomerSerializer
-    permission_classes = [IsStaffOrAdmin]
-    search_fields = ["name", "phone"]
+class CustomerProfileViewSet(viewsets.ModelViewSet):
+    queryset = CustomerProfile.objects.select_related("user", "default_staff").prefetch_related("custom_rates", "sales", "payments")
+    serializer_class = CustomerProfileSerializer
+
+    def get_permissions(self):
+        if getattr(self.request.user, "role", "") == "customer":
+            if self.request.method not in permissions.SAFE_METHODS:
+                return [IsAdminUserRole()]
+            return [permissions.IsAuthenticated()]
+        return [IsStaffOrAdmin()]
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        if getattr(self.request.user, "role", "") == "customer":
+            return queryset.filter(user=self.request.user)
+        area = self.request.query_params.get("area")
+        active = self.request.query_params.get("active")
         term = self.request.query_params.get("search")
+        if area:
+            queryset = queryset.filter(area__icontains=area)
+        if active in ["0", "1"]:
+            queryset = queryset.filter(is_active=active == "1")
         if term:
-            queryset = queryset.filter(Q(name__icontains=term) | Q(phone__icontains=term))
+            queryset = queryset.filter(Q(user__first_name__icontains=term) | Q(user__last_name__icontains=term) | Q(user__phone__icontains=term))
         return queryset
 
-    def perform_update(self, serializer):
-        customer = serializer.save()
-        profile = getattr(customer, "profile", None)
-        if profile:
-            profile.phone = customer.phone
-            profile.address = customer.address
-            profile.save(update_fields=["phone", "address", "updated_at"])
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        name = request.data.get("name", "").strip()
+        phone = request.data.get("phone", "").strip()
+        email = request.data.get("email", "").strip()
+        address = request.data.get("address", "").strip()
+        parts = name.split(" ", 1)
+        
+        if phone and not phone.isdigit():
+            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
-            user = profile.user
-            parts = customer.name.split(" ", 1)
+        user = User.objects.create_user(
+            username=f"customer_{get_random_string(8)}",
+            first_name=parts[0] if parts else "",
+            last_name=parts[1] if len(parts) > 1 else "",
+            email=email,
+            phone=phone,
+            address=address,
+            role=User.Role.CUSTOMER,
+            must_change_password=True,
+            is_active=True
+        )
+        profile = CustomerProfile.objects.create(user=user)
+        return Response(self.get_serializer(profile).data, status=drf_status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["get"], permission_classes=[IsStaffOrAdmin])
+    def ledger(self, request, pk=None):
+        customer_profile = self.get_object()
+        sales = SaleSerializer(customer_profile.sales.prefetch_related("items__cylinder_type").all(), many=True).data
+        payments = PaymentSerializer(customer_profile.payments.all(), many=True).data
+        return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments})
+
+    def perform_update(self, serializer):
+        profile = serializer.save()
+        user = profile.user
+        name = self.request.data.get("name", "")
+        phone = self.request.data.get("phone", "")
+        address = self.request.data.get("address", "")
+
+        if name:
+            parts = name.split(" ", 1)
             user.first_name = parts[0] if parts else ""
             user.last_name = parts[1] if len(parts) > 1 else ""
-            user.phone = customer.phone
-            user.address = customer.address
-            user.save(update_fields=["first_name", "last_name", "phone", "address"])
-
-    @action(detail=True, methods=["get"])
-    def ledger(self, request, pk=None):
-        customer = self.get_object()
-        sales = SaleSerializer(customer.sales.prefetch_related("items__cylinder_type").all(), many=True).data
-        payments = PaymentSerializer(customer.payments.all(), many=True).data
-        return Response({"customer": CustomerSerializer(customer).data, "sales": sales, "payments": payments})
+        if phone:
+            user.phone = phone
+        if address:
+            user.address = address
+        user.save(update_fields=["first_name", "last_name", "phone", "address"])
 
 
 class SaleViewSet(viewsets.ModelViewSet):
-    queryset = Sale.objects.select_related("customer", "location", "sold_by").prefetch_related("items__cylinder_type")
+    queryset = Sale.objects.select_related("customer__user", "location", "sold_by").prefetch_related("items__cylinder_type")
     serializer_class = SaleSerializer
     permission_classes = [IsStaffOrAdmin]
 
@@ -135,7 +195,7 @@ class SaleViewSet(viewsets.ModelViewSet):
         payment_mode = self.request.query_params.get("payment_mode")
         pending = self.request.query_params.get("pending")
         if term:
-            queryset = queryset.filter(Q(customer__name__icontains=term) | Q(customer__phone__icontains=term))
+            queryset = queryset.filter(Q(customer__user__first_name__icontains=term) | Q(customer__user__last_name__icontains=term) | Q(customer__user__phone__icontains=term))
         if payment_mode:
             queryset = queryset.filter(payment_mode=payment_mode)
         if pending == "1":
@@ -144,7 +204,7 @@ class SaleViewSet(viewsets.ModelViewSet):
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
-    queryset = Payment.objects.select_related("customer", "sale", "received_by")
+    queryset = Payment.objects.select_related("customer__user", "sale", "received_by")
     serializer_class = PaymentSerializer
     permission_classes = [IsStaffOrAdmin]
 
@@ -159,35 +219,6 @@ class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = ActivityLog.objects.select_related("user")
     serializer_class = ActivityLogSerializer
     permission_classes = [IsAdminUserRole]
-
-
-class CustomerProfileViewSet(viewsets.ModelViewSet):
-    queryset = CustomerProfile.objects.select_related("user", "linked_customer", "default_staff").prefetch_related("custom_rates")
-    serializer_class = CustomerProfileSerializer
-
-    def get_permissions(self):
-        if getattr(self.request.user, "role", "") == "customer":
-            if self.request.method not in permissions.SAFE_METHODS:
-                return [IsAdminUserRole()]
-            return [permissions.IsAuthenticated()]
-        return [IsAdminUserRole()]
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["request"] = self.request
-        return context
-
-    def get_queryset(self):
-        queryset = super().get_queryset()
-        if getattr(self.request.user, "role", "") == "customer":
-            return queryset.filter(user=self.request.user)
-        area = self.request.query_params.get("area")
-        active = self.request.query_params.get("active")
-        if area:
-            queryset = queryset.filter(area__icontains=area)
-        if active in ["0", "1"]:
-            queryset = queryset.filter(is_active=active == "1")
-        return queryset
 
 
 class StaffProfileViewSet(viewsets.ModelViewSet):
@@ -322,7 +353,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 recipient=admin,
                 booking=delivery.booking,
                 title="Delivery Started",
-                body=f"{delivery.staff} started booking #{delivery.booking_id}.",
+                body=f"{delivery.staff.username} started booking #{delivery.booking_id}.",
             )
         return Response(DeliverySerializer(delivery).data)
 
@@ -337,16 +368,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
 
         booking = delivery.booking
         profile = booking.customer
-        customer = profile.linked_customer
-        if not customer:
-            customer = Customer.objects.create(
-                name=profile.user.get_full_name() or profile.user.username,
-                phone=profile.phone,
-                address=profile.address,
-            )
-            profile.linked_customer = customer
-            profile.save(update_fields=["linked_customer", "updated_at"])
-
+        
         rate_obj = profile.custom_rates.filter(cylinder_type=booking.cylinder_type).first()
         rate = rate_obj.custom_price if rate_obj else booking.cylinder_type.selling_price
         total = Decimal(booking.quantity) * rate
@@ -374,7 +396,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             empty_stock.save(update_fields=["quantity", "updated_at"])
 
         sale = Sale.objects.create(
-            customer=customer,
+            customer=profile,
             location=location,
             total_amount=total,
             paid_amount=payment_collected,
@@ -395,7 +417,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         )
         if payment_collected > 0:
             Payment.objects.create(
-                customer=customer,
+                customer=profile,
                 sale=sale,
                 amount=payment_collected,
                 payment_mode=payment_method,
@@ -433,44 +455,32 @@ class DeliveryViewSet(viewsets.ModelViewSet):
 @api_view(["GET", "POST", "DELETE"])
 @permission_classes([permissions.IsAuthenticated])
 def customer_credentials(request, pk):
-    """GET: return username for a customer. POST: reset their password."""
+    """GET: return username for a customer profile. POST: reset their password."""
     if request.user.role != "admin" and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
-        customer = Customer.objects.get(pk=pk)
-    except Customer.DoesNotExist:
+        profile = CustomerProfile.objects.get(pk=pk)
+    except CustomerProfile.DoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
-    # Find linked user via profile
-    profile = getattr(customer, "profile", None)
-    if not profile:
-        return Response({"detail": "No login account linked to this customer."}, status=drf_status.HTTP_404_NOT_FOUND)
+    
     user = profile.user
     if request.method == "GET":
         return Response({
             "username": user.username,
             "full_name": user.get_full_name() or user.username,
-            "plain_password": user.plain_password or "(not available — set a new password)",
             "is_active": user.is_active,
         })
     if request.method == "DELETE":
-        profile.linked_customer = None
-        profile.is_active = False
-        profile.save(update_fields=["linked_customer", "is_active", "updated_at"])
-        user.is_active = False
-        user.set_unusable_password()
-        user.plain_password = ""
-        user.username = f"deleted-customer-{user.id}-{user.username}"
-        user.save(update_fields=["is_active", "password", "plain_password", "username"])
-        return Response({"detail": "Customer login credentials removed. Sales history was kept."})
-    # POST — reset password
-    new_password = request.data.get("password", "").strip()
-    if not new_password:
-        return Response({"detail": "Password required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        user.delete()
+        return Response({"detail": "Customer deleted completely."})
+    
+    new_password = request.data.get("password", "").strip() or get_random_string(length=12)
     user.set_password(new_password)
-    user.plain_password = new_password
+    user.plain_password = ""
+    user.must_change_password = True
     user.is_active = True
-    user.save(update_fields=["password", "plain_password", "is_active"])
-    return Response({"detail": "Password updated.", "username": user.username})
+    user.save(update_fields=["password", "plain_password", "must_change_password", "is_active"])
+    return Response({"detail": "Temporary password generated.", "username": user.username, "temporary_password": new_password})
 
 
 def money_sum(queryset, field):
@@ -498,6 +508,7 @@ def me(request):
             "name": request.user.get_full_name() or request.user.username,
             "role": request.user.role,
             "redirect": redirects.get(request.user.role, "/"),
+            "must_change_password": bool(getattr(request.user, "must_change_password", False)),
             "vehicle_location_name": location_name,
         }
     )
@@ -506,7 +517,6 @@ def me(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def users_list(request):
-    """List all staff users — admin only."""
     if request.user.role != "admin" and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     users = User.objects.exclude(role=User.Role.CUSTOMER).order_by("username")
@@ -516,7 +526,6 @@ def users_list(request):
 @api_view(["PATCH", "DELETE"])
 @permission_classes([permissions.IsAuthenticated])
 def user_detail(request, pk):
-    """Edit a staff/admin user — admin only."""
     if request.user.role != "admin" and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
@@ -524,21 +533,15 @@ def user_detail(request, pk):
     except User.DoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if user.role == User.Role.CUSTOMER:
-        return Response({"detail": "Use customer credentials to manage customer accounts."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Use customer profile endpoints to manage customer accounts."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if request.method == "DELETE":
-        user.is_active = False
-        user.set_unusable_password()
-        user.plain_password = ""
-        user.username = f"deleted-{user.role}-{user.id}-{user.username}"
-        user.save(update_fields=["is_active", "password", "plain_password", "username"])
-        if hasattr(user, "staff_profile"):
-            user.staff_profile.is_active = False
-            user.staff_profile.save(update_fields=["is_active", "updated_at"])
-        return Response({"detail": "Login credentials removed. History was kept."})
+        user.delete()
+        return Response({"detail": "User completely deleted."})
 
     full_name = request.data.get("full_name")
     phone = request.data.get("phone")
     address = request.data.get("address")
+    email = request.data.get("email")
 
     if full_name is not None:
         parts = full_name.strip().split(" ", 1)
@@ -550,14 +553,14 @@ def user_detail(request, pk):
             return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if address is not None:
         user.address = address.strip()
+    if email is not None:
+        user.email = email.strip()
 
-    user.save(update_fields=["first_name", "last_name", "phone", "address"])
+    user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
     if user.role == User.Role.STAFF:
-        profile, _ = StaffProfile.objects.get_or_create(user=user)
-        profile.phone = user.phone
-        profile.address = user.address
-        profile.save(update_fields=["phone", "address", "updated_at"])
+        # Just ensure the profile exists, no phone/address fields on StaffProfile
+        StaffProfile.objects.get_or_create(user=user)
 
     return Response(UserSerializer(user).data)
 
@@ -565,7 +568,6 @@ def user_detail(request, pk):
 @api_view(["GET", "POST"])
 @permission_classes([permissions.IsAuthenticated])
 def user_credentials(request, pk):
-    """GET staff/admin credentials. POST reset password."""
     if request.user.role != "admin" and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
@@ -576,36 +578,64 @@ def user_credentials(request, pk):
         return Response({
             "username": user.username,
             "full_name": user.get_full_name() or user.username,
-            "plain_password": user.plain_password or "(not available - set a new password)",
             "is_active": user.is_active,
         })
-    new_password = request.data.get("password", "").strip()
-    if not new_password:
-        return Response({"detail": "Password required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    new_password = request.data.get("password", "").strip() or get_random_string(length=12)
     user.set_password(new_password)
-    user.plain_password = new_password
+    user.plain_password = ""
+    user.must_change_password = True
     user.is_active = True
-    user.save(update_fields=["password", "plain_password", "is_active"])
-    return Response({"detail": "Password updated.", "username": user.username})
+    user.save(update_fields=["password", "plain_password", "must_change_password", "is_active"])
+    return Response({"detail": "Temporary password generated.", "username": user.username, "temporary_password": new_password})
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def change_password(request):
+    current_password = (request.data.get("current_password") or "").strip()
+    new_password = (request.data.get("new_password") or "").strip()
+    confirm_password = (request.data.get("confirm_new_password") or "").strip()
+
+    if not current_password or not new_password or not confirm_password:
+        return Response({"detail": "Current password, new password, and confirmation are required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    if new_password != confirm_password:
+        return Response({"detail": "New passwords do not match."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    user = authenticate(username=request.user.username, password=current_password)
+    if user is None or user.id != request.user.id:
+        return Response({"detail": "Current password is incorrect."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    try:
+        validate_password(new_password, user=request.user)
+    except Exception as exc:
+        return Response({"detail": " ".join(exc.messages) if hasattr(exc, "messages") else str(exc)}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    request.user.set_password(new_password)
+    request.user.must_change_password = False
+    request.user.plain_password = ""
+    request.user.save(update_fields=["password", "must_change_password", "plain_password"])
+    return Response({"detail": "Password updated successfully."})
 
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def register(request):
-    """Create a new staff user — admin only."""
     if request.user.role != "admin" and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     username = request.data.get("username", "").strip()
-    password = request.data.get("password", "").strip()
+    password = request.data.get("password", "").strip() or get_random_string(length=12)
     full_name = request.data.get("full_name", "").strip()
     role = request.data.get("role", "staff")
     phone = request.data.get("phone", "").strip()
+    email = request.data.get("email", "").strip()
     address = request.data.get("address", "").strip()
     area = request.data.get("area", "").strip()
-    if not username or not password:
-        return Response({"detail": "Username and password required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    if not username:
+        return Response({"detail": "Username required."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if not phone:
         return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    if phone and not phone.isdigit():
+        return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if User.objects.filter(username=username).exists():
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if role not in [choice[0] for choice in User.Role.choices]:
@@ -616,53 +646,33 @@ def register(request):
         password=password,
         first_name=parts[0],
         last_name=parts[1] if len(parts) > 1 else "",
+        email=email,
         role=role,
-        plain_password=password,
+        plain_password="",
+        must_change_password=True,
         phone=phone,
         address=address,
     )
     if role == User.Role.CUSTOMER:
-        linked_customer_id = request.data.get("linked_customer") or None
-        if linked_customer_id:
-            try:
-                customer = Customer.objects.get(pk=linked_customer_id)
-            except Customer.DoesNotExist:
-                user.delete()
-                return Response({"detail": "Selected customer history was not found."}, status=drf_status.HTTP_400_BAD_REQUEST)
-            if getattr(customer, "profile", None):
-                user.delete()
-                return Response({"detail": "That customer history is already linked to login credentials."}, status=drf_status.HTTP_400_BAD_REQUEST)
-            customer.name = full_name or customer.name
-            customer.phone = phone
-            customer.address = address
-            customer.save(update_fields=["name", "phone", "address", "updated_at"])
-        else:
-            customer = Customer.objects.create(
-                name=full_name or username,
-                phone=phone,
-                address=address,
-                opening_balance=request.data.get("opening_balance") or 0,
-            )
         CustomerProfile.objects.create(
             user=user,
-            linked_customer=customer,
-            phone=phone,
-            address=address,
             area=area,
             default_staff_id=request.data.get("default_staff") or None,
             credit_limit=request.data.get("credit_limit") or 0,
             deposit_cylinders=request.data.get("deposit_cylinders") or 0,
+            opening_balance=request.data.get("opening_balance") or 0,
         )
     elif role == User.Role.STAFF:
         StaffProfile.objects.create(
             user=user,
-            phone=phone,
-            address=address,
             assigned_area=area,
             vehicle_number=request.data.get("vehicle_number", "").strip(),
             vehicle_location_id=request.data.get("vehicle_location") or None,
         )
-    return Response(UserSerializer(user).data, status=drf_status.HTTP_201_CREATED)
+    response_data = UserSerializer(user).data
+    if request.data.get("password", "").strip() == "":
+        response_data["temporary_password"] = password
+    return Response(response_data, status=drf_status.HTTP_201_CREATED)
 
 
 @api_view(["GET"])
@@ -732,7 +742,7 @@ def dashboard(request):
     return Response(
         {
             "total_cylinders": filled + empty + sum(r["with_customers"] for r in stock_rows),
-            "total_customers": Customer.objects.count(),
+            "total_customers": CustomerProfile.objects.count(),
             "today_bookings": today_bookings,
             "pending_deliveries": pending_deliveries,
             "filled_cylinders": filled,
@@ -772,7 +782,6 @@ def reports(request):
     range_expenses = Expense.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
     range_movements = StockMovement.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
 
-    # Cylinder-wise sales for the range
     from .models import SaleItem
     cylinder_sales = (
         SaleItem.objects.filter(sale__created_at__date__gte=start, sale__created_at__date__lte=end)
@@ -781,29 +790,24 @@ def reports(request):
         .order_by("cylinder_type__name")
     )
 
-    # Pending dues — customers with balance_due > 0
     pending_sales = (
         Sale.objects.filter(balance_due__gt=0)
-        .select_related("customer")
-        .values("customer__name", "customer__phone")
+        .select_related("customer__user")
+        .values("customer__user__first_name", "customer__user__last_name", "customer__user__phone")
         .annotate(total_due=Sum("balance_due"), sale_count=Count("id"))
         .order_by("-total_due")
     )
 
-    # Sales list for the range
     range_sales_list = SaleSerializer(
-        range_sales.select_related("customer", "location", "sold_by").prefetch_related("items__cylinder_type"),
+        range_sales.select_related("customer__user", "location", "sold_by").prefetch_related("items__cylinder_type"),
         many=True,
     ).data
 
-    # Expense list for the range
     range_expense_list = ExpenseSerializer(
         range_expenses.select_related("spent_by"),
         many=True,
     ).data
 
-    # Current stock snapshot per cylinder type
-    from .models import SaleItem
     stocks = Stock.objects.select_related("cylinder_type", "location")
     stock_snapshot = []
     for cylinder in CylinderType.objects.filter(is_active=True):
@@ -822,8 +826,7 @@ def reports(request):
             "total": (cstocks.aggregate(t=Sum("quantity"))["t"] or 0) + with_customers,
         })
 
-    # Loads (supplier movements) in range
-    range_loads = range_movements.filter(from_location__code="supplier")
+    range_loads = range_movements.filter(Q(from_location__code="supplier") | Q(from_location__is_main_supplier=True))
     load_summary = (
         range_loads.values("cylinder_type__name", "to_location__name")
         .annotate(total_qty=Sum("quantity"))

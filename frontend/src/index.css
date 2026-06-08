@@ -533,6 +533,13 @@ select:focus {
   z-index: 60;
 }
 
+.app-select-menu.open-up {
+  top: auto;
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+
 .app-select-menu button {
   align-items: center;
   background: transparent;

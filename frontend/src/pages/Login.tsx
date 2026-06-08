@@ -44,7 +44,12 @@ export default function Login() {
     e.preventDefault();
     setLoginError('');
     try {
-      await login(username, password);
+      const tokenData = await login(username, password);
+      if (tokenData.must_change_password) {
+        localStorage.setItem('gasbook_force_password_change', '1');
+        window.location.href = '/change-password';
+        return;
+      }
       const { data } = await api.get('/auth/me/');
       localStorage.setItem('gasbook_role', data.role);
       localStorage.setItem('gasbook_name', data.name);

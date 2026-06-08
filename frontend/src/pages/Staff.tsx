@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Eye, EyeOff, UserPlus, X, Check, Pencil, KeyRound, Trash2 } from 'lucide-react';
+import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2 } from 'lucide-react';
 import { api } from '../lib/api';
 
 type StaffUser = {
@@ -10,6 +10,7 @@ type StaffUser = {
   role: string;
   plain_password: string;
   phone: string;
+  email: string;
   address: string;
 };
 
@@ -28,27 +29,25 @@ function isProtectedAdmin(user: StaffUser) {
 
 export default function Staff() {
   const [users, setUsers] = useState<StaffUser[]>([]);
-  const [showPw, setShowPw] = useState<Record<number, boolean>>({});
   const [showAdd, setShowAdd] = useState(false);
 
   const [fullNameValue, setFullNameValue] = useState('');
   const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
   const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
   const [address, setAddress] = useState('');
   const [role, setRole] = useState('staff');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');
   const [editPhone, setEditPhone] = useState('');
+  const [editEmail, setEditEmail] = useState('');
   const [editAddress, setEditAddress] = useState('');
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
   const [credUserId, setCredUserId] = useState<number | null>(null);
-  const [newPassword, setNewPassword] = useState('');
   const [credMsg, setCredMsg] = useState('');
   const [credSaving, setCredSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -61,21 +60,28 @@ export default function Staff() {
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
-    setError(''); setSuccess('');
+    setError('');
     setSaving(true);
     try {
-      await api.post('/auth/register/', {
-        username,
-        password,
+      const createdUsername = username.trim();
+      const { data } = await api.post('/auth/register/', {
+        username: createdUsername,
         full_name: fullNameValue,
         phone,
+        email,
         address,
         role,
       });
-      setSuccess(`User "${username}" created.`);
-      setFullNameValue(''); setUsername(''); setPassword(''); setPhone(''); setAddress(''); setRole('staff');
+      const tempPassword = (data as { temporary_password?: string }).temporary_password;
+
+      setFullNameValue(''); setUsername(''); setPhone(''); setEmail(''); setAddress(''); setRole('staff');
       setShowAdd(false);
-      load();
+      await load();
+
+      if (data.id) {
+        setCredUserId(data.id);
+        setCredMsg(tempPassword || 'Password securely generated.');
+      }
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(detail || 'Failed to create user.');
@@ -85,9 +91,12 @@ export default function Staff() {
   }
 
   function startEdit(user: StaffUser) {
+    setCredUserId(null);
+    setCredMsg('');
     setEditingId(user.id);
     setEditName(fullName(user));
     setEditPhone(user.phone || '');
+    setEditEmail(user.email || '');
     setEditAddress(user.address || '');
     setEditError('');
   }
@@ -100,6 +109,7 @@ export default function Staff() {
       const { data } = await api.patch(`/auth/users/${editingId}/`, {
         full_name: editName.trim(),
         phone: editPhone.trim(),
+        email: editEmail.trim(),
         address: editAddress.trim(),
       });
       setUsers((prev) => prev.map((u) => (u.id === editingId ? data : u)));
@@ -113,22 +123,20 @@ export default function Staff() {
   }
 
   async function resetPassword(userId: number) {
-    if (!newPassword.trim()) return;
     setCredSaving(true); setCredMsg('');
     try {
-      await api.post(`/auth/users/${userId}/credentials/`, { password: newPassword });
-      setCredMsg('Password updated successfully.');
-      setNewPassword('');
+      const { data } = await api.post(`/auth/users/${userId}/credentials/`, {});
+      setCredMsg(data.temporary_password || 'Password reset successfully.');
       load();
     } catch {
-      setCredMsg('Failed to update password.');
+      setCredMsg('Failed to reset password.');
     } finally {
       setCredSaving(false);
     }
   }
 
   async function deleteCredentials(user: StaffUser) {
-    const ok = window.confirm(`Remove login credentials for ${fullName(user)}? Sales and history will be kept.`);
+    const ok = window.confirm(`PERMANENTLY DELETE user ${fullName(user)}? This will completely destroy all their associated sales, payments, and delivery data. This cannot be undone.`);
     if (!ok) return;
     setDeletingId(user.id);
     try {
@@ -144,10 +152,10 @@ export default function Staff() {
       <div className="page-title">
         <div>
           <h1>Staff & Users</h1>
-          <p>All accounts - username and password visible to admin.</p>
+          <p>Accounts are created with a one-time temporary password and can be reset securely.</p>
         </div>
         <button className="btn btn-primary" style={{ width: 'auto', padding: '0 16px' }}
-          onClick={() => { setShowAdd((v) => !v); setError(''); setSuccess(''); }}>
+          onClick={() => { setShowAdd((v) => !v); setError(''); }}>
           {showAdd ? <X size={18} /> : <UserPlus size={18} />}
           {showAdd ? 'Cancel' : 'Add'}
         </button>
@@ -169,7 +177,7 @@ export default function Staff() {
           <div className="grid-2">
             <label>
               <span>Password</span>
-              <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Set a password" required />
+              <input value="Auto-generated on create" disabled />
             </label>
             <label>
               <span>Role</span>
@@ -182,22 +190,25 @@ export default function Staff() {
           <div className="grid-2">
             <label>
               <span>Phone *</span>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Required" required />
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" placeholder="Required" required />
             </label>
             <label>
-              <span>Address</span>
-              <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
+              <span>Email</span>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Optional" />
             </label>
           </div>
+          <label>
+            <span>Address</span>
+            <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
+          </label>
           {error && <p className="form-error">{error}</p>}
-          {success && <p className="form-note">{success}</p>}
           <button className="btn btn-primary" type="submit" disabled={saving}>
             <Check size={18} /> {saving ? 'Creating...' : 'Create User'}
           </button>
         </form>
       )}
 
-      {success && !showAdd && <p className="form-note" style={{ marginBottom: '16px' }}>{success}</p>}
+      {/* No success banner here, it is now shown below the specific user card */}
 
       <div className="card" style={{ padding: 0 }}>
         {users.length === 0 && (
@@ -206,152 +217,226 @@ export default function Staff() {
         {users.map((u) => {
           const protectedAdmin = isProtectedAdmin(u);
           return (
-          <div key={u.id}>
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '14px 18px', borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)', gap: '12px',
-            }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <strong style={{ fontSize: '1rem' }}>{fullName(u)}</strong>
-                  <span style={{
-                    fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px',
-                    borderRadius: '999px', background: (ROLE_COLORS[u.role] || 'var(--text-muted)') + '22',
-                    color: ROLE_COLORS[u.role] || 'var(--text-muted)',
-                  }}>
-                    {u.role.toUpperCase()}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
-                  <span>{u.username}</span>
-                  {u.phone && <span>{u.phone}</span>}
-                  {u.address && <span>{u.address}</span>}
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    {showPw[u.id]
-                      ? (u.plain_password || '(not set)')
-                      : '*'.repeat(Math.min((u.plain_password || '').length || 8, 10))}
-                  </span>
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-                <button
-                  onClick={() => editingId === u.id ? setEditingId(null) : startEdit(u)}
-                  style={{
-                    background: 'var(--surface-muted)', border: 'none', borderRadius: '6px',
-                    padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
-                    fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)',
-                  }}
-                >
-                  {editingId === u.id ? <X size={14} /> : <Pencil size={14} />}
-                  {editingId === u.id ? 'Cancel' : 'Edit'}
-                </button>
-                <button
-                  onClick={() => {
-                    if (protectedAdmin) return;
-                    setCredUserId(credUserId === u.id ? null : u.id); setCredMsg(''); setNewPassword('');
-                  }}
-                  disabled={protectedAdmin}
-                  style={{
-                    background: 'var(--surface-muted)', border: 'none', borderRadius: '6px',
-                    padding: '6px 10px', cursor: protectedAdmin ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
-                    fontSize: '0.78rem', fontWeight: 700, color: protectedAdmin ? 'var(--text-muted)' : 'var(--text-muted)',
-                    opacity: protectedAdmin ? 0.6 : 1,
-                  }}
-                >
-                  <KeyRound size={14} />
-                  Password
-                </button>
-                <button
-                  onClick={() => setShowPw((prev) => ({ ...prev, [u.id]: !prev[u.id] }))}
-                  style={{
-                    background: 'var(--surface-muted)', border: 'none', borderRadius: '6px',
-                    padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px',
-                    fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)',
-                  }}
-                >
-                  {showPw[u.id] ? <EyeOff size={14} /> : <Eye size={14} />}
-                  {showPw[u.id] ? 'Hide' : 'Show'}
-                </button>
-                <button
-                  onClick={() => navigator.clipboard.writeText(
-                    `Username: ${u.username}\nPassword: ${u.plain_password || '(not set)'}`
-                  )}
-                  style={{
-                    background: 'var(--primary)', border: 'none', borderRadius: '6px',
-                    padding: '6px 10px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700, color: 'white',
-                  }}
-                >
-                  Copy
-                </button>
-                <button
-                  onClick={() => deleteCredentials(u)}
-                  disabled={deletingId === u.id || protectedAdmin}
-                  style={{
-                    background: 'var(--danger-soft)', border: 'none', borderRadius: '6px',
-                    padding: '6px 10px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700, color: 'var(--danger)',
-                    display: 'flex', alignItems: 'center', gap: '4px',
-                  }}
-                >
-                  <Trash2 size={14} />
-                  {deletingId === u.id ? 'Deleting...' : 'Delete'}
-                </button>
-              </div>
-            </div>
-
-            {credUserId === u.id && (
-              <div className="form-stack" style={{ padding: '0 18px 16px 18px', borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)' }}>
-                <h2>Login Credentials</h2>
-                <div style={{ display: 'grid', gap: '10px' }}>
-                  <div style={{ background: 'var(--surface-muted)', borderRadius: 'var(--radius)', padding: '12px' }}>
-                    <p style={{ fontSize: '0.8rem', marginBottom: '4px' }}>Username</p>
-                    <strong>{u.username}</strong>
+            <div key={u.id}>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '14px 18px', borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)', gap: '12px',
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <strong style={{ fontSize: '1rem' }}>{fullName(u)}</strong>
+                    <span style={{
+                      fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px',
+                      borderRadius: '999px', background: (ROLE_COLORS[u.role] || 'var(--text-muted)') + '22',
+                      color: ROLE_COLORS[u.role] || 'var(--text-muted)',
+                    }}>
+                      {u.role.toUpperCase()}
+                    </span>
                   </div>
-                  <label>
-                    <span>Set New Password</span>
-                    <input value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Enter new password" />
-                  </label>
-                  {credMsg && <p className={credMsg.includes('success') ? 'form-note' : 'form-error'}>{credMsg}</p>}
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn btn-primary" type="button" onClick={() => resetPassword(u.id)} disabled={credSaving || !newPassword.trim()}>
-                      <Check size={18} /> {credSaving ? 'Saving...' : 'Update Password'}
+                  <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap', wordBreak: 'break-word' }}>
+                    <span>{u.username}</span>
+                    {u.phone && <span>{u.phone}</span>}
+                    {u.email && <span>{u.email}</span>}
+                    {u.address && <span>{u.address}</span>}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                  <button
+                    className="icon-button"
+                    title="Edit"
+                    onClick={() => editingId === u.id ? setEditingId(null) : startEdit(u)}
+                    style={editingId === u.id ? { color: 'var(--primary)' } : {}}
+                  >
+                    {editingId === u.id ? <X size={16} /> : <Pencil size={16} />}
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Password"
+                    onClick={() => {
+                      if (protectedAdmin) return;
+                      setEditingId(null);
+                      setCredUserId(credUserId === u.id ? null : u.id); setCredMsg('');
+                    }}
+                    disabled={protectedAdmin}
+                    style={{
+                      ...(credUserId === u.id ? { color: 'var(--primary)' } : {}),
+                      opacity: protectedAdmin ? 0.3 : 1
+                    }}
+                  >
+                    <KeyRound size={16} />
+                  </button>
+                  <button
+                    className="icon-button"
+                    title="Delete"
+                    onClick={() => deleteCredentials(u)}
+                    disabled={deletingId === u.id || protectedAdmin}
+                    style={{ 
+                      color: 'var(--danger)',
+                      opacity: (deletingId === u.id || protectedAdmin) ? 0.3 : 1
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+
+              {credUserId === u.id && (
+                <div
+                  style={{
+                    padding: '12px 18px',
+                    borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)',
+                    background: 'var(--surface-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '16px'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <KeyRound size={16} style={{ color: 'var(--primary)' }} />
+                    <span style={{ fontSize: '0.95rem', fontWeight: 500 }}>Login Credentials</span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px', flex: 1, justifyContent: 'flex-end' }}>
+                    {!credMsg ? (
+                      <button
+                        className="btn btn-primary"
+                        type="button"
+                        onClick={() => resetPassword(u.id)}
+                        disabled={credSaving}
+                        style={{ padding: '6px 16px', fontSize: '0.85rem', width: 'auto', margin: 0 }}
+                      >
+                        <Check size={14} style={{ marginRight: '6px' }} /> {credSaving ? 'Generating...' : 'Generate Temporary Password'}
+                      </button>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                        {/* USERNAME */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>USERNAME</span>
+                          <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem' }}>{u.username}</span>
+                        </div>
+                        
+                        {/* TEMPORARY PASSWORD */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>TEMPORARY PASSWORD</span>
+                          <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem', letterSpacing: '0.5px' }}>{credMsg}</span>
+                          
+                          <div style={{ display: 'flex', gap: '6px' }}>
+                            <button 
+                              className="icon-button" 
+                              style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                              title="Copy Details"
+                              onClick={() => {
+                                const msg = `Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
+                                navigator.clipboard.writeText(msg);
+                                alert('Credentials copied to clipboard!');
+                              }}
+                            >
+                              <Copy size={14} />
+                            </button>
+                            <a
+                              href={u.email ? `mailto:${u.email}?subject=${encodeURIComponent('Your GasBook Account Details')}&body=${encodeURIComponent(`Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.\n\nBest regards,\nGasBook Admin`)}` : '#'}
+                              className="icon-button"
+                              title={u.email ? "Email Details" : "No email saved"}
+                              style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                justifyContent: 'center', 
+                                textDecoration: 'none', 
+                                color: 'inherit', 
+                                background: 'var(--surface)', 
+                                border: '1px solid var(--border)', 
+                                width: '28px', 
+                                height: '28px', 
+                                borderRadius: '6px',
+                                opacity: u.email ? 1 : 0.5,
+                                pointerEvents: u.email ? 'auto' : 'none'
+                              }}
+                              onClick={(e) => {
+                                if (!u.email) {
+                                  e.preventDefault();
+                                  alert('No email address saved for this staff member.');
+                                }
+                              }}
+                            >
+                              <Mail size={14} />
+                            </a>
+                            <button 
+                              className="icon-button" 
+                              type="button"
+                              style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                              title="Share Details"
+                              onClick={async () => {
+                                const msg = `Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
+                                if (navigator.share) {
+                                  try {
+                                    await navigator.share({
+                                      title: 'GasBook Login Details',
+                                      text: msg
+                                    });
+                                  } catch (err) {
+                                    console.error('Error sharing', err);
+                                  }
+                                } else {
+                                  navigator.clipboard.writeText(msg);
+                                  alert('Share not supported on this browser. Credentials copied to clipboard instead!');
+                                }
+                              }}
+                            >
+                              <Share2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    <button 
+                      className="icon-button" 
+                      onClick={() => { setCredUserId(null); setCredMsg(''); }}
+                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', marginLeft: '4px', borderRadius: '6px' }}
+                    >
+                      <X size={14} />
                     </button>
-                    <button className="btn btn-secondary" type="button" onClick={() => { setCredUserId(null); setCredMsg(''); setNewPassword(''); }}>
+                  </div>
+                </div>
+              )}
+
+              {editingId === u.id && (
+                <form onSubmit={handleEdit} className="form-stack" style={{ padding: '0 18px 16px 18px', borderBottom: '1px solid var(--border)' }}>
+                  <h2>Edit User</h2>
+                  <div className="grid-2">
+                    <label>
+                      <span>Name *</span>
+                      <input value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus />
+                    </label>
+                    <label>
+                      <span>Phone *</span>
+                      <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" required />
+                    </label>
+                  </div>
+                  <div className="grid-2">
+                    <label>
+                      <span>Email</span>
+                      <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
+                    </label>
+                    <label>
+                      <span>Address</span>
+                      <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
+                    </label>
+                  </div>
+                  {editError && <p className="form-error">{editError}</p>}
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="btn btn-primary" type="submit" disabled={editSaving}>
+                      <Check size={18} /> {editSaving ? 'Saving...' : 'Save Changes'}
+                    </button>
+                    <button className="btn btn-secondary" type="button" onClick={() => setEditingId(null)} disabled={editSaving}>
                       Cancel
                     </button>
                   </div>
-                </div>
-              </div>
-            )}
-
-            {editingId === u.id && (
-              <form onSubmit={handleEdit} className="form-stack" style={{ padding: '0 18px 16px 18px', borderBottom: '1px solid var(--border)' }}>
-                <h2>Edit User</h2>
-                <div className="grid-2">
-                  <label>
-                    <span>Name *</span>
-                    <input value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus />
-                  </label>
-                  <label>
-                    <span>Phone *</span>
-                    <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} required />
-                  </label>
-                </div>
-                <label>
-                  <span>Address</span>
-                  <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
-                </label>
-                {editError && <p className="form-error">{editError}</p>}
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button className="btn btn-primary" type="submit" disabled={editSaving}>
-                    <Check size={18} /> {editSaving ? 'Saving...' : 'Save Changes'}
-                  </button>
-                  <button className="btn btn-secondary" type="button" onClick={() => setEditingId(null)} disabled={editSaving}>
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
+                </form>
+              )}
+            </div>
           );
         })}
       </div>
