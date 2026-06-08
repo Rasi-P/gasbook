@@ -438,7 +438,7 @@ export default function Sales() {
 
                 <div className="form-stack" style={{ marginTop: '8px' }}>
                   {returnEmpties.map((row, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '12px', alignItems: 'center', background: 'var(--surface-muted)', borderRadius: '8px', padding: '12px' }}>
+                    <div key={i} style={{ display: 'flex', gap: '12px', alignItems: 'center', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '14px' }}>
                       <label style={{ flex: 2, margin: 0 }}>
                         <span>Cylinder Type</span>
                         <select value={row.cylinder_type} onChange={(e) => updateReturnRow(i, { cylinder_type: Number(e.target.value) })}>
@@ -450,7 +450,7 @@ export default function Sales() {
                         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                           <button type="button"
                             onClick={() => updateReturnRow(i, { quantity: Math.max(1, row.quantity - 1) })}
-                            style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '48px' }}>
+                            style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px' }}>
                             <Minus size={14} />
                           </button>
                           <input type="number" min="1" value={row.quantity}
@@ -458,7 +458,7 @@ export default function Sales() {
                             style={{ textAlign: 'center', flex: 1 }} />
                           <button type="button"
                             onClick={() => updateReturnRow(i, { quantity: row.quantity + 1 })}
-                            style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '48px' }}>
+                            style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px' }}>
                             <Plus size={14} />
                           </button>
                         </div>
@@ -472,12 +472,15 @@ export default function Sales() {
                 </div>
 
                 {returnEmpties.length > 0 && (
-                  <div className="total-box" style={{ marginTop: '12px' }}>
-                    <span>Total Cylinders Returned</span>
-                    <strong style={{ color: 'var(--success)' }}>
-                      {returnEmpties.reduce((s, r) => s + r.quantity, 0)} cylinder(s)
-                    </strong>
-                  </div>
+                  <>
+                    <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 800 }}>
+                      <span style={{ color: 'var(--text)', fontSize: '1.05rem' }}>Total Cylinders Returned</span>
+                      <strong style={{ color: 'var(--success)', fontSize: '1.2rem' }}>
+                        {returnEmpties.reduce((s, r) => s + r.quantity, 0)} cylinder(s)
+                      </strong>
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -515,18 +518,18 @@ export default function Sales() {
                       Number(item.rate) !== Number(type?.selling_price) && 
                       Number(item.rate) !== Number(type?.refill_rate);
                     return (
-                      <div key={i} style={{ background: 'var(--surface-muted)', borderRadius: '8px', padding: '14px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                          <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>Item {i + 1}</span>
+                      <div key={i} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '16px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                          <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>Item {i + 1}</span>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                             {isCustomRate && <span className="badge badge-warning">Custom Price</span>}
-                            <button type="button" onClick={() => removeItem(i)} style={{ background: 'none', border: 'none', color: 'var(--danger)', padding: '4px' }}>
+                            <button type="button" onClick={() => removeItem(i)} style={{ background: 'none', border: 'none', color: 'var(--danger)', padding: '4px', cursor: 'pointer' }}>
                               <Trash2 size={16} />
                             </button>
                           </div>
                         </div>
 
-                        <div className="grid-3">
+                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr', gap: '12px', alignItems: 'end' }}>
                           <label>
                             <span>Cylinder</span>
                             <select value={item.cylinder_type} onChange={(e) => updateItem(i, { cylinder_type: Number(e.target.value) })}>
@@ -535,7 +538,6 @@ export default function Sales() {
                           </label>
                           <label>
                             <span>Rate (Rs.)</span>
-                            {/* Rate is auto-filled from standard price; editing it marks it as Custom */}
                             <input type="number" min="0" value={item.rate} onChange={(e) => updateItem(i, { rate: e.target.value })} />
                           </label>
                           <label>
@@ -543,7 +545,7 @@ export default function Sales() {
                             <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                               <button type="button"
                                 onClick={() => updateItem(i, { quantity: Math.max(1, item.quantity - 1) })}
-                                style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '48px', fontSize: '1.2rem' }}>
+                                style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px', fontSize: '1.2rem' }}>
                                 <Minus size={14} />
                               </button>
                               <input
@@ -554,41 +556,40 @@ export default function Sales() {
                                   const v = parseInt(e.target.value, 10);
                                   updateItem(i, { quantity: v > 0 ? v : 1 });
                                 }}
-                                style={{ textAlign: 'center', flex: 1 }}
+                                style={{ textAlign: 'center', flex: 1, minWidth: '40px' }}
                               />
                               <button type="button"
                                 onClick={() => updateItem(i, { quantity: item.quantity + 1 })}
-                                style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '48px', fontSize: '1.2rem' }}>
+                                style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px', fontSize: '1.2rem' }}>
                                 <Plus size={14} />
                               </button>
                             </div>
                           </label>
+                          <label>
+                            <span style={{ color: 'var(--primary)' }}>Empty Returned</span>
+                            <div style={{ position: 'relative' }}>
+                              <RotateCcw size={15} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--primary)' }} />
+                              <input type="number" min="0" value={item.empty_returned}
+                                onChange={(e) => updateItem(i, { empty_returned: Math.max(0, Number(e.target.value) || 0) })}
+                                style={{ paddingLeft: '36px', textAlign: 'center', borderColor: 'var(--primary)', color: 'var(--primary)', background: 'var(--primary-soft)' }} />
+                            </div>
+                          </label>
                         </div>
 
-                        {/* Quick qty buttons */}
-                        <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
-                          {[1, 2, 5, 10].map((q) => (
-                            <button key={q} type="button" onClick={() => updateItem(i, { quantity: q })}
-                              style={{ padding: '4px 12px', border: '1px solid var(--border)', borderRadius: '6px', background: item.quantity === q ? 'var(--primary)' : 'var(--surface)', color: item.quantity === q ? 'white' : 'var(--text-muted)', fontWeight: 700, fontSize: '0.82rem' }}>
-                              {q}
-                            </button>
-                          ))}
-                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '16px' }}>
+                          {/* Quick qty buttons */}
+                          <div style={{ display: 'flex', gap: '6px' }}>
+                            {[1, 2, 5, 10].map((q) => (
+                              <button key={q} type="button" onClick={() => updateItem(i, { quantity: q })}
+                                style={{ padding: '6px 12px', border: '1px solid var(--border)', borderRadius: '6px', background: item.quantity === q ? 'var(--primary)' : 'var(--surface)', color: item.quantity === q ? 'white' : 'var(--text-muted)', fontWeight: 700, fontSize: '0.85rem' }}>
+                                {q}
+                              </button>
+                            ))}
+                          </div>
 
-                        {/* Empty cylinders returned at time of sale */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px' }}>
-                          <RotateCcw size={15} style={{ color: 'var(--text-muted)' }} />
-                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>Empty returned now:</span>
-                          <input type="number" min="0" value={item.empty_returned}
-                            onChange={(e) => updateItem(i, { empty_returned: Math.max(0, Number(e.target.value) || 0) })}
-                            style={{ width: '72px', minHeight: '36px', padding: '0 8px', textAlign: 'center' }} />
-                          <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                            (swapping {item.empty_returned} empty for {item.quantity} filled)
-                          </span>
-                        </div>
-
-                        <div style={{ textAlign: 'right', marginTop: '8px', fontWeight: 700, color: 'var(--primary)' }}>
-                          {money(item.quantity * Number(item.rate || 0))}
+                          <div style={{ fontWeight: 800, color: 'var(--primary)', fontSize: '1.2rem' }}>
+                            {money(item.quantity * Number(item.rate || 0))}
+                          </div>
                         </div>
                       </div>
                     );
