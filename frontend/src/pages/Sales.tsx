@@ -8,7 +8,7 @@ import { api } from '../lib/api';
 
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
 type Location = { id: number; name: string; code: string };
-type SaleItem = { cylinder_type: number; quantity: number; rate: string; empty_returned: number };
+type SaleItem = { cylinder_type: number; quantity: number; rate: string; empty_returned: number; is_custom_rate?: boolean };
 type HistorySale = {
   id: number;
   customer_name: string;
@@ -121,6 +121,11 @@ export default function Sales() {
         continue;
       }
 
+      if (item.is_custom_rate) {
+        newItems.push({ ...item });
+        continue;
+      }
+
       // 1. Determine applicable refill rate (custom or default)
       const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === item.cylinder_type);
       const applicableRefillRate = custom ? String(custom.custom_price) : String(t.refill_rate);
@@ -169,7 +174,7 @@ export default function Sales() {
     // Consolidate rows that have the exact same cylinder_type and rate
     const finalItems: SaleItem[] = [];
     for (const item of newItems) {
-      const existing = finalItems.find(i => i.cylinder_type === item.cylinder_type && i.rate === item.rate);
+      const existing = finalItems.find(i => i.cylinder_type === item.cylinder_type && i.rate === item.rate && i.is_custom_rate === item.is_custom_rate);
       if (existing) {
         existing.quantity += item.quantity;
         existing.empty_returned += item.empty_returned;
@@ -183,7 +188,13 @@ export default function Sales() {
 
   function updateItem(index: number, patch: Partial<SaleItem>) {
     setItems((prev) => {
-      const next = prev.map((item, i) => i === index ? { ...item, ...patch } : item);
+      const next = prev.map((item, i) => {
+        if (i !== index) return item;
+        const updated = { ...item, ...patch };
+        if (patch.rate !== undefined) updated.is_custom_rate = true;
+        if (patch.cylinder_type !== undefined) updated.is_custom_rate = false;
+        return updated;
+      });
       // If user explicitly changed the rate, don't auto-recalculate the rest of the row's pricing
       if (patch.rate !== undefined) return next;
       
@@ -390,6 +401,11 @@ export default function Sales() {
                               {c.empties_owed > 0 && (
                                 <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--danger-soft)', color: 'var(--danger)', display: 'block', marginTop: '3px' }}>{c.empties_owed} empty owed</span>
                               )}
+                              {c.empty_credits && Object.values(c.empty_credits).map((ec: any) => (
+                                <span key={ec.name} className="badge badge-success" style={{ fontSize: '0.75rem', display: 'block', marginTop: '3px' }}>
+                                  {ec.credit} × {ec.name} credit
+                                </span>
+                              ))}
                             </div>
                           </div>
                         </button>

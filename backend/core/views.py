@@ -717,13 +717,42 @@ def dashboard(request):
     ]
 
     from .models import SaleItem
+    
+    # Calculate with_customers correctly by summing physical possession per customer per cylinder type
+    # Using a chronological running balance where returned empties pay off existing debt first,
+    # and excess returns (banked credits) do NOT artificially lower the debt below 0.
+    customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type")
+    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
+    
+    for customer in customers:
+        # We must process sales chronologically to maintain the correct running balance
+        sales = customer.sales.order_by("created_at")
+        balances = {} # tid -> debt
+        
+        for sale in sales:
+            for item in sale.items.all():
+                tid = item.cylinder_type_id
+                if tid not in balances:
+                    balances[tid] = 0
+                
+                taken = item.quantity
+                returned = item.empty_returned
+                
+                # 1. Returned empties pay off existing debt first
+                payoff = min(balances[tid], returned)
+                balances[tid] -= payoff
+                
+                # 2. Taken cylinders ALWAYS increase debt
+                balances[tid] += taken
+                
+        for tid, debt in balances.items():
+            if tid in with_customers_by_type and debt > 0:
+                with_customers_by_type[tid] += debt
+
     stock_rows = []
     for cylinder in CylinderType.objects.filter(is_active=True):
         cylinder_stocks = stocks.filter(cylinder_type=cylinder)
-        sold = SaleItem.objects.filter(cylinder_type=cylinder).aggregate(t=Sum("quantity"))["t"] or 0
-        returned_at_sale = SaleItem.objects.filter(cylinder_type=cylinder).aggregate(t=Sum("empty_returned"))["t"] or 0
-        collected = Payment.objects.filter(sale__items__cylinder_type=cylinder).aggregate(t=Sum("empty_collected"))["t"] or 0
-        with_customers = max(sold - returned_at_sale - collected, 0)
+        with_customers = with_customers_by_type.get(cylinder.id, 0)
         stock_rows.append(
             {
                 "id": cylinder.id,
@@ -810,12 +839,40 @@ def reports(request):
 
     stocks = Stock.objects.select_related("cylinder_type", "location")
     stock_snapshot = []
+    
+    # Calculate with_customers correctly by summing physical possession per customer per cylinder type
+    # Using a chronological running balance
+    customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type")
+    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
+    
+    for customer in customers:
+        # We must process sales chronologically to maintain the correct running balance
+        sales = customer.sales.filter(created_at__date__lte=end).order_by("created_at")
+        balances = {} # tid -> debt
+        
+        for sale in sales:
+            for item in sale.items.all():
+                tid = item.cylinder_type_id
+                if tid not in balances:
+                    balances[tid] = 0
+                
+                taken = item.quantity
+                returned = item.empty_returned
+                
+                # 1. Returned empties pay off existing debt first
+                payoff = min(balances[tid], returned)
+                balances[tid] -= payoff
+                
+                # 2. Taken cylinders ALWAYS increase debt
+                balances[tid] += taken
+                
+        for tid, debt in balances.items():
+            if tid in with_customers_by_type and debt > 0:
+                with_customers_by_type[tid] += debt
+                    
     for cylinder in CylinderType.objects.filter(is_active=True):
         cstocks = stocks.filter(cylinder_type=cylinder)
-        sold_all = SaleItem.objects.filter(cylinder_type=cylinder).aggregate(t=Sum("quantity"))["t"] or 0
-        returned_all = SaleItem.objects.filter(cylinder_type=cylinder).aggregate(t=Sum("empty_returned"))["t"] or 0
-        collected_all = Payment.objects.filter(sale__items__cylinder_type=cylinder).aggregate(t=Sum("empty_collected"))["t"] or 0
-        with_customers = max(sold_all - returned_all - collected_all, 0)
+        with_customers = with_customers_by_type.get(cylinder.id, 0)
         stock_snapshot.append({
             "type": cylinder.name,
             "shop_filled": cstocks.filter(location__code="shop", status="filled").aggregate(t=Sum("quantity"))["t"] or 0,

@@ -284,17 +284,20 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
     def get_empties_owed(self, obj):
         balances = {}
+        custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in obj.custom_rates.all()}
         for sale in obj.sales.prefetch_related('items__cylinder_type'):
             for item in sale.items.all():
                 tid = item.cylinder_type_id
                 if tid not in balances:
                     balances[tid] = {"refills_given": 0, "returned": 0}
                 
-                # Only count as a refill if the rate is closer to the refill_rate than the selling_price
-                # This prevents custom discounts on new shells from being miscategorized as refills
-                threshold = (item.cylinder_type.selling_price + item.cylinder_type.refill_rate) / 2
+                refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
+                threshold = (item.cylinder_type.selling_price + refill_rate) / 2
+                
                 if item.rate <= threshold:
                     balances[tid]["refills_given"] += item.quantity
+                else:
+                    balances[tid]["refills_given"] += min(item.quantity, item.empty_returned)
                     
                 balances[tid]["returned"] += item.empty_returned
 
@@ -312,6 +315,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
     def get_empty_credits(self, obj):
         credits = {}
+        custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in obj.custom_rates.all()}
         for sale in obj.sales.prefetch_related('items__cylinder_type'):
             for item in sale.items.all():
                 tid = item.cylinder_type_id
@@ -319,10 +323,13 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
                 if tid not in credits:
                     credits[tid] = {"refills_given": 0, "returned": 0, "name": tname}
                 
-                # Only count as a refill if the rate is closer to the refill_rate than the selling_price
-                threshold = (item.cylinder_type.selling_price + item.cylinder_type.refill_rate) / 2
+                refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
+                threshold = (item.cylinder_type.selling_price + refill_rate) / 2
+                
                 if item.rate <= threshold:
                     credits[tid]["refills_given"] += item.quantity
+                else:
+                    credits[tid]["refills_given"] += min(item.quantity, item.empty_returned)
                     
                 credits[tid]["returned"] += item.empty_returned
         
