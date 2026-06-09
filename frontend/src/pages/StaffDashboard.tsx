@@ -24,7 +24,7 @@ function money(v: number | string) {
 export default function StaffDashboard() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [stock, setStock] = useState<Stock[]>([]);
-  const [collections, setCollections] = useState<Record<number, { amount: string; method: string; empty: string }>>({});
+  const [collections, setCollections] = useState<Record<number, { amount: string; method: string; paid_method: string; empty: string; split_cash: string; split_gpay: string; split_bank: string }>>({});
   const [message, setMessage] = useState('');
   const [userName, setUserName] = useState('');
   const [vehicleLocation, setVehicleLocation] = useState('');
@@ -37,7 +37,7 @@ export default function StaffDashboard() {
         const rows = deliveryRes.data.results ?? deliveryRes.data;
         setDeliveries(rows);
         setStock(stockRes.data.results ?? stockRes.data);
-        setCollections(Object.fromEntries(rows.map((d: Delivery) => [d.id, { amount: '', method: 'cash', empty: String(d.quantity) }])));
+        setCollections(Object.fromEntries(rows.map((d: Delivery) => [d.id, { amount: '', method: 'cash', paid_method: 'cash', empty: String(d.quantity), split_cash: '', split_gpay: '', split_bank: '' }])));
       })
       .catch(() => undefined);
   }
@@ -58,12 +58,24 @@ export default function StaffDashboard() {
   }
 
   async function complete(id: number) {
-    const form = collections[id] || { amount: '0', method: 'credit', empty: '0' };
-    await api.post(`/deliveries/${id}/complete/`, {
-      payment_collected: form.amount || '0',
+    const form = collections[id] || { amount: '0', method: 'credit', paid_method: 'cash', empty: '0', split_cash: '', split_gpay: '', split_bank: '' };
+    
+    const payload: any = {
       payment_method: form.method,
       empty_collected: Number(form.empty || 0),
-    });
+    };
+
+    if (form.method === 'split') {
+      payload.split_payments = [];
+      if (Number(form.split_cash) > 0) payload.split_payments.push({ mode: 'cash', amount: Number(form.split_cash) });
+      if (Number(form.split_gpay) > 0) payload.split_payments.push({ mode: 'gpay', amount: Number(form.split_gpay) });
+      if (Number(form.split_bank) > 0) payload.split_payments.push({ mode: 'bank', amount: Number(form.split_bank) });
+    } else {
+      payload.payment_collected = form.amount || '0';
+      payload.paid_payment_mode = form.paid_method;
+    }
+
+    await api.post(`/deliveries/${id}/complete/`, payload);
     setMessage('Delivery completed. Sale, stock, payment, and empty cylinder records were updated.');
     load();
   }
@@ -107,7 +119,7 @@ export default function StaffDashboard() {
       <div className="grid-2">
         <div>
           {deliveries.map((delivery) => {
-            const form = collections[delivery.id] || { amount: '', method: 'cash', empty: '' };
+            const form = collections[delivery.id] || { amount: '', method: 'cash', paid_method: 'cash', empty: '', split_cash: '', split_gpay: '', split_bank: '' };
             return (
               <div className="card form-stack" key={delivery.id}>
                 <div className="section-head">
@@ -126,15 +138,17 @@ export default function StaffDashboard() {
                 {delivery.status !== 'delivered' && (
                   <>
                     <div className="grid-3">
-                      <label>
-                        <span>Collected</span>
-                        <input
-                          type="number"
-                          min="0"
-                          value={form.amount}
-                          onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, amount: e.target.value } }))}
-                        />
-                      </label>
+                      {form.method !== 'split' && (
+                        <label>
+                          <span>Collected</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={form.amount}
+                            onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, amount: e.target.value } }))}
+                          />
+                        </label>
+                      )}
                       <label>
                         <span>Payment Mode</span>
                         <select
@@ -145,8 +159,42 @@ export default function StaffDashboard() {
                           <option value="gpay">GPay</option>
                           <option value="bank">Bank</option>
                           <option value="credit">Credit Pending</option>
+                          <option value="split">Split Payment</option>
                         </select>
                       </label>
+                      {form.method === 'credit' && Number(form.amount) > 0 && (
+                        <label>
+                          <span>Received Via</span>
+                          <select
+                            value={form.paid_method}
+                            onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, paid_method: e.target.value } }))}
+                          >
+                            <option value="cash">Cash</option>
+                            <option value="gpay">GPay</option>
+                            <option value="bank">Bank</option>
+                          </select>
+                        </label>
+                      )}
+                      {form.method === 'split' && (
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', gridColumn: '1 / -1' }}>
+                          <label>
+                            <span>Cash</span>
+                            <input type="number" min="0" value={form.split_cash} onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_cash: e.target.value } }))} placeholder="0" />
+                          </label>
+                          <label>
+                            <span>GPay</span>
+                            <input type="number" min="0" value={form.split_gpay} onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_gpay: e.target.value } }))} placeholder="0" />
+                          </label>
+                          <label>
+                            <span>Bank</span>
+                            <input type="number" min="0" value={form.split_bank} onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_bank: e.target.value } }))} placeholder="0" />
+                          </label>
+                          <label>
+                            <span>Credit</span>
+                            <input type="number" disabled value={Math.max(0, delivery.quantity * Number(delivery.rate) - (Number(form.split_cash || 0) + Number(form.split_gpay || 0) + Number(form.split_bank || 0)))} style={{ background: 'var(--surface-muted)', color: 'var(--danger)' }} />
+                          </label>
+                        </div>
+                      )}
                       <label>
                         <span>Empty Collected</span>
                         <input

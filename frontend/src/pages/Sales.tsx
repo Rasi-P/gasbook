@@ -7,7 +7,7 @@ import {
 import { api } from '../lib/api';
 
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
-type Location = { id: number; name: string; code: string };
+type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
 type SaleItem = { cylinder_type: number; quantity: number; rate: string; empty_returned: number; is_custom_rate?: boolean };
 type HistorySale = {
   id: number;
@@ -19,6 +19,7 @@ type HistorySale = {
   balance_due: number;
   payment_mode: string;
   created_at: string;
+  payments: { amount: number; mode: string }[];
 };
 
 const PAYMENT_MODES = [
@@ -26,6 +27,7 @@ const PAYMENT_MODES = [
   { value: 'gpay', label: 'GPay', icon: Smartphone },
   { value: 'bank', label: 'Bank', icon: Building2 },
   { value: 'credit', label: 'Credit', icon: CreditCard },
+  { value: 'split', label: 'Split', icon: Plus },
 ];
 
 function money(v: number | string) {
@@ -50,6 +52,13 @@ export default function Sales() {
   const [items, setItems] = useState<SaleItem[]>([]);
   const [paymentMode, setPaymentMode] = useState('cash');
   const [paidAmount, setPaidAmount] = useState('');
+  const [paidPaymentMode, setPaidPaymentMode] = useState('cash');
+  const [saleSplit, setSaleSplit] = useState({ cash: '', gpay: '', bank: '' });
+
+  // Past pending collection
+  const [pastAmount, setPastAmount] = useState('');
+  const [pastPaymentMode, setPastPaymentMode] = useState('cash');
+  const [pastSplit, setPastSplit] = useState({ cash: '', gpay: '', bank: '' });
 
   // Empty-return-only mode
   const [returnMode, setReturnMode] = useState(false);
@@ -57,6 +66,9 @@ export default function Sales() {
 
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+
+  // Stock availability
+  const [stockData, setStockData] = useState<{ cylinder_type: number; location: number; status: string; quantity: number }[]>([]);
 
   // History state
   const [sales, setSales] = useState<HistorySale[]>([]);
@@ -67,7 +79,7 @@ export default function Sales() {
     Promise.all([api.get('/cylinder-types/'), api.get('/locations/')])
       .then(([tr, lr]) => {
         const types: CylinderType[] = tr.data.results ?? tr.data;
-        const locs: Location[] = lr.data.results ?? lr.data;
+        const locs: Location[] = (lr.data.results ?? lr.data).filter((l: Location) => !l.is_main_supplier && l.code !== 'supplier');
         setCylinderTypes(types);
         setLocations(locs);
         setLocation(locs[0]?.id ?? 1);
@@ -75,6 +87,16 @@ export default function Sales() {
       })
       .catch(() => undefined);
   }, []);
+
+  // Fetch stock whenever location changes
+  useEffect(() => {
+    if (!location || locations.length === 0) return;
+    const loc = locations.find(l => l.id === location);
+    if (!loc) return;
+    api.get('/stock/', { params: { location: loc.code, status: 'filled' } })
+      .then((r) => setStockData(r.data.results ?? r.data))
+      .catch(() => undefined);
+  }, [location, locations]);
 
   useEffect(() => {
     if (!customerName.trim() || selectedCustomerId !== null) {
@@ -171,19 +193,7 @@ export default function Sales() {
       }
     }
 
-    // Consolidate rows that have the exact same cylinder_type and rate
-    const finalItems: SaleItem[] = [];
-    for (const item of newItems) {
-      const existing = finalItems.find(i => i.cylinder_type === item.cylinder_type && i.rate === item.rate && i.is_custom_rate === item.is_custom_rate);
-      if (existing) {
-        existing.quantity += item.quantity;
-        existing.empty_returned += item.empty_returned;
-      } else {
-        finalItems.push({ ...item });
-      }
-    }
-
-    return finalItems;
+    return newItems;
   }
 
   function updateItem(index: number, patch: Partial<SaleItem>) {
@@ -239,8 +249,10 @@ export default function Sales() {
     () => items.reduce((sum, item) => sum + item.quantity * Number(item.rate || 0), 0),
     [items],
   );
-  const paid = paymentMode === 'credit' ? Number(paidAmount || 0) : total;
+  const paid = paymentMode === 'split' ? (Number(saleSplit.cash || 0) + Number(saleSplit.gpay || 0) + Number(saleSplit.bank || 0)) : (paymentMode === 'credit' ? Number(paidAmount || 0) : total);
   const balance = Math.max(total - paid, 0);
+
+  const pastTotal = pastPaymentMode === 'split' ? (Number(pastSplit.cash || 0) + Number(pastSplit.gpay || 0) + Number(pastSplit.bank || 0)) : Number(pastAmount || 0);
 
   // ── Submit sale ───────────────────────────────────────────────────────────
 
@@ -254,7 +266,7 @@ export default function Sales() {
         const res = await api.post('/customers/', { name: customerName.trim(), phone, address });
         customerId = res.data.id;
       }
-      await api.post('/sales/', {
+      const salePayload: any = {
         customer: customerId,
         location,
         payment_mode: paymentMode,
@@ -265,10 +277,38 @@ export default function Sales() {
           rate: item.rate,
           empty_returned: item.empty_returned,
         })),
-      });
-      setMessage(`Sale saved! Total ${money(total)}, Balance ${money(balance)}.`);
+      };
+
+      if (paymentMode === 'split') {
+        salePayload.split_payments = [];
+        if (Number(saleSplit.cash) > 0) salePayload.split_payments.push({ mode: 'cash', amount: Number(saleSplit.cash) });
+        if (Number(saleSplit.gpay) > 0) salePayload.split_payments.push({ mode: 'gpay', amount: Number(saleSplit.gpay) });
+        if (Number(saleSplit.bank) > 0) salePayload.split_payments.push({ mode: 'bank', amount: Number(saleSplit.bank) });
+      } else {
+        salePayload.paid_payment_mode = paidPaymentMode;
+      }
+
+      await api.post('/sales/', salePayload);
+
+      if (pastTotal > 0 && customerId) {
+        if (pastPaymentMode === 'split') {
+          if (Number(pastSplit.cash) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.cash), payment_mode: 'cash', note: 'Past pending collected during sale' });
+          if (Number(pastSplit.gpay) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.gpay), payment_mode: 'gpay', note: 'Past pending collected during sale' });
+          if (Number(pastSplit.bank) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.bank), payment_mode: 'bank', note: 'Past pending collected during sale' });
+        } else {
+          await api.post('/payments/', {
+            customer: customerId,
+            amount: pastTotal,
+            payment_mode: pastPaymentMode,
+            note: 'Past pending collected during sale',
+          });
+        }
+      }
+
+      setMessage(`Sale saved! Total ${money(total)}, Balance ${money(balance)}${pastTotal > 0 ? `, and collected ${money(pastTotal)} for past dues` : ''}.`);
       setCustomerName(''); setPhone(''); setAddress(''); setSelectedCustomerId(null); setSelectedCustomer(null);
-      setPaidAmount(''); setPaymentMode('cash');
+      setPaidAmount(''); setPaymentMode('cash'); setPaidPaymentMode('cash'); setSaleSplit({ cash: '', gpay: '', bank: '' });
+      setPastAmount(''); setPastPaymentMode('cash'); setPastSplit({ cash: '', gpay: '', bank: '' });
       setItems([]);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: unknown } })?.response?.data;
@@ -533,10 +573,29 @@ export default function Sales() {
                     const isCustomRate = item.rate !== '' && 
                       Number(item.rate) !== Number(type?.selling_price) && 
                       Number(item.rate) !== Number(type?.refill_rate);
+                    const available = stockData.find(s => s.cylinder_type === type?.id)?.quantity ?? 0;
                     return (
                       <div key={i} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '16px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                          <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>Item {i + 1}</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>Item {i + 1}</span>
+                            <span style={{ 
+                              fontSize: '0.72rem', 
+                              padding: '3px 10px', 
+                              borderRadius: '12px',
+                              fontWeight: 600,
+                              letterSpacing: '0.02em',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '5px',
+                              background: available > 0 ? 'var(--success-soft, rgba(34,197,94,0.1))' : 'var(--danger-soft, rgba(239,68,68,0.1))',
+                              color: available > 0 ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)',
+                              border: `1px solid ${available > 0 ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                            }}>
+                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'currentColor' }} />
+                              {available} in stock
+                            </span>
+                          </div>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                             {isCustomRate && <span className="badge badge-warning">Custom Price</span>}
                             <button type="button" onClick={() => removeItem(i)} style={{ background: 'none', border: 'none', color: 'var(--danger)', padding: '4px', cursor: 'pointer' }}>
@@ -549,7 +608,9 @@ export default function Sales() {
                           <label>
                             <span>Cylinder</span>
                             <select value={item.cylinder_type} onChange={(e) => updateItem(i, { cylinder_type: Number(e.target.value) })}>
-                              {cylinderTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                              {cylinderTypes.map((t) => (
+                                <option key={t.id} value={t.id}>{t.name}</option>
+                              ))}
                             </select>
                           </label>
                           <label>
@@ -617,7 +678,7 @@ export default function Sales() {
               <div className="card">
                 <h2 style={{ marginBottom: '14px' }}>Payment</h2>
 
-                <div className="payment-options" style={{ gridTemplateColumns: 'repeat(4,1fr)', marginBottom: '14px' }}>
+                <div className="payment-options" style={{ gridTemplateColumns: 'repeat(5, 1fr)', marginBottom: '14px' }}>
                   {PAYMENT_MODES.map(({ value, label, icon: Icon }) => (
                     <button key={value} type="button" className={paymentMode === value ? 'selected' : ''} onClick={() => setPaymentMode(value)}>
                       <Icon size={18} /> {label}
@@ -626,10 +687,43 @@ export default function Sales() {
                 </div>
 
                 {paymentMode === 'credit' && (
-                  <label style={{ marginBottom: '12px' }}>
-                    <span>Amount Received (Rs.)</span>
-                    <input type="number" min="0" value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)} placeholder="0" />
-                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '12px' }}>
+                    <label>
+                      <span>Amount Received (Rs.)</span>
+                      <input type="number" min="0" value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)} placeholder="0" />
+                    </label>
+                    {Number(paidAmount) > 0 && (
+                      <label>
+                        <span>Received Via</span>
+                        <select value={paidPaymentMode} onChange={(e) => setPaidPaymentMode(e.target.value)}>
+                          {PAYMENT_MODES.filter(m => m.value !== 'credit' && m.value !== 'split').map(m => (
+                            <option key={m.value} value={m.value}>{m.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                )}
+
+                {paymentMode === 'split' && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '12px' }}>
+                    <label>
+                      <span>Cash Paid</span>
+                      <input type="number" min="0" value={saleSplit.cash} onChange={(e) => setSaleSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
+                    </label>
+                    <label>
+                      <span>GPay Paid</span>
+                      <input type="number" min="0" value={saleSplit.gpay} onChange={(e) => setSaleSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Bank Paid</span>
+                      <input type="number" min="0" value={saleSplit.bank} onChange={(e) => setSaleSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Credit (Pending)</span>
+                      <input type="number" disabled value={balance > 0 ? balance : 0} style={{ background: 'var(--surface-muted)', color: 'var(--danger)' }} />
+                    </label>
+                  </div>
                 )}
 
                 <div className="total-box">
@@ -639,6 +733,51 @@ export default function Sales() {
                   {balance === 0 && total > 0 && <small style={{ color: 'var(--success)' }}>Fully paid ✓</small>}
                 </div>
               </div>
+
+              {selectedCustomer && Number(selectedCustomer.pending_balance) > 0 && (
+                <div className="card" style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger)' }}>
+                  <h2 style={{ marginBottom: '14px', color: 'var(--danger)' }}>
+                    Past Pending Balance: {money(selectedCustomer.pending_balance)}
+                  </h2>
+                  <p style={{ fontSize: '0.9rem', marginBottom: '16px' }}>
+                    You can collect payment for past dues along with this sale.
+                  </p>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                    <label style={{ display: pastPaymentMode === 'split' ? 'none' : 'block' }}>
+                      <span>Collect Past Pending (Rs.)</span>
+                      <input type="number" min="0" max={selectedCustomer.pending_balance} value={pastAmount} onChange={(e) => setPastAmount(e.target.value)} placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Received Via</span>
+                      <select value={pastPaymentMode} onChange={(e) => setPastPaymentMode(e.target.value)}>
+                        {PAYMENT_MODES.filter(m => m.value !== 'credit').map(m => (
+                          <option key={m.value} value={m.value}>{m.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {pastPaymentMode === 'split' && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', gridColumn: '1 / -1' }}>
+                        <label>
+                          <span>Cash</span>
+                          <input type="number" min="0" value={pastSplit.cash} onChange={(e) => setPastSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
+                        </label>
+                        <label>
+                          <span>GPay</span>
+                          <input type="number" min="0" value={pastSplit.gpay} onChange={(e) => setPastSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
+                        </label>
+                        <label>
+                          <span>Bank</span>
+                          <input type="number" min="0" value={pastSplit.bank} onChange={(e) => setPastSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
+                        </label>
+                        <label>
+                          <span>Credit Remaining</span>
+                          <input type="number" disabled value={Math.max(0, Number(selectedCustomer.pending_balance) - pastTotal)} style={{ background: 'var(--surface-muted)', color: 'var(--danger)' }} />
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {error && <p className="form-error">{error}</p>}
               {message && <p className="form-note">{message}</p>}
@@ -697,7 +836,16 @@ export default function Sales() {
                           ? <span className="badge badge-warning">{money(sale.balance_due)}</span>
                           : <span className="badge badge-success">Paid</span>}
                       </td>
-                      <td><span className="badge">{sale.payment_mode}</span></td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span className="badge">{sale.payment_mode}</span>
+                          {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && sale.payments && sale.payments.length > 0 && (
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              {sale.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td style={{ fontSize: '0.82rem' }}>{sale.sold_by_name}</td>
                       <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                         {new Date(sale.created_at).toLocaleDateString('en-IN')}

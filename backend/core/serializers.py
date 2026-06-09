@@ -120,14 +120,20 @@ class SaleSerializer(serializers.ModelSerializer):
     location_name = serializers.CharField(source="location.name", read_only=True)
     items = SaleItemSerializer(many=True, read_only=True)
     sale_items = SaleItemWriteSerializer(many=True, write_only=True)
+    paid_payment_mode = serializers.CharField(max_length=10, required=False, write_only=True)
+    split_payments = serializers.ListField(child=serializers.DictField(), required=False, write_only=True)
+    payments = serializers.SerializerMethodField()
+
+    def get_payments(self, obj):
+        return [{"amount": p.amount, "mode": p.payment_mode} for p in obj.payments.all()]
 
     class Meta:
         model = Sale
         fields = [
             "id", "customer", "customer_name", "location", "location_name",
             "total_amount", "paid_amount", "balance_due",
-            "payment_mode", "delivery_type", "delivery_staff", "note",
-            "sold_by", "sold_by_name", "created_at", "items", "sale_items",
+            "payment_mode", "paid_payment_mode", "split_payments", "delivery_type", "delivery_staff", "note",
+            "sold_by", "sold_by_name", "created_at", "items", "sale_items", "payments",
         ]
         read_only_fields = ["total_amount", "balance_due", "sold_by"]
 
@@ -145,9 +151,17 @@ class SaleSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         user = self.context["request"].user
         items_data = validated_data.pop("sale_items")
+        paid_payment_mode = validated_data.pop("paid_payment_mode", "cash")
+        split_payments = validated_data.pop("split_payments", [])
         location = validated_data["location"]
         payment_mode = validated_data["payment_mode"]
-        paid = validated_data.get("paid_amount", Decimal("0"))
+        
+        paid = Decimal("0")
+        if split_payments:
+            paid = sum(Decimal(str(p.get("amount", 0))) for p in split_payments)
+            validated_data["paid_amount"] = paid
+        else:
+            paid = validated_data.get("paid_amount", Decimal("0"))
 
         total = Decimal("0")
         stock_rows = []
@@ -182,10 +196,21 @@ class SaleSerializer(serializers.ModelSerializer):
             )
 
         if paid > 0 and sale.customer:
-            Payment.objects.create(
-                customer=sale.customer, sale=sale, amount=paid,
-                payment_mode=payment_mode, received_by=user, note="Sale payment",
-            )
+            if split_payments:
+                for sp in split_payments:
+                    amt = Decimal(str(sp.get("amount", 0)))
+                    mode = sp.get("mode", Sale.PaymentMode.CASH)
+                    if amt > 0:
+                        Payment.objects.create(
+                            customer=sale.customer, sale=sale, amount=amt,
+                            payment_mode=mode, received_by=user, note="Sale payment (split)",
+                        )
+            else:
+                actual_payment_mode = paid_payment_mode if payment_mode == Sale.PaymentMode.CREDIT and paid_payment_mode else payment_mode
+                Payment.objects.create(
+                    customer=sale.customer, sale=sale, amount=paid,
+                    payment_mode=actual_payment_mode, received_by=user, note="Sale payment",
+                )
 
         ActivityLog.objects.create(
             action="sale_created",

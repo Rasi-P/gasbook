@@ -373,10 +373,15 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         rate = rate_obj.custom_price if rate_obj else booking.cylinder_type.selling_price
         total = Decimal(booking.quantity) * rate
         payment_collected = Decimal(str(request.data.get("payment_collected", "0") or "0"))
+        split_payments = request.data.get("split_payments", [])
+        if split_payments:
+            payment_collected = sum(Decimal(str(p.get("amount", 0))) for p in split_payments)
+            
         if payment_collected < 0 or payment_collected > total:
             return Response({"detail": "Collected amount must be between 0 and sale total."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
         payment_method = request.data.get("payment_method") or Sale.PaymentMode.CREDIT
+        paid_payment_mode = request.data.get("paid_payment_mode", "cash")
         empty_collected = int(request.data.get("empty_collected", 0) or 0)
         location = getattr(delivery.staff, "staff_profile", None).vehicle_location if hasattr(delivery.staff, "staff_profile") else None
         if location is None:
@@ -395,13 +400,18 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             empty_stock.quantity += empty_collected
             empty_stock.save(update_fields=["quantity", "updated_at"])
 
+        if split_payments:
+            sale_payment_mode = Sale.PaymentMode.SPLIT
+        else:
+            sale_payment_mode = Sale.PaymentMode.CREDIT if payment_collected < total else payment_method
+        
         sale = Sale.objects.create(
             customer=profile,
             location=location,
             total_amount=total,
             paid_amount=payment_collected,
             balance_due=total - payment_collected,
-            payment_mode=payment_method if payment_collected > 0 else Sale.PaymentMode.CREDIT,
+            payment_mode=sale_payment_mode,
             delivery_type=Sale.DeliveryType.DELIVERY,
             delivery_staff=delivery.staff.get_full_name() or delivery.staff.username,
             sold_by=request.user,
@@ -416,15 +426,27 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             empty_returned=empty_collected,
         )
         if payment_collected > 0:
-            Payment.objects.create(
-                customer=profile,
-                sale=sale,
-                amount=payment_collected,
-                payment_mode=payment_method,
-                received_by=request.user,
-                note="Delivery collection",
-                empty_collected=empty_collected,
-            )
+            if split_payments:
+                for sp in split_payments:
+                    amt = Decimal(str(sp.get("amount", 0)))
+                    mode = sp.get("mode", Sale.PaymentMode.CASH)
+                    if amt > 0:
+                        Payment.objects.create(
+                            customer=profile, sale=sale, amount=amt,
+                            payment_mode=mode, received_by=request.user,
+                            note="Delivery collection (split)", empty_collected=empty_collected if sp == split_payments[0] else 0,
+                        )
+            else:
+                actual_payment_mode = paid_payment_mode if sale_payment_mode == Sale.PaymentMode.CREDIT and paid_payment_mode else payment_method
+                Payment.objects.create(
+                    customer=profile,
+                    sale=sale,
+                    amount=payment_collected,
+                    payment_mode=actual_payment_mode,
+                    received_by=request.user,
+                    note="Delivery collection",
+                    empty_collected=empty_collected,
+                )
 
         delivery.status = Delivery.Status.DELIVERED
         delivery.payment_collected = payment_collected

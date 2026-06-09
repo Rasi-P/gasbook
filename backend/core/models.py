@@ -120,6 +120,7 @@ class Sale(TimeStampedModel):
         GPAY = "gpay", "GPay"
         BANK = "bank", "Bank Transfer"
         CREDIT = "credit", "Credit/Pending"
+        SPLIT = "split", "Split Payment"
 
     class DeliveryType(models.TextChoices):
         PICKUP = "pickup", "Pickup"

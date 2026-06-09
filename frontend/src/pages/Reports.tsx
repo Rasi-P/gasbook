@@ -59,7 +59,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   fuel: 'Fuel', salary: 'Salary', transport: 'Transport', misc: 'Miscellaneous',
 };
 
-type Tab = 'summary' | 'stock' | 'sales' | 'pending' | 'expenses' | 'movements' | 'full';
+type Tab = 'summary' | 'stock' | 'sales' | 'pending';
 
 function today() { return new Date().toISOString().slice(0, 10); }
 function monthStart() {
@@ -97,9 +97,6 @@ export default function Reports() {
     { key: 'stock', label: 'Stock' },
     { key: 'sales', label: 'Sales' },
     { key: 'pending', label: 'Pending' },
-    { key: 'expenses', label: 'Expenses' },
-    { key: 'movements', label: 'Movements' },
-    { key: 'full', label: '📋 Full' },
   ];
 
   return (
@@ -172,26 +169,11 @@ export default function Reports() {
                   <strong>{money(data.summary.collection)}</strong>
                 </div>
                 <div className="metric-card orange">
-                  <ReceiptText />
-                  <span>Expenses</span>
-                  <strong>{money(data.summary.expenses)}</strong>
-                </div>
-                <div className="metric-card green">
-                  <Route />
-                  <span>Movements</span>
-                  <strong>{data.summary.movements}</strong>
+                  <AlertTriangle />
+                  <span>Pending Dues</span>
+                  <strong>{money(data.summary.pending)}</strong>
                 </div>
               </section>
-
-              {Number(data.summary.pending) > 0 && (
-                <div className="card alert-card" style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                  <AlertTriangle style={{ color: 'var(--danger)', flexShrink: 0 }} size={28} />
-                  <div>
-                    <strong style={{ fontSize: '1.3rem' }}>{money(data.summary.pending)}</strong>
-                    <p>Total pending dues across all customers</p>
-                  </div>
-                </div>
-              )}
 
               {data.cylinder_sales.length > 0 && (
                 <div className="card">
@@ -225,30 +207,12 @@ export default function Reports() {
               <div className="card">
                 <div className="section-head">
                   <h2>This Month</h2>
-                  <span className="badge badge-success">
-                    {money(Number(data.monthly.collection) - Number(data.monthly.expenses))} net
-                  </span>
                 </div>
                 <div className="summary-grid">
                   <p><span>Sales</span><strong>{money(data.monthly.sales)}</strong></p>
                   <p><span>Collection</span><strong>{money(data.monthly.collection)}</strong></p>
-                  <p><span>Expenses</span><strong>{money(data.monthly.expenses)}</strong></p>
                 </div>
               </div>
-
-              {data.expense_breakdown.length > 0 && (
-                <div className="card">
-                  <h2 style={{ marginBottom: '14px' }}>Expense Breakdown</h2>
-                  <div className="summary-grid">
-                    {data.expense_breakdown.map((e) => (
-                      <p key={e.category}>
-                        <span>{CATEGORY_LABELS[e.category] ?? e.category}</span>
-                        <strong>{money(e.total)}</strong>
-                      </p>
-                    ))}
-                  </div>
-                </div>
-              )}
             </>
           )}
 
@@ -431,67 +395,6 @@ export default function Reports() {
                     <p style={{ fontSize: '0.82rem' }}>{d.sale_count} sale{d.sale_count !== 1 ? 's' : ''} pending</p>
                   </div>
                   <span className="badge badge-warning" style={{ fontSize: '0.9rem' }}>{money(d.total_due)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* EXPENSES TAB */}
-          {tab === 'expenses' && (
-            <>
-              {data.expense_breakdown.length > 0 && (
-                <div className="card">
-                  <h2 style={{ marginBottom: '14px' }}>By Category</h2>
-                  <div className="summary-grid">
-                    {data.expense_breakdown.map((e) => (
-                      <p key={e.category}>
-                        <span>{CATEGORY_LABELS[e.category] ?? e.category}</span>
-                        <strong>{money(e.total)}</strong>
-                      </p>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <div className="card" style={{ padding: 0 }}>
-                {data.expense_list.length === 0 && (
-                  <p style={{ textAlign: 'center', padding: '24px' }}>No expenses in this range.</p>
-                )}
-                {data.expense_list.map((e) => (
-                  <div key={e.id} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    padding: '14px 18px', borderBottom: '1px solid var(--border)',
-                  }}>
-                    <div>
-                      <strong>{CATEGORY_LABELS[e.category] ?? e.category}</strong>
-                      <p style={{ fontSize: '0.82rem', marginTop: '2px' }}>
-                        {fmtDate(e.created_at)} · {e.spent_by_name}{e.note ? ` · ${e.note}` : ''}
-                      </p>
-                    </div>
-                    <span className="badge badge-warning">{money(e.amount)}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-
-          {/* MOVEMENTS TAB */}
-          {tab === 'movements' && (
-            <div className="card" style={{ padding: 0 }}>
-              {data.movement_history.length === 0 && (
-                <p style={{ textAlign: 'center', padding: '24px' }}>No movements in this range.</p>
-              )}
-              {data.movement_history.map((m) => (
-                <div key={m.id} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '14px 18px', borderBottom: '1px solid var(--border)',
-                }}>
-                  <div>
-                    <strong>{m.quantity} × {m.cylinder_type_name} ({m.status})</strong>
-                    <p style={{ fontSize: '0.82rem', marginTop: '2px' }}>
-                      {m.from_location_name} → {m.to_location_name} · {fmtDateTime(m.created_at)}
-                    </p>
-                  </div>
-                  <span className="badge">{m.moved_by_name}</span>
                 </div>
               ))}
             </div>

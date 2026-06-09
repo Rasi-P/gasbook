@@ -32,6 +32,7 @@ type Sale = {
   location_name: string;
   delivery_type: string;
   items: SaleItem[];
+  payments?: { amount: number; mode: string }[];
 };
 
 type Payment = {
@@ -41,6 +42,7 @@ type Payment = {
   payment_mode: string;
   note: string;
   empty_collected: number;
+  sale: number | null;
 };
 
 type Ledger = {
@@ -98,6 +100,7 @@ export default function Customers() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentMode, setPaymentMode] = useState('cash');
+  const [paymentSplit, setPaymentSplit] = useState({ cash: '', gpay: '', bank: '' });
   const [paymentSaving, setPaymentSaving] = useState(false);
 
   // ── helpers ──────────────────────────────────────────────────────────────
@@ -232,15 +235,22 @@ export default function Customers() {
     if (!selected) return;
     setPaymentSaving(true);
     try {
-      await api.post('/payments/', {
-        customer: selected.customer.id,
-        amount: Number(paymentAmount),
-        payment_mode: paymentMode,
-        note: 'Balance clearance',
-      });
+      if (paymentMode === 'split') {
+        if (Number(paymentSplit.cash) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.cash), payment_mode: 'cash', note: 'Balance clearance' });
+        if (Number(paymentSplit.gpay) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.gpay), payment_mode: 'gpay', note: 'Balance clearance' });
+        if (Number(paymentSplit.bank) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.bank), payment_mode: 'bank', note: 'Balance clearance' });
+      } else {
+        await api.post('/payments/', {
+          customer: selected.customer.id,
+          amount: Number(paymentAmount),
+          payment_mode: paymentMode,
+          note: 'Balance clearance',
+        });
+      }
       setShowPaymentModal(false);
       setPaymentAmount('');
       setPaymentMode('cash');
+      setPaymentSplit({ cash: '', gpay: '', bank: '' });
       openLedger(selected.customer.id);
       fetchCustomers();
     } catch {
@@ -255,13 +265,31 @@ export default function Customers() {
   if (selected) {
     const { customer, sales, payments } = selected;
 
+    type PaymentGroup = { payments: Payment[]; total: number; date: string; note: string; empties: number };
     type Entry =
       | { kind: 'sale'; date: string; sale: Sale }
-      | { kind: 'payment'; date: string; payment: Payment };
+      | { kind: 'payment_group'; date: string; group: PaymentGroup };
+
+    // Hide payments linked to a sale — the sale row already shows payment breakdown
+    const standalonePayments = payments.filter((p) => !p.sale);
+
+    // Group payments that happened at the same time with the same note
+    const groupMap = new Map<string, PaymentGroup>();
+    for (const p of standalonePayments) {
+      const key = `${p.created_at.slice(0, 16)}_${p.note}`;
+      const existing = groupMap.get(key);
+      if (existing) {
+        existing.payments.push(p);
+        existing.total += Number(p.amount);
+        existing.empties += p.empty_collected || 0;
+      } else {
+        groupMap.set(key, { payments: [p], total: Number(p.amount), date: p.created_at, note: p.note, empties: p.empty_collected || 0 });
+      }
+    }
 
     const timeline: Entry[] = [
       ...sales.map((s) => ({ kind: 'sale' as const, date: s.created_at, sale: s })),
-      ...payments.map((p) => ({ kind: 'payment' as const, date: p.created_at, payment: p })),
+      ...[...groupMap.values()].map((g) => ({ kind: 'payment_group' as const, date: g.date, group: g })),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return (
@@ -368,14 +396,14 @@ export default function Customers() {
                 </button>
               </div>
               <form onSubmit={handleReceivePayment} className="form-stack">
-                <label>
+                <label style={{ display: paymentMode === 'split' ? 'none' : 'block' }}>
                   <span>Amount Received (Rs.)</span>
                   <input 
                     type="number" 
                     step="0.01" 
                     min="1" 
                     max={customer.pending_balance} 
-                    required 
+                    required={paymentMode !== 'split'} 
                     value={paymentAmount} 
                     onChange={e => setPaymentAmount(e.target.value)} 
                     autoFocus 
@@ -387,8 +415,29 @@ export default function Customers() {
                     <option value="cash">Cash</option>
                     <option value="bank">Bank Transfer</option>
                     <option value="gpay">GPay</option>
+                    <option value="split">Split Payment</option>
                   </select>
                 </label>
+                {paymentMode === 'split' && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
+                    <label>
+                      <span>Cash</span>
+                      <input type="number" min="0" value={paymentSplit.cash} onChange={e => setPaymentSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
+                    </label>
+                    <label>
+                      <span>GPay</span>
+                      <input type="number" min="0" value={paymentSplit.gpay} onChange={e => setPaymentSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Bank</span>
+                      <input type="number" min="0" value={paymentSplit.bank} onChange={e => setPaymentSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
+                    </label>
+                    <label>
+                      <span>Credit Remaining</span>
+                      <input type="number" disabled value={Math.max(0, customer.pending_balance - (Number(paymentSplit.cash || 0) + Number(paymentSplit.gpay || 0) + Number(paymentSplit.bank || 0)))} style={{ background: 'var(--surface-muted)', color: 'var(--danger)' }} />
+                    </label>
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
                   <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setShowPaymentModal(false)}>Cancel</button>
                   <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={paymentSaving}>
@@ -406,25 +455,30 @@ export default function Customers() {
           {timeline.length === 0 && <p style={{ textAlign: 'center', padding: '24px' }}>No transactions yet.</p>}
           <div className="ledger-list">
             {timeline.map((entry) => {
-              if (entry.kind === 'payment') {
-                const p = entry.payment;
+              if (entry.kind === 'payment_group') {
+                const g = entry.group;
+                const isSplit = g.payments.length > 1;
                 return (
-                  <div className="ledger-row" key={`pay-${p.id}`}>
+                  <div className="ledger-row" key={`payg-${g.payments[0].id}`}>
                     <div>
                       <strong style={{ color: 'var(--success)' }}>Payment Received</strong>
                       <p>
-                        {fmtDate(p.created_at)} · {p.payment_mode.toUpperCase()}
-                        {p.empty_collected > 0 && ` · ${p.empty_collected} empty cylinder${p.empty_collected > 1 ? 's' : ''} collected`}
-                        {p.note ? ` · ${p.note}` : ''}
+                        {fmtDate(g.date)}
+                        {isSplit
+                          ? ` · ${g.payments.map(p => `${p.payment_mode.toUpperCase()} ${p.amount}`).join(' + ')}`
+                          : ` · ${g.payments[0].payment_mode.toUpperCase()}`
+                        }
+                        {g.empties > 0 && ` · ${g.empties} empty cylinder${g.empties > 1 ? 's' : ''} collected`}
+                        {g.note ? ` · ${g.note}` : ''}
                       </p>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <span className="badge badge-success">{money(p.amount)}</span>
-                      {p.empty_collected > 0 && (
+                      <span className="badge badge-success">{money(g.total)}</span>
+                      {g.empties > 0 && (
                         <div style={{ marginTop: '4px' }}>
                           <span className="badge" style={{ background: 'var(--success-soft)', color: 'var(--success)' }}>
                             <RotateCcw size={11} style={{ display: 'inline', marginRight: '3px' }} />
-                            {p.empty_collected} empty back
+                            {g.empties} empty back
                           </span>
                         </div>
                       )}
@@ -443,12 +497,19 @@ export default function Customers() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
                     <div>
                       <strong>{isPureReturn ? `Empty Return #${s.id}` : `Sale #${s.id}`}</strong>
-                      <p>{fmtDate(s.created_at)} · {s.location_name} · {s.payment_mode.toUpperCase()}</p>
+                      <p>
+                        {fmtDate(s.created_at)} · {s.location_name} · {s.payment_mode.toUpperCase()}
+                        {(s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0 && (
+                          <span style={{ marginLeft: '6px', opacity: 0.8 }}>
+                            ({s.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')})
+                          </span>
+                        )}
+                      </p>
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div style={{ fontWeight: 700 }}>{isPureReturn ? '' : money(s.total_amount)}</div>
                       {Number(s.balance_due) > 0
-                        ? <span className="badge badge-warning">Due {money(s.balance_due)}</span>
+                        ? <span className="badge badge-warning">On Credit {money(s.balance_due)}</span>
                         : <span className="badge badge-success">{isPureReturn ? 'Recorded' : 'Paid'}</span>}
                     </div>
                   </div>
