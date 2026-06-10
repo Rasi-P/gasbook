@@ -328,62 +328,53 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     def get_pending_balance(self, obj):
         return self.get_pending_amount(obj)
 
-    def get_empties_owed(self, obj):
+    def _calculate_cylinder_balances(self, obj):
         balances = {}
         custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in obj.custom_rates.all()}
-        for sale in obj.sales.prefetch_related('items__cylinder_type'):
+        
+        for sale in obj.sales.prefetch_related('items__cylinder_type').order_by('created_at'):
             for item in sale.items.all():
                 tid = item.cylinder_type_id
+                tname = item.cylinder_type.name
                 if tid not in balances:
-                    balances[tid] = {"refills_given": 0, "returned": 0}
+                    balances[tid] = {"owed": 0, "credits": 0, "name": tname}
                 
+                # Step 1: Process returned empties
+                returned_qty = item.empty_returned
+                balances[tid]["owed"] -= returned_qty
+                if balances[tid]["owed"] < 0:
+                    balances[tid]["credits"] += abs(balances[tid]["owed"])
+                    balances[tid]["owed"] = 0
+                
+                # Step 2: Process taken cylinders
+                taken_qty = item.quantity
+                balances[tid]["owed"] += taken_qty
+                
+                # Step 3: Consume credits if they got the discounted refill rate
                 refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
                 threshold = (item.cylinder_type.selling_price + refill_rate) / 2
                 
-                if item.rate <= threshold:
-                    balances[tid]["refills_given"] += item.quantity
-                else:
-                    balances[tid]["refills_given"] += min(item.quantity, item.empty_returned)
-                    
-                balances[tid]["returned"] += item.empty_returned
+                if item.rate <= threshold and taken_qty > 0:
+                    credits_needed = max(0, taken_qty - returned_qty)
+                    balances[tid]["credits"] -= credits_needed
+                    if balances[tid]["credits"] < 0:
+                        balances[tid]["credits"] = 0
+                        
+        return balances
 
-        # Calculate total debt across all cylinder types
-        total_owed = 0
-        for data in balances.values():
-            debt = data["refills_given"] - data["returned"]
-            if debt > 0:
-                total_owed += debt
-                
-        return total_owed
+    def get_empties_owed(self, obj):
+        balances = self._calculate_cylinder_balances(obj)
+        return sum(data["owed"] for data in balances.values())
 
     def get_sales_count(self, obj):
         return obj.sales.count()
 
     def get_empty_credits(self, obj):
-        credits = {}
-        custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in obj.custom_rates.all()}
-        for sale in obj.sales.prefetch_related('items__cylinder_type'):
-            for item in sale.items.all():
-                tid = item.cylinder_type_id
-                tname = item.cylinder_type.name
-                if tid not in credits:
-                    credits[tid] = {"refills_given": 0, "returned": 0, "name": tname}
-                
-                refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
-                threshold = (item.cylinder_type.selling_price + refill_rate) / 2
-                
-                if item.rate <= threshold:
-                    credits[tid]["refills_given"] += item.quantity
-                else:
-                    credits[tid]["refills_given"] += min(item.quantity, item.empty_returned)
-                    
-                credits[tid]["returned"] += item.empty_returned
-        
+        balances = self._calculate_cylinder_balances(obj)
         final_credits = {}
-        for tid, data in credits.items():
-            credit = data["returned"] - data["refills_given"]
-            if credit > 0:
-                final_credits[tid] = {"credit": credit, "name": data["name"]}
+        for tid, data in balances.items():
+            if data["credits"] > 0:
+                final_credits[tid] = {"credit": data["credits"], "name": data["name"]}
         return final_credits
 
     def get_last_delivery_date(self, obj):
