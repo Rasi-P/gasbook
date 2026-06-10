@@ -19,6 +19,7 @@ type Movement = {
   moved_by_name: string;
   created_at: string;
   note: string;
+  supplier_pending_after?: number | null;
 };
 
 function AppSelect<T extends string | number>({
@@ -119,15 +120,23 @@ export default function Stock() {
   const [loadErr, setLoadErr] = useState('');
   const [loadSaving, setLoadSaving] = useState(false);
 
-  // ── Refuel form ──────────────────────────────────────────────────────────
-  const [refuelItems, setRefuelItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '' }]);
-  const [refuelFromLoc, setRefuelFromLoc] = useState(0);  // where empties currently are
-  const [refuelReceiveLoc, setRefuelReceiveLoc] = useState(0); // where to receive filled
-  const [refuelStep, setRefuelStep] = useState<'idle' | 'sent' | 'done'>('idle');
-  const [refuelMsg, setRefuelMsg] = useState('');
-  const [refuelErr, setRefuelErr] = useState('');
-  const [refuelSaving, setRefuelSaving] = useState(false);
-  const [refuelSentItems, setRefuelSentItems] = useState<RefuelItem[]>([]); // remember what was sent for step 2
+  // ── Refuel forms ──────────────────────────────────────────────────────────
+  const [refuelSendItems, setRefuelSendItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '' }]);
+  const [refuelSendLoc, setRefuelSendLoc] = useState(0);
+  const [refuelSendNote, setRefuelSendNote] = useState('');
+  const [refuelSendMsg, setRefuelSendMsg] = useState('');
+  const [refuelSendErr, setRefuelSendErr] = useState('');
+  const [refuelSendSaving, setRefuelSendSaving] = useState(false);
+
+  const [refuelRecvItems, setRefuelRecvItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '' }]);
+  const [refuelRecvLoc, setRefuelRecvLoc] = useState(0);
+  const [refuelRecvNote, setRefuelRecvNote] = useState('');
+  const [refuelRecvMsg, setRefuelRecvMsg] = useState('');
+  const [refuelRecvErr, setRefuelRecvErr] = useState('');
+  const [refuelRecvSaving, setRefuelRecvSaving] = useState(false);
+
+  const [justSentItems, setJustSentItems] = useState<RefuelItem[] | null>(null);
+  const [supplierPending, setSupplierPending] = useState<{cylinder_type_id: number, cylinder_type_name: string, pending: number}[]>([]);
 
   // ── Stock data (for showing available empties) ──────────────────────────
   const [stockData, setStockData] = useState<StockRow[]>([]);
@@ -141,6 +150,12 @@ export default function Stock() {
       .catch(() => undefined);
   }, []);
 
+  const fetchSupplierPending = useCallback(() => {
+    api.get('/movements/supplier_pending/')
+      .then(r => setSupplierPending(r.data))
+      .catch(() => undefined);
+  }, []);
+
   // Fetch stock data on mount and whenever tab/selections change
   useEffect(() => {
     fetchStock();
@@ -148,11 +163,13 @@ export default function Stock() {
 
   useEffect(() => {
     if (activeTab === 'refuel' || activeTab === 'movement' || activeTab === 'new_load') fetchStock();
-  }, [activeTab, refuelFromLoc, fromLocation, fetchStock]);
+    if (activeTab === 'refuel') fetchSupplierPending();
+  }, [activeTab, refuelSendLoc, fromLocation, fetchStock, fetchSupplierPending]);
 
   // ── History ──────────────────────────────────────────────────────────────
   const [movements, setMovements] = useState<Movement[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'new_load' | 'refuel_sent' | 'refuel_received'>('all');
 
   // Derived lists
   const moveLocations = locations.filter((l) => l.code !== 'supplier');
@@ -171,14 +188,15 @@ export default function Stock() {
       setFromLocation(nonSupplier[1]?.id ?? nonSupplier[0].id);
       setToLocation(nonSupplier[0].id);
       setLoadTo(nonSupplier[1]?.id ?? nonSupplier[0].id);
-      setRefuelFromLoc(nonSupplier[0].id);
-      setRefuelReceiveLoc(nonSupplier[0].id);
+      setRefuelSendLoc(nonSupplier[0].id);
+      setRefuelRecvLoc(nonSupplier[0].id);
     }
     if (cylinderTypes.length > 0) {
       const defaultId = cylinderTypes[0].id;
       setMoveItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
       setLoadItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-      setRefuelItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
+      setRefuelSendItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
+      setRefuelRecvItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
     }
   }, [locations, cylinderTypes]);
 
@@ -269,27 +287,26 @@ export default function Stock() {
     }
   }
 
-  // Step 1 of Refuel: send empties to supplier (multiple types)
+  // Refuel: Send Empties
   async function handleRefuelSend(e: FormEvent) {
     e.preventDefault();
-    setRefuelMsg(''); setRefuelErr(''); setRefuelSaving(true);
+    setRefuelSendMsg(''); setRefuelSendErr(''); setRefuelSendSaving(true);
     try {
       const supplier = locations.find((l) => l.code === 'supplier');
-      if (!supplier) { setRefuelErr('Supplier location not found.'); return; }
-      const fromName = locations.find((l) => l.id === refuelFromLoc)?.name ?? '';
+      if (!supplier) { setRefuelSendErr('Supplier location not found.'); return; }
+      const fromName = locations.find((l) => l.id === refuelSendLoc)?.name ?? '';
 
-      const validItems = refuelItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
-      if (validItems.length === 0) { setRefuelErr('Add at least one cylinder type with quantity.'); return; }
+      const validItems = refuelSendItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
+      if (validItems.length === 0) { setRefuelSendErr('Add at least one cylinder type with quantity.'); return; }
 
-      // Send all items sequentially
       for (const item of validItems) {
         await api.post('/movements/', {
           cylinder_type: item.cylinder_type,
-          from_location: refuelFromLoc,
+          from_location: refuelSendLoc,
           to_location: supplier.id,
           status: 'empty',
-          quantity: Number(item.quantity),
-          note: 'Sent for refilling',
+          quantity: parseInt(item.quantity, 10),
+          note: 'Sent for refilling' + (refuelSendNote ? ` - ${refuelSendNote}` : '')
         });
       }
 
@@ -298,64 +315,97 @@ export default function Stock() {
         return `${item.quantity}× ${name}`;
       }).join(', ');
 
-      setRefuelMsg(`✓ Sent ${summary} empty cylinders from ${fromName} to supplier for refilling.`);
-      setRefuelSentItems(validItems);
-      setRefuelStep('sent');
+      setRefuelSendMsg(`✓ Sent ${summary} empty cylinders from ${fromName} to supplier.`);
+      setRefuelSendItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }]);
+      setRefuelSendNote('');
+      setJustSentItems(validItems);
       fetchStock();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setRefuelErr(msg ? JSON.stringify(msg) : 'Failed. Check stock levels.');
+      fetchSupplierPending();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setRefuelSendErr(detail || 'Failed. Check stock levels.');
     } finally {
-      setRefuelSaving(false);
+      setRefuelSendSaving(false);
     }
   }
 
-  // Step 2 of Refuel: receive filled cylinders back (multiple types)
-  async function handleRefuelReceive(e: FormEvent) {
-    e.preventDefault();
-    setRefuelErr(''); setRefuelSaving(true);
+  async function handleQuickReceive(items: RefuelItem[]) {
+    setRefuelRecvMsg(''); setRefuelRecvErr(''); setRefuelRecvSaving(true);
     try {
       const supplier = locations.find((l) => l.code === 'supplier');
-      if (!supplier) { setRefuelErr('Supplier location not found.'); return; }
-      const toLoc = locations.find((l) => l.id === refuelReceiveLoc)?.name ?? '';
+      if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
+      const toName = locations.find((l) => l.id === refuelRecvLoc)?.name ?? '';
 
-      const validItems = refuelSentItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
-
-      for (const item of validItems) {
+      for (const item of items) {
         await api.post('/movements/', {
           cylinder_type: item.cylinder_type,
           from_location: supplier.id,
-          to_location: refuelReceiveLoc,
+          to_location: refuelRecvLoc,
           status: 'filled',
           quantity: Number(item.quantity),
           note: 'Received refilled cylinders',
         });
       }
 
+      setRefuelRecvMsg(`✓ Quick received refilled cylinders at ${toName}.`);
+      setJustSentItems(null);
+      fetchStock();
+      fetchSupplierPending();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setRefuelRecvErr(detail || 'Failed to record received stock.');
+    } finally {
+      setRefuelRecvSaving(false);
+    }
+  }
+
+  // Refuel: Receive Filled
+  async function handleRefuelReceive(e: FormEvent) {
+    e.preventDefault();
+    setRefuelRecvMsg(''); setRefuelRecvErr(''); setRefuelRecvSaving(true);
+    try {
+      const supplier = locations.find((l) => l.code === 'supplier');
+      if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
+      const toName = locations.find((l) => l.id === refuelRecvLoc)?.name ?? '';
+
+      const validItems = refuelRecvItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
+      if (validItems.length === 0) { setRefuelRecvErr('Add at least one cylinder type with quantity.'); return; }
+
+      for (const item of validItems) {
+        await api.post('/movements/', {
+          cylinder_type: item.cylinder_type,
+          from_location: supplier.id,
+          to_location: refuelRecvLoc,
+          status: 'filled',
+          quantity: parseInt(item.quantity, 10),
+          note: 'Received refilled cylinders' + (refuelRecvNote ? ` - ${refuelRecvNote}` : '')
+        });
+      }
+
       const summary = validItems.map(item => {
         const name = cylinderTypes.find(c => c.id === item.cylinder_type)?.name ?? '';
         return `${item.quantity}× ${name}`;
       }).join(', ');
 
-      setRefuelMsg(`✓ All done! ${summary} filled cylinders received at ${toLoc}.`);
-      setRefuelStep('done');
+      setRefuelRecvMsg(`✓ Received ${summary} refilled cylinders at ${toName}.`);
+      setRefuelRecvItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }]);
+      setRefuelRecvNote('');
+      setJustSentItems(null);
       fetchStock();
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setRefuelErr(msg ? JSON.stringify(msg) : 'Failed to record received stock.');
+      fetchSupplierPending();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      setRefuelRecvErr(detail || 'Failed to record received stock.');
     } finally {
-      setRefuelSaving(false);
+      setRefuelRecvSaving(false);
     }
   }
 
-  function resetRefuel() {
-    setRefuelStep('idle');
-    setRefuelMsg(''); setRefuelErr('');
-    setRefuelItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }]);
-    setRefuelSentItems([]);
-  }
-
   const filtered = movements.filter((m) => {
+    if (historyFilter === 'new_load' && m.note !== 'New supplier load') return false;
+    if (historyFilter === 'refuel_sent' && !m.note.startsWith('Sent for refilling')) return false;
+    if (historyFilter === 'refuel_received' && !m.note.startsWith('Received refilled cylinders')) return false;
+
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -577,211 +627,273 @@ export default function Stock() {
 
       {/* ── Refuel ── */}
       {activeTab === 'refuel' && (
-        <div className="form-stack">
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+          
+          {/* Send Empties */}
+          <div className="card form-card">
+            <h2 style={{ marginBottom: '4px' }}>Send Empties</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
+              Send empty cylinders to the supplier for refilling.
+            </p>
+            <form onSubmit={handleRefuelSend} className="form-stack">
+              <label>
+                <span>From Location</span>
+                <AppSelect ariaLabel="From location" value={refuelSendLoc} options={moveLocationOptions} onChange={setRefuelSendLoc} />
+              </label>
 
-          {/* Progress indicator */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginBottom: '8px' }}>
-            {[
-              { step: 'idle', label: '1. Send Empties', done: refuelStep !== 'idle' },
-              { step: 'sent', label: '2. Receive Filled', done: refuelStep === 'done' },
-            ].map((s, i) => (
-              <div key={s.step} style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
-                <div style={{
-                  flex: 1,
-                  padding: '10px 14px',
-                  borderRadius: i === 0 ? '8px 0 0 8px' : '0 8px 8px 0',
-                  background: s.done ? 'var(--success)' : (refuelStep === s.step || (s.step === 'idle' && refuelStep === 'idle')) ? 'var(--primary)' : 'var(--border)',
-                  color: s.done || refuelStep === s.step || (s.step === 'idle' && refuelStep === 'idle') ? 'white' : 'var(--text-muted)',
-                  fontWeight: 700, fontSize: '0.88rem', textAlign: 'center' as const,
-                  transition: 'all 0.2s',
-                }}>
-                  {s.done ? '✓ ' : ''}{s.label}
-                </div>
-                {i === 0 && <ArrowRight size={18} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {refuelSendItems.map((item, idx) => {
+                  const emptyStock = stockData.find(
+                    (s) => s.cylinder_type === item.cylinder_type && s.location === refuelSendLoc && s.status === 'empty'
+                  );
+                  const available = emptyStock?.quantity ?? 0;
+                  return (
+                    <div key={idx} style={{
+                      display: 'flex', gap: '10px', alignItems: 'flex-end',
+                      padding: '10px', borderRadius: '10px',
+                      background: 'var(--surface-muted)', border: '1px solid var(--border)',
+                    }}>
+                      <label style={{ flex: 1, minWidth: 0 }}>
+                        {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
+                        <AppSelect
+                          ariaLabel="Cylinder type"
+                          value={item.cylinder_type}
+                          options={cylinderOptions}
+                          onChange={(v) => setRefuelSendItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
+                        />
+                      </label>
+                      <label style={{ flex: 0.6, minWidth: '70px' }}>
+                        {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
+                        <input
+                          type="number" min="1" placeholder="0"
+                          value={item.quantity}
+                          onChange={(e) => setRefuelSendItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
+                          style={{ textAlign: 'center' }}
+                        />
+                      </label>
+                      <div style={{
+                        flex: '0 0 auto', minWidth: '60px',
+                        padding: '8px', borderRadius: '8px', textAlign: 'center',
+                        fontSize: '0.75rem', fontWeight: 700, marginBottom: '2px',
+                        background: available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
+                        color: available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
+                      }}>
+                        📦 {available}
+                      </div>
+                      {refuelSendItems.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setRefuelSendItems(prev => prev.filter((_, i) => i !== idx))}
+                          style={{ background: 'none', border: 'none', color: 'var(--danger, #ef4444)', cursor: 'pointer', padding: '6px', marginBottom: '2px' }}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            ))}
+
+              <button
+                type="button"
+                onClick={() => setRefuelSendItems(prev => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }])}
+                className="btn btn-secondary"
+                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
+              >
+                <Plus size={16} /> Add
+              </button>
+
+              <div style={{ marginTop: '16px' }}>
+                <label>Reference Note (Optional)</label>
+                <input 
+                  type="text" 
+                  value={refuelSendNote} 
+                  onChange={e => setRefuelSendNote(e.target.value)} 
+                  placeholder="e.g. Sent via Driver John" 
+                />
+              </div>
+
+              {refuelSendErr && <div className="error-text" style={{ marginTop: '16px' }}>{refuelSendErr}</div>}
+              {refuelSendMsg && <p className="form-note">{refuelSendMsg}</p>}
+              <button type="submit" className="btn btn-primary" style={{ background: 'var(--warning)', color: 'black' }} disabled={refuelSendSaving}>
+                <ArrowRight size={18} /> {refuelSendSaving ? 'Sending…' : `Send to Supplier`}
+              </button>
+            </form>
           </div>
 
-          {/* Step 1 — Send empties (multi-row) */}
-          {refuelStep === 'idle' && (
-            <div className="card">
-              <h2 style={{ marginBottom: '4px' }}>Step 1 — Send Empty Cylinders</h2>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
-                Record the empty cylinders leaving your location to the supplier for refilling.
-              </p>
-              <form onSubmit={handleRefuelSend} className="form-stack">
-                <label>
-                  <span>From Location</span>
-                  <AppSelect ariaLabel="From location" value={refuelFromLoc} options={moveLocationOptions} onChange={setRefuelFromLoc} />
-                </label>
+          {/* Receive Refilled */}
+          <div className="card form-card">
+            <h2 style={{ marginBottom: '4px' }}>Receive Refilled</h2>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
+              Record refilled cylinders arriving from the supplier.
+            </p>
 
-                {/* Multi-row items */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {refuelItems.map((item, idx) => {
-                    const emptyStock = stockData.find(
-                      (s) => s.cylinder_type === item.cylinder_type && s.location === refuelFromLoc && s.status === 'empty'
-                    );
-                    const available = emptyStock?.quantity ?? 0;
-                    return (
-                      <div key={idx} style={{
-                        display: 'flex', gap: '10px', alignItems: 'flex-end',
-                        padding: '14px', borderRadius: '10px',
-                        background: 'var(--surface-muted)', border: '1px solid var(--border)',
-                      }}>
-                        <label style={{ flex: 1, minWidth: 0 }}>
-                          {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
-                          <AppSelect
-                            ariaLabel="Cylinder type"
-                            value={item.cylinder_type}
-                            options={cylinderOptions}
-                            onChange={(v) => setRefuelItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
-                          />
-                        </label>
-                        <label style={{ flex: 0.6, minWidth: '90px' }}>
-                          {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
-                          <input
-                            type="number" min="1" placeholder="0"
-                            value={item.quantity}
-                            onChange={(e) => setRefuelItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
-                            style={{ textAlign: 'center' }}
-                          />
-                        </label>
-                        <div style={{
-                          flex: '0 0 auto', minWidth: '80px',
-                          padding: '8px 10px', borderRadius: '8px', textAlign: 'center',
-                          fontSize: '0.8rem', fontWeight: 700, marginBottom: '2px',
-                          background: available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
-                          color: available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
-                        }}>
-                          {available > 0 ? `📦 ${available} avail` : '⚠️ 0'}
-                        </div>
-                        {refuelItems.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => setRefuelItems(prev => prev.filter((_, i) => i !== idx))}
-                            style={{
-                              background: 'none', border: 'none', color: 'var(--danger, #ef4444)',
-                              cursor: 'pointer', padding: '6px', marginBottom: '2px',
-                            }}
-                            title="Remove"
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setRefuelItems(prev => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }])}
-                  className="btn btn-secondary"
-                  style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-                >
-                  <Plus size={16} /> Add Cylinder Type
-                </button>
-
-                {refuelErr && <p className="form-error">{refuelErr}</p>}
-                <button type="submit" className="btn btn-primary" disabled={refuelSaving}>
-                  <ArrowRight size={18} /> {refuelSaving ? 'Sending…' : `Send ${refuelItems.filter(i => Number(i.quantity) > 0).length} type(s) to Supplier →`}
-                </button>
-              </form>
-            </div>
-          )}
-
-          {/* Step 1 done — success banner + Step 2 */}
-          {refuelStep === 'sent' && (
-            <>
-              <div style={{
-                background: 'var(--success-soft, #d1fae5)', border: '1px solid var(--success)',
-                borderRadius: '8px', padding: '14px 18px', color: 'var(--success)', fontWeight: 600,
-              }}>
-                {refuelMsg}
+            {supplierPending.length > 0 && (
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>Pending from Supplier:</span>
+                {supplierPending.map((p, i) => (
+                  <span key={i} className="badge" style={{ background: 'var(--warning-soft, #fef3c7)', color: 'var(--warning, #d97706)', border: '1px solid var(--warning)' }}>
+                    {p.pending}× {p.cylinder_type_name}
+                  </span>
+                ))}
               </div>
+            )}
+            {supplierPending.length === 0 && (
+              <div style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--success)' }}>
+                ✓ No pending refuels from supplier.
+              </div>
+            )}
 
-              <div className="card">
-                <h2 style={{ marginBottom: '4px' }}>Step 2 — Receive Refilled Cylinders</h2>
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
-                  When the supplier returns the refilled cylinders, record them arriving. You can do this now or later.
+            {justSentItems && (
+              <div style={{ background: 'var(--primary-soft, #e0e7ff)', padding: '16px', borderRadius: '10px', marginBottom: '16px', border: '1px solid var(--primary)' }}>
+                <h3 style={{ margin: '0 0 8px 0', color: 'var(--primary)', fontSize: '0.95rem' }}>Receive them back immediately?</h3>
+                <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem' }}>
+                  You just sent {justSentItems.map(i => `${i.quantity}× ${cylinderTypes.find(c => c.id === i.cylinder_type)?.name}`).join(', ')}.
                 </p>
-
-                {/* Show what was sent as a summary */}
-                <div style={{
-                  display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '16px',
-                }}>
-                  {refuelSentItems.map((item, idx) => {
-                    const name = cylinderTypes.find(c => c.id === item.cylinder_type)?.name ?? '';
-                    return (
-                      <div key={idx} style={{
-                        padding: '8px 14px', borderRadius: '8px',
-                        background: 'var(--primary-soft, #e0e7ff)',
-                        color: 'var(--primary)', fontWeight: 700, fontSize: '0.88rem',
-                      }}>
-                        {item.quantity}× {name}
-                      </div>
-                    );
-                  })}
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button type="button" className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '0.85rem', background: '#0284c7' }} onClick={() => handleQuickReceive(justSentItems)} disabled={refuelRecvSaving}>
+                    <Check size={16} /> Yes, Receive All Now
+                  </button>
+                  <button type="button" className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '0.85rem' }} onClick={() => setJustSentItems(null)}>
+                    Record Later
+                  </button>
                 </div>
-
-                <form onSubmit={handleRefuelReceive} className="form-stack">
-                  <label>
-                    <span>Receive Into Location</span>
-                    <AppSelect ariaLabel="Receive location" value={refuelReceiveLoc} options={moveLocationOptions} onChange={setRefuelReceiveLoc} />
-                  </label>
-                  {refuelErr && <p className="form-error">{refuelErr}</p>}
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button type="submit" className="btn btn-primary" style={{ background: 'var(--success)' }} disabled={refuelSaving}>
-                      <Check size={18} /> {refuelSaving ? 'Recording…' : 'Mark All Received ✓'}
-                    </button>
-                    <button type="button" className="btn btn-secondary" onClick={resetRefuel}>
-                      Record Later
-                    </button>
-                  </div>
-                </form>
               </div>
-            </>
-          )}
+            )}
 
-          {/* Done */}
-          {refuelStep === 'done' && (
-            <div className="card" style={{ textAlign: 'center', padding: '40px 24px' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '12px' }}>🔥</div>
-              <h2 style={{ marginBottom: '8px' }}>Refuel Cycle Complete!</h2>
-              <p style={{ color: 'var(--text-muted)', marginBottom: '20px' }}>{refuelMsg}</p>
-              <button className="btn btn-primary" style={{ width: 'auto', margin: '0 auto', padding: '0 24px' }} onClick={resetRefuel}>
-                <Flame size={18} /> Start Another Refuel
+            <form onSubmit={handleRefuelReceive} className="form-stack">
+              <label>
+                <span>Receive Into Location</span>
+                <AppSelect ariaLabel="Receive location" value={refuelRecvLoc} options={moveLocationOptions} onChange={setRefuelRecvLoc} />
+              </label>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {refuelRecvItems.map((item, idx) => (
+                  <div key={idx} style={{
+                    display: 'flex', gap: '10px', alignItems: 'flex-end',
+                    padding: '10px', borderRadius: '10px',
+                    background: 'var(--surface-muted)', border: '1px solid var(--border)',
+                  }}>
+                    <label style={{ flex: 1, minWidth: 0 }}>
+                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
+                      <AppSelect
+                        ariaLabel="Cylinder size"
+                        value={item.cylinder_type}
+                        options={cylinderOptions}
+                        onChange={(v) => setRefuelRecvItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
+                      />
+                    </label>
+                    <label style={{ flex: 0.6, minWidth: '70px' }}>
+                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
+                      <input
+                        type="number" min="1" placeholder="0"
+                        value={item.quantity}
+                        onChange={(e) => setRefuelRecvItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
+                        style={{ textAlign: 'center' }}
+                      />
+                    </label>
+                    {refuelRecvItems.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setRefuelRecvItems(prev => prev.filter((_, i) => i !== idx))}
+                        style={{ background: 'none', border: 'none', color: 'var(--danger, #ef4444)', cursor: 'pointer', padding: '6px', marginBottom: '2px' }}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setRefuelRecvItems(prev => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }])}
+                className="btn btn-secondary"
+                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
+              >
+                <Plus size={16} /> Add
               </button>
-            </div>
-          )}
+
+              <div style={{ marginTop: '16px' }}>
+                <label>Reference Note (Optional)</label>
+                <input 
+                  type="text" 
+                  value={refuelRecvNote} 
+                  onChange={e => setRefuelRecvNote(e.target.value)} 
+                  placeholder="e.g. Received partial from Monday's batch" 
+                />
+              </div>
+
+              {refuelRecvErr && <div className="error-text" style={{ marginTop: '16px' }}>{refuelRecvErr}</div>}
+              {refuelRecvMsg && <p className="form-note">{refuelRecvMsg}</p>}
+              <button type="submit" className="btn btn-primary" style={{ background: '#0284c7' }} disabled={refuelRecvSaving}>
+                <Check size={18} /> {refuelRecvSaving ? 'Recording…' : `Receive from Supplier`}
+              </button>
+            </form>
+          </div>
         </div>
       )}
 
       {/* ── History ── */}
       {activeTab === 'history' && (
         <div className="card">
-          <div style={{ position: 'relative', marginBottom: '16px' }}>
-            <Search size={16} style={{ position: 'absolute', left: '10px', top: '14px', color: 'var(--text-muted)' }} />
-            <input
-              placeholder="Search cylinder, location, staff…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ paddingLeft: '36px' }}
-            />
+          <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <Search size={16} style={{ position: 'absolute', left: '10px', top: '14px', color: 'var(--text-muted)' }} />
+              <input
+                placeholder="Search cylinder, location, staff…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ paddingLeft: '36px' }}
+              />
+            </div>
+            <select
+              value={historyFilter}
+              onChange={(e) => setHistoryFilter(e.target.value as any)}
+              style={{ width: '200px', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)', cursor: 'pointer' }}
+            >
+              <option value="all">All Movements</option>
+              <option value="new_load">New Loads</option>
+              <option value="refuel_sent">Refuel Sent</option>
+              <option value="refuel_received">Refuel Received</option>
+            </select>
           </div>
           <div className="ledger-list">
             {filtered.length === 0 && (
               <p style={{ textAlign: 'center', padding: '24px' }}>No movements found.</p>
             )}
             {filtered.map((m) => (
-              <div className="ledger-row" key={m.id}>
-                <div>
-                  <strong>{m.quantity} × {m.cylinder_type_name}
-                    <span className="badge" style={{ marginLeft: '8px', fontSize: '0.75rem', verticalAlign: 'middle' }}>
+              <div className="ledger-row" key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <strong>{m.quantity} × {m.cylinder_type_name}</strong>
+                    
+                    {/* Beautiful Status Badge */}
+                    <span style={{ 
+                      padding: '2px 8px', 
+                      borderRadius: '12px', 
+                      fontSize: '0.7rem', 
+                      fontWeight: 600, 
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px',
+                      background: m.status === 'filled' ? 'var(--success-soft)' : 'var(--surface)',
+                      color: m.status === 'filled' ? 'var(--success)' : 'var(--text-muted)',
+                      border: `1px solid ${m.status === 'filled' ? 'var(--success)' : 'var(--border)'}`
+                    }}>
                       {m.status}
                     </span>
-                  </strong>
-                  <p>
+                    
+                    {m.note === 'New supplier load' && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--success-soft)', color: 'var(--success)' }}>New Load</span>}
+                    {m.note.startsWith('Sent for refilling') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--warning-soft, #fff7ed)', color: 'var(--warning, #c2410c)', border: '1px solid var(--warning)' }}>🔥 Refuel Sent</span>}
+                    {m.note.startsWith('Received refilled cylinders') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--info-soft, #eff6ff)', color: 'var(--info, #1d4ed8)', border: '1px solid var(--info)' }}>🔥 Refuel Received</span>}
+                    
+                    {m.supplier_pending_after !== undefined && m.supplier_pending_after !== null && (
+                      <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+                        <strong style={{ marginRight: '4px', color: m.supplier_pending_after > 0 ? 'var(--warning, #d97706)' : 'var(--success)' }}>{m.supplier_pending_after}</strong>owed
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ marginTop: '8px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
                     {m.from_location_name} → {m.to_location_name}
                     {m.note ? ` · ${m.note}` : ''}
                     {' · '}{new Date(m.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}

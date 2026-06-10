@@ -102,6 +102,65 @@ class StockMovementViewSet(viewsets.ModelViewSet):
     serializer_class = StockMovementSerializer
     permission_classes = [IsStaffOrAdmin]
 
+    def create(self, request, *args, **kwargs):
+        note = request.data.get("note", "")
+        if note.startswith("Received refilled cylinders"):
+            supplier_id = request.data.get("from_location")
+            cylinder_type_id = request.data.get("cylinder_type")
+            try:
+                qty = float(request.data.get("quantity", 0))
+            except ValueError:
+                qty = 0
+
+            # Calculate pending balance
+            supplier_movements = StockMovement.objects.filter(
+                Q(from_location_id=supplier_id) | Q(to_location_id=supplier_id),
+                cylinder_type_id=cylinder_type_id
+            ).order_by("created_at")
+            
+            pending = 0
+            for m in supplier_movements:
+                is_to = (m.to_location_id == int(supplier_id))
+                is_from = (m.from_location_id == int(supplier_id))
+                if is_to and m.status == "empty":
+                    pending += m.quantity
+                elif is_from and m.status == "filled" and m.note != "New supplier load":
+                    pending = max(0, pending - m.quantity)
+                    
+            if qty > pending:
+                return Response(
+                    {"detail": f"Cannot receive {int(qty)}. The supplier only owes you {int(pending)} of this cylinder type."}, 
+                    status=drf_status.HTTP_400_BAD_REQUEST
+                )
+
+        return super().create(request, *args, **kwargs)
+
+    @action(detail=False, methods=["get"])
+    def supplier_pending(self, request):
+        supplier_movements = StockMovement.objects.filter(
+            Q(from_location__code="supplier") | Q(to_location__code="supplier") | 
+            Q(from_location__is_main_supplier=True) | Q(to_location__is_main_supplier=True)
+        ).order_by("created_at")
+        
+        pending_balances = []
+        for cylinder in CylinderType.objects.filter(is_active=True):
+            movements = supplier_movements.filter(cylinder_type=cylinder)
+            pending = 0
+            for m in movements:
+                is_to_supplier = (m.to_location.code == "supplier" or m.to_location.is_main_supplier)
+                is_from_supplier = (m.from_location.code == "supplier" or m.from_location.is_main_supplier)
+                if is_to_supplier and m.status == "empty":
+                    pending += m.quantity
+                elif is_from_supplier and m.status == "filled" and m.note != "New supplier load":
+                    pending = max(0, pending - m.quantity)
+            if pending > 0:
+                pending_balances.append({
+                    "cylinder_type_id": cylinder.id,
+                    "cylinder_type_name": cylinder.name,
+                    "pending": pending
+                })
+        return Response(pending_balances)
+
 
 class CustomerProfileViewSet(viewsets.ModelViewSet):
     queryset = CustomerProfile.objects.select_related("user", "default_staff").prefetch_related("custom_rates", "sales", "payments")
@@ -964,12 +1023,46 @@ def reports(request):
             "total": (cstocks.aggregate(t=Sum("quantity"))["t"] or 0) + with_customers,
         })
 
-    range_loads = range_movements.filter(Q(from_location__code="supplier") | Q(from_location__is_main_supplier=True))
+    range_loads = range_movements.filter(
+        Q(from_location__code="supplier") | Q(from_location__is_main_supplier=True),
+        status="filled"
+    ).exclude(note="Received refilled cylinders")
     load_summary = (
         range_loads.values("cylinder_type__name", "to_location__name")
         .annotate(total_qty=Sum("quantity"))
         .order_by("cylinder_type__name")
     )
+    
+    supplier_balance = []
+    supplier_movements = StockMovement.objects.filter(
+        Q(from_location__code="supplier") | Q(to_location__code="supplier") | 
+        Q(from_location__is_main_supplier=True) | Q(to_location__is_main_supplier=True)
+    ).order_by("created_at")
+    
+    for cylinder in CylinderType.objects.filter(is_active=True):
+        movements = supplier_movements.filter(cylinder_type=cylinder)
+        sent_total = 0
+        received_total = 0
+        pending = 0
+        
+        for m in movements:
+            is_to_supplier = (m.to_location.code == "supplier" or m.to_location.is_main_supplier)
+            is_from_supplier = (m.from_location.code == "supplier" or m.from_location.is_main_supplier)
+            
+            if is_to_supplier and m.status == "empty":
+                sent_total += m.quantity
+                pending += m.quantity
+            elif is_from_supplier and m.status == "filled" and m.note != "New supplier load":
+                received_total += m.quantity
+                pending = max(0, pending - m.quantity)
+        
+        if sent_total > 0 or received_total > 0:
+            supplier_balance.append({
+                "type": cylinder.name,
+                "sent_empty": sent_total,
+                "received_filled": received_total,
+                "pending": pending,
+            })
 
     return Response(
         {
@@ -991,6 +1084,7 @@ def reports(request):
             "sales_list": range_sales_list,
             "expense_list": range_expense_list,
             "stock_snapshot": stock_snapshot,
+            "supplier_balance": supplier_balance,
             "load_summary": list(load_summary),
             "movement_history": StockMovementSerializer(
                 range_movements.select_related("cylinder_type", "from_location", "to_location", "moved_by"),

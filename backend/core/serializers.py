@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.core.validators import RegexValidator
 from rest_framework import serializers
@@ -58,11 +59,31 @@ class StockMovementSerializer(serializers.ModelSerializer):
     cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
     from_location_name = serializers.CharField(source="from_location.name", read_only=True)
     to_location_name = serializers.CharField(source="to_location.name", read_only=True)
+    supplier_pending_after = serializers.SerializerMethodField()
 
     class Meta:
         model = StockMovement
         fields = "__all__"
         read_only_fields = ["moved_by"]
+
+    def get_supplier_pending_after(self, obj):
+        if obj.note and ("Sent for refilling" in obj.note or "Received refilled cylinders" in obj.note):
+            movements = StockMovement.objects.filter(
+                Q(from_location__code="supplier") | Q(to_location__code="supplier") | 
+                Q(from_location__is_main_supplier=True) | Q(to_location__is_main_supplier=True),
+                cylinder_type_id=obj.cylinder_type_id,
+                created_at__lte=obj.created_at
+            ).order_by("created_at")
+            pending = 0
+            for m in movements:
+                is_to = (m.to_location.code == "supplier" or m.to_location.is_main_supplier)
+                is_from = (m.from_location.code == "supplier" or m.from_location.is_main_supplier)
+                if is_to and m.status == "empty":
+                    pending += m.quantity
+                elif is_from and m.status == "filled" and m.note and "New supplier load" not in m.note:
+                    pending = max(0, pending - m.quantity)
+            return pending
+        return None
 
     def validate(self, attrs):
         if attrs["from_location"] == attrs["to_location"]:

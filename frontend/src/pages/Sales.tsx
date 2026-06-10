@@ -135,65 +135,50 @@ export default function Sales() {
     }
 
     const newItems: SaleItem[] = [];
+    const customItems: SaleItem[] = [];
+    const grouped = new Map<number, { quantity: number; empty_returned: number }>();
 
     for (const item of itemsToProcess) {
       const t = cylinderTypes.find(c => c.id === item.cylinder_type);
-      if (!t) {
-        newItems.push(item);
+      if (!t || item.is_custom_rate) {
+        customItems.push({ ...item });
         continue;
       }
 
-      if (item.is_custom_rate) {
-        newItems.push({ ...item });
-        continue;
-      }
+      const existing = grouped.get(item.cylinder_type) || { quantity: 0, empty_returned: 0 };
+      grouped.set(item.cylinder_type, {
+        quantity: existing.quantity + item.quantity,
+        empty_returned: existing.empty_returned + item.empty_returned,
+      });
+    }
 
-      // 1. Determine applicable refill rate (custom or default)
-      const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === item.cylinder_type);
+    // Process grouped standard items
+    for (const [cylinder_type, data] of grouped.entries()) {
+      const t = cylinderTypes.find(c => c.id === cylinder_type)!;
+      const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === cylinder_type);
       const applicableRefillRate = custom ? String(custom.custom_price) : String(t.refill_rate);
 
-      // 2. Calculate available empty credits
-      const availableCredit = credits[item.cylinder_type]?.credit || 0;
-      const refillAllowed = item.empty_returned + availableCredit;
+      const availableCredit = credits[cylinder_type]?.credit || 0;
+      const refillAllowed = data.empty_returned + availableCredit;
 
-      // 3. Determine pricing
-      if (item.quantity <= refillAllowed) {
-        // Entire row gets refill rate
-        newItems.push({ ...item, rate: applicableRefillRate });
-        // Deduct used credits (only the portion that came from credits, not from empty_returned)
-        const usedCredit = Math.max(0, item.quantity - item.empty_returned);
-        if (credits[item.cylinder_type]) {
-          credits[item.cylinder_type].credit = availableCredit - usedCredit;
-        }
+      if (data.quantity <= refillAllowed) {
+        newItems.push({ cylinder_type, quantity: data.quantity, rate: applicableRefillRate, empty_returned: data.empty_returned });
+        const usedCredit = Math.max(0, data.quantity - data.empty_returned);
+        if (credits[cylinder_type]) credits[cylinder_type].credit = availableCredit - usedCredit;
       } else {
-        // Splitting required
         if (refillAllowed > 0) {
-          // Row 1: The portion covered by empties/credits (at Refill Rate)
-          newItems.push({
-            ...item,
-            quantity: refillAllowed,
-            rate: applicableRefillRate,
-            empty_returned: item.empty_returned // All empties stay with the refill row
-          });
-          if (credits[item.cylinder_type]) {
-            credits[item.cylinder_type].credit = availableCredit - Math.max(0, refillAllowed - item.empty_returned);
-          }
+          newItems.push({ cylinder_type, quantity: refillAllowed, rate: applicableRefillRate, empty_returned: data.empty_returned });
+          if (credits[cylinder_type]) credits[cylinder_type].credit = availableCredit - Math.max(0, refillAllowed - data.empty_returned);
         }
-
-        const remainder = item.quantity - refillAllowed;
+        const remainder = data.quantity - refillAllowed;
         if (remainder > 0) {
-          // Row 2: The remaining portion (at Sale Price)
-          newItems.push({
-            cylinder_type: item.cylinder_type,
-            quantity: remainder,
-            rate: String(t.selling_price),
-            empty_returned: 0 // Empties were used in the previous row
-          });
+          newItems.push({ cylinder_type, quantity: remainder, rate: String(t.selling_price), empty_returned: 0 });
         }
       }
     }
 
-    return newItems;
+    // Add back the custom items exactly as they were
+    return [...newItems, ...customItems];
   }
 
   function updateItem(index: number, patch: Partial<SaleItem>) {
@@ -262,7 +247,15 @@ export default function Sales() {
     if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
     try {
       let customerId: number | null = selectedCustomerId;
-      if (!customerId && customerName.trim()) {
+      if (!customerId) {
+        if (!customerName.trim()) {
+          setError('Please select a customer or enter details to register a new one.');
+          return;
+        }
+        if (!phone.trim()) {
+          setError('Phone number is required to register a new customer.');
+          return;
+        }
         const res = await api.post('/customers/', { name: customerName.trim(), phone, address });
         customerId = res.data.id;
       }
@@ -411,7 +404,7 @@ export default function Sales() {
                     <input
                       value={customerName}
                       onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); }}
-                      placeholder="Walk-in"
+                      placeholder="Search or enter new customer"
                       autoComplete="off"
                     />
                   </div>
@@ -473,6 +466,39 @@ export default function Sales() {
                 </select>
               </label>
             </div>
+
+            {selectedCustomer && (
+              <div style={{ marginTop: '16px', padding: '16px', background: 'var(--surface-muted, #f8fafc)', borderRadius: '8px', border: '1px solid var(--border)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                <div style={{ flex: 1, minWidth: '120px' }}>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Payment Due</div>
+                  {Number(selectedCustomer.pending_balance) > 0 ? (
+                    <strong style={{ color: 'var(--danger)', fontSize: '1.1rem' }}>{money(selectedCustomer.pending_balance)}</strong>
+                  ) : (
+                    <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: '0.95rem' }}>Settled</span>
+                  )}
+                </div>
+                <div style={{ flex: 1, minWidth: '120px' }}>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Empties Owed</div>
+                  {selectedCustomer.empties_owed > 0 ? (
+                    <strong style={{ color: 'var(--danger)', fontSize: '1.1rem' }}>{selectedCustomer.empties_owed} cylinders</strong>
+                  ) : (
+                    <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: '0.95rem' }}>None</span>
+                  )}
+                </div>
+                <div style={{ flex: 1, minWidth: '140px' }}>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Empty Credits</div>
+                  {selectedCustomer.empty_credits && Object.values(selectedCustomer.empty_credits).length > 0 ? (
+                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                      {Object.values(selectedCustomer.empty_credits).map((ec: any) => (
+                        <span key={ec.name} className="badge badge-success" style={{ padding: '4px 8px' }}>{ec.credit} × {ec.name}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.95rem' }}>No credits</span>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* ── RETURN EMPTIES MODE ── */}
@@ -822,29 +848,62 @@ export default function Sales() {
                 <tbody>
                   {sales.map((sale) => (
                     <tr key={sale.id}>
-                      <td><strong>{sale.customer_name || 'Walk-in'}</strong></td>
+                      <td><strong>{sale.customer_name}</strong></td>
                       <td>
                         {sale.items.map((item, i) => (
-                          <span key={i} style={{ display: 'block', fontSize: '0.82rem' }}>
-                            {item.quantity}×{item.cylinder_type_name} @ {money(item.rate)}
+                          <span key={i} style={{ display: 'block', fontSize: '0.82rem', marginBottom: '2px' }}>
+                            {item.quantity > 0 && <span>{item.quantity}×{item.cylinder_type_name} @ {money(item.rate)}</span>}
+                            {item.empty_returned > 0 ? (
+                              <span style={{ 
+                                color: (!sale.customer_name && item.quantity > 0 && item.empty_returned < item.quantity) ? 'var(--danger)' : 'var(--text-muted)', 
+                                marginLeft: item.quantity > 0 ? '6px' : '0',
+                                background: (!sale.customer_name && item.quantity > 0 && item.empty_returned < item.quantity) ? 'var(--danger-soft, #fee2e2)' : 'var(--surface)',
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                                border: `1px solid ${(!sale.customer_name && item.quantity > 0 && item.empty_returned < item.quantity) ? 'var(--danger)' : 'var(--border)'}`
+                              }}>
+                                🔄 Returned {item.empty_returned} × {item.cylinder_type_name} empties
+                              </span>
+                            ) : (
+                              !sale.customer_name && item.quantity > 0 && (
+                                <span style={{ 
+                                  color: 'var(--danger)', 
+                                  marginLeft: '6px',
+                                  background: 'var(--danger-soft, #fee2e2)',
+                                  padding: '1px 6px',
+                                  borderRadius: '4px',
+                                  border: '1px solid var(--danger)'
+                                }}>
+                                  ⚠️ 0 empties returned
+                                </span>
+                              )
+                            )}
                           </span>
                         ))}
                       </td>
-                      <td style={{ textAlign: 'right' }}>{money(sale.total_amount)}</td>
                       <td style={{ textAlign: 'right' }}>
-                        {Number(sale.balance_due) > 0
-                          ? <span className="badge badge-warning">{money(sale.balance_due)}</span>
-                          : <span className="badge badge-success">Paid</span>}
+                        {sale.note === 'Empty cylinders returned' ? '-' : money(sale.total_amount)}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {sale.note === 'Empty cylinders returned' ? '-' : (
+                          Number(sale.balance_due) > 0
+                            ? <span className="badge badge-warning">{money(sale.balance_due)}</span>
+                            : <span className="badge badge-success">Paid</span>
+                        )}
                       </td>
                       <td style={{ whiteSpace: 'nowrap' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span className="badge">{sale.payment_mode}</span>
-                          {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && sale.payments && sale.payments.length > 0 && (
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                              {sale.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
-                            </span>
-                          )}
-                        </div>
+                        {sale.note === 'Empty cylinders returned' ? (
+                          <span className="badge" style={{ background: 'var(--surface)', color: 'var(--text-muted)' }}>Return</span>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span className="badge">{sale.payment_mode}</span>
+                            {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && sale.payments && sale.payments.length > 0 && (
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                {sale.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td style={{ fontSize: '0.82rem' }}>{sale.sold_by_name}</td>
                       <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>

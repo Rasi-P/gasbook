@@ -223,7 +223,7 @@ export default function Reports() {
               {/* Loads received in range */}
               <div className="card">
                 <div className="section-head">
-                  <h2>Loads Received</h2>
+                  <h2>New Cylinders Purchased (Loads)</h2>
                   <span className="badge">Supplier → Location</span>
                 </div>
                 {data.load_summary.length === 0
@@ -244,6 +244,38 @@ export default function Reports() {
                               <td><strong>{l.cylinder_type__name}</strong></td>
                               <td>{l.to_location__name}</td>
                               <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--success)' }}>{l.total_qty}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+              </div>
+
+              {/* Supplier Balance */}
+              <div className="card">
+                <div className="section-head">
+                  <h2>Supplier Balance (All Time)</h2>
+                  <span className="badge">Pending to Receive</span>
+                </div>
+                {data.supplier_balance && data.supplier_balance.length === 0
+                  ? <p style={{ textAlign: 'center', padding: '16px' }}>No supplier records found.</p>
+                  : (
+                    <div className="table-wrap">
+                      <table>
+                        <thead>
+                            <tr>
+                              <th>Cylinder</th>
+                              <th style={{ textAlign: 'right' }}>Pending from Supplier</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                          {data.supplier_balance && data.supplier_balance.map((b, i) => (
+                            <tr key={i}>
+                              <td><strong>{b.type}</strong></td>
+                              <td style={{ textAlign: 'right', fontWeight: 700, color: b.pending > 0 ? 'var(--warning)' : 'var(--success)' }}>
+                                {b.pending > 0 ? `${b.pending}` : '0 (Settled)'}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
