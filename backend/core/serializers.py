@@ -8,7 +8,7 @@ from rest_framework import serializers
 
 from .models import (
     ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
-    CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
+    CylinderType, Delivery, Expense, Notification, Payment, Role, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User,
 )
 
@@ -17,6 +17,7 @@ phone_validator = RegexValidator(regex=r"^\d+$", message="Phone number must cont
 
 class UserSerializer(serializers.ModelSerializer):
     phone = serializers.CharField(validators=[phone_validator], required=False, allow_blank=True)
+    role = serializers.SlugRelatedField(slug_field='code', queryset=Role.objects.all())
 
     class Meta:
         model = User

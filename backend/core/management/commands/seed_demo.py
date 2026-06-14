@@ -1,12 +1,16 @@
 from django.core.management.base import BaseCommand
 
-from core.models import CylinderType, Stock, StockLocation, User
+from core.models import CylinderType, Stock, StockLocation, User, Role
 
 
 class Command(BaseCommand):
     help = "Seed GasBook with default locations, cylinder types, and starter stock."
 
     def handle(self, *args, **options):
+        admin_role, _ = Role.objects.get_or_create(code="admin", defaults={"name": "Admin"})
+        Role.objects.get_or_create(code="staff", defaults={"name": "Staff"})
+        Role.objects.get_or_create(code="customer", defaults={"name": "Customer"})
+
         shop, _ = StockLocation.objects.get_or_create(code="shop", defaults={"name": "Shop"})
         kandam, _ = StockLocation.objects.get_or_create(code="kandam", defaults={"name": "Kandam"})
         StockLocation.objects.get_or_create(code="supplier", defaults={"name": "Supplier"})
@@ -16,7 +20,7 @@ class Command(BaseCommand):
                 username="admin",
                 password="admin123",
                 email="admin@gasbook.local",
-                role=User.Role.ADMIN,
+                role=admin_role,
             )
 
         cylinder_data = [

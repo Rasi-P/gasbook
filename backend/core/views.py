@@ -16,7 +16,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .models import (
     ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
-    StaffProfile, Stock, StockLocation, StockMovement, User,
+    StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
 from .serializers import (
     ActivityLogSerializer,
@@ -55,17 +55,17 @@ class IsAdminOrReadOnly(permissions.BasePermission):
     def has_permission(self, request, view):
         if request.method in permissions.SAFE_METHODS:
             return True
-        return getattr(request.user, "role", "") == "admin" or request.user.is_superuser
+        return getattr(getattr(request.user, "role", None), "code", "") == "admin" or request.user.is_superuser
 
 
 class IsAdminUserRole(permissions.BasePermission):
     def has_permission(self, request, view):
-        return getattr(request.user, "role", "") == "admin" or request.user.is_superuser
+        return getattr(getattr(request.user, "role", None), "code", "") == "admin" or request.user.is_superuser
 
 
 class IsStaffOrAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
-        return getattr(request.user, "role", "") in ["admin", "staff"] or request.user.is_superuser
+        return getattr(getattr(request.user, "role", None), "code", "") in ["admin", "staff"] or request.user.is_superuser
 
 
 class CylinderTypeViewSet(viewsets.ModelViewSet):
@@ -167,7 +167,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerProfileSerializer
 
     def get_permissions(self):
-        if getattr(self.request.user, "role", "") == "customer":
+        if getattr(getattr(self.request.user, "role", None), "code", "") == "customer":
             if self.request.method not in permissions.SAFE_METHODS:
                 return [IsAdminUserRole()]
             return [permissions.IsAuthenticated()]
@@ -180,7 +180,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        if getattr(self.request.user, "role", "") == "customer":
+        if getattr(getattr(self.request.user, "role", None), "code", "") == "customer":
             return queryset.filter(user=self.request.user)
         area = self.request.query_params.get("area")
         active = self.request.query_params.get("active")
@@ -205,7 +205,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
         if phone:
-            existing_user = User.objects.filter(phone=phone, role=User.Role.CUSTOMER).first()
+            existing_user = User.objects.filter(phone=phone, role__code="customer").first()
             if existing_user:
                 full_name = existing_user.get_full_name() or existing_user.username
                 return Response(
@@ -226,7 +226,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             email=email,
             phone=phone,
             address=address,
-            role=User.Role.CUSTOMER,
+            role__code="customer",
             must_change_password=True,
             is_active=True
         )
@@ -397,7 +397,7 @@ class BookingViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        role = getattr(self.request.user, "role", "")
+        role = getattr(getattr(self.request.user, "role", None), "code", "")
         if role == "customer":
             queryset = queryset.filter(customer__user=self.request.user)
         elif role == "staff":
@@ -408,7 +408,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         return queryset
 
     def perform_create(self, serializer):
-        if getattr(self.request.user, "role", "") != "customer":
+        if getattr(getattr(self.request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can create booking requests.")
         serializer.save()
 
@@ -418,7 +418,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         staff_id = request.data.get("assigned_staff") or booking.customer.default_staff_id
         if not staff_id:
             return Response({"detail": "Assign delivery staff before approval."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        staff = User.objects.filter(id=staff_id, role=User.Role.STAFF, is_active=True).first()
+        staff = User.objects.filter(id=staff_id, role__code="staff", is_active=True).first()
         if not staff:
             return Response({"detail": "Valid active staff user is required."}, status=drf_status.HTTP_400_BAD_REQUEST)
         booking.status = Booking.Status.APPROVED
@@ -462,7 +462,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        if getattr(self.request.user, "role", "") == "staff":
+        if getattr(getattr(self.request.user, "role", None), "code", "") == "staff":
             queryset = queryset.filter(staff=self.request.user)
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -472,7 +472,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
         delivery = self.get_object()
-        if request.user.role == "staff" and delivery.staff_id != request.user.id:
+        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
             return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
         delivery.status = Delivery.Status.OUT_FOR_DELIVERY
         delivery.started_at = timezone.now()
@@ -485,7 +485,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             title="Delivery Started",
             body=f"{delivery.staff.get_full_name() or delivery.staff.username} started your delivery.",
         )
-        for admin in User.objects.filter(role=User.Role.ADMIN):
+        for admin in User.objects.filter(role__code="admin"):
             Notification.objects.create(
                 recipient=admin,
                 booking=delivery.booking,
@@ -498,7 +498,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
     @transaction.atomic
     def complete(self, request, pk=None):
         delivery = self.get_object()
-        if request.user.role == "staff" and delivery.staff_id != request.user.id:
+        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
             return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
         if delivery.status == Delivery.Status.DELIVERED:
             return Response({"detail": "Delivery already completed."}, status=drf_status.HTTP_400_BAD_REQUEST)
@@ -615,7 +615,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
 @permission_classes([permissions.IsAuthenticated])
 def customer_credentials(request, pk):
     """GET: return username for a customer profile. POST: reset their password."""
-    if request.user.role != "admin" and not request.user.is_superuser:
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
         profile = CustomerProfile.objects.get(pk=pk)
@@ -655,7 +655,7 @@ def me(request):
         "customer": "/customer-dashboard",
     }
     location_name = None
-    if request.user.role == "staff" and hasattr(request.user, "staff_profile"):
+    if (getattr(request.user.role, "code", "") == "staff") and hasattr(request.user, "staff_profile"):
         loc = request.user.staff_profile.vehicle_location
         if loc:
             location_name = loc.name
@@ -665,8 +665,8 @@ def me(request):
             "id": request.user.id,
             "username": request.user.username,
             "name": request.user.get_full_name() or request.user.username,
-            "role": request.user.role,
-            "redirect": redirects.get(request.user.role, "/"),
+            "role": getattr(request.user.role, "code", ""),
+            "redirect": redirects.get(getattr(request.user.role, "code", ""), "/"),
             "must_change_password": bool(getattr(request.user, "must_change_password", False)),
             "vehicle_location_name": location_name,
         }
@@ -676,23 +676,41 @@ def me(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def users_list(request):
-    if request.user.role != "admin" and not request.user.is_superuser:
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
-    users = User.objects.exclude(role=User.Role.CUSTOMER).order_by("username")
-    return Response(UserSerializer(users, many=True).data)
+    users = User.objects.exclude(role__code="customer").order_by("username")
+    data = []
+    for u in users:
+        data.append({
+            "id": u.id,
+            "username": u.username,
+            "first_name": u.first_name,
+            "last_name": u.last_name,
+            "role": getattr(u.role, "code", ""),
+            "phone": u.phone,
+            "email": u.email,
+            "address": u.address,
+        })
+    return Response(data)
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def roles_list(request):
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
+        raise PermissionDenied("Only admins can view roles.")
+    roles = Role.objects.exclude(code="customer").values("code", "name").order_by("name")
+    return Response(list(roles))
 
 
 @api_view(["PATCH", "DELETE"])
 @permission_classes([permissions.IsAuthenticated])
 def user_detail(request, pk):
-    if request.user.role != "admin" and not request.user.is_superuser:
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
-        user = User.objects.get(pk=pk)
+        user = User.objects.exclude(role__code="customer").get(pk=pk)
     except User.DoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
-    if user.role == User.Role.CUSTOMER:
-        return Response({"detail": "Use customer profile endpoints to manage customer accounts."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if request.method == "DELETE":
         user.delete()
         return Response({"detail": "User completely deleted."})
@@ -717,7 +735,7 @@ def user_detail(request, pk):
 
     user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
-    if user.role == User.Role.STAFF:
+    if user.role == "staff":
         # Just ensure the profile exists, no phone/address fields on StaffProfile
         StaffProfile.objects.get_or_create(user=user)
 
@@ -727,10 +745,10 @@ def user_detail(request, pk):
 @api_view(["GET", "POST"])
 @permission_classes([permissions.IsAuthenticated])
 def user_credentials(request, pk):
-    if request.user.role != "admin" and not request.user.is_superuser:
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
-        user = User.objects.exclude(role=User.Role.CUSTOMER).get(pk=pk)
+        user = User.objects.exclude(role__code="customer").get(pk=pk)
     except User.DoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "GET":
@@ -779,7 +797,7 @@ def change_password(request):
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
 def register(request):
-    if request.user.role != "admin" and not request.user.is_superuser:
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     username = request.data.get("username", "").strip()
     password = request.data.get("password", "").strip() or get_random_string(length=12)
@@ -797,7 +815,7 @@ def register(request):
         return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if User.objects.filter(username=username).exists():
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if role not in [choice[0] for choice in User.Role.choices]:
+    if role not in [r.code for r in Role.objects.all()]:
         return Response({"detail": "Invalid role."}, status=drf_status.HTTP_400_BAD_REQUEST)
     parts = full_name.split(" ", 1)
     user = User.objects.create_user(
@@ -806,13 +824,13 @@ def register(request):
         first_name=parts[0],
         last_name=parts[1] if len(parts) > 1 else "",
         email=email,
-        role=role,
+        role=Role.objects.get(code=role),
         plain_password="",
         must_change_password=True,
         phone=phone,
         address=address,
     )
-    if role == User.Role.CUSTOMER:
+    if role == "customer":
         CustomerProfile.objects.create(
             user=user,
             area=area,
@@ -821,7 +839,7 @@ def register(request):
             deposit_cylinders=request.data.get("deposit_cylinders") or 0,
             opening_balance=request.data.get("opening_balance") or 0,
         )
-    elif role == User.Role.STAFF:
+    elif role == "staff":
         StaffProfile.objects.create(
             user=user,
             assigned_area=area,
@@ -858,7 +876,7 @@ def dashboard(request):
             "active": staff.staff_profile.is_active if hasattr(staff, "staff_profile") else staff.is_active,
             "assigned_deliveries": staff.deliveries.exclude(status=Delivery.Status.DELIVERED).count(),
         }
-        for staff in User.objects.filter(role=User.Role.STAFF).prefetch_related("deliveries")
+        for staff in User.objects.filter(role__code="staff").prefetch_related("deliveries")
     ]
 
     low_stock = [
@@ -951,7 +969,7 @@ def dashboard(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def reports(request):
-    if request.user.role != "admin" and not request.user.is_superuser:
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     from django.db.models import Count
     today = timezone.localdate()

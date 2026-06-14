@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin
 
 from .models import (
     ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
-    CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
+    CylinderType, Delivery, Expense, Notification, Payment, Role, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User,
 )
 
@@ -14,6 +14,7 @@ class GasBookUserAdmin(UserAdmin):
     list_display = ("username", "email", "role", "is_staff", "is_active")
 
 
+admin.site.register(Role)
 admin.site.register(CylinderType)
 admin.site.register(StockLocation)
 admin.site.register(Stock)

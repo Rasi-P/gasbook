@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2 } from 'lucide-react';
+import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag } from 'lucide-react';
 import { api } from '../lib/api';
 
 type Customer = {
@@ -13,6 +13,12 @@ type Customer = {
   pending_balance: number;
   empties_owed: Record<number, { owed: number; name: string }>;
   empty_credits: Record<number, { credit: number; name: string }>;
+  custom_rates?: {
+    id: number;
+    cylinder_type: number;
+    cylinder_type_name: string;
+    custom_price: string;
+  }[];
 };
 
 type SaleItem = {
@@ -81,6 +87,13 @@ export default function Customers() {
   const [pwMsg, setPwMsg] = useState('');
 
   const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  // Custom rates panel state
+  const [ratesId, setRatesId] = useState<number | null>(null);
+  const [cylinderTypes, setCylinderTypes] = useState<{ id: number; name: string }[]>([]);
+  const [rateCylinderId, setRateCylinderId] = useState('');
+  const [ratePrice, setRatePrice] = useState('');
+  const [rateSaving, setRateSaving] = useState(false);
 
   // Add customer form
   const [showAdd, setShowAdd] = useState(false);
@@ -176,6 +189,55 @@ export default function Customers() {
       if (selected && selected.customer.id === customerId) setSelected(null);
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function loadRates(customerId: number) {
+    setEditingId(null); setCredsId(null);
+    setRatesId(customerId);
+    if (cylinderTypes.length === 0) {
+      try {
+        const { data } = await api.get('/cylinder-types/');
+        setCylinderTypes(data.results || data);
+        if ((data.results || data).length > 0) {
+          setRateCylinderId((data.results || data)[0].id.toString());
+        }
+      } catch {
+        // failed to fetch types
+      }
+    }
+  }
+
+  function closeRates() {
+    setRatesId(null);
+    setRatePrice('');
+  }
+
+  async function handleAddRate(e: FormEvent, customerId: number) {
+    e.preventDefault();
+    if (!rateCylinderId || !ratePrice) return;
+    setRateSaving(true);
+    try {
+      await api.post('/customer-rates/', {
+        customer: customerId,
+        cylinder_type: rateCylinderId,
+        custom_price: ratePrice,
+      });
+      setRatePrice('');
+      fetchCustomers();
+    } catch {
+      alert('Failed to save custom rate. Note: Cannot have duplicate rates for the same cylinder type. Delete the old one first.');
+    } finally {
+      setRateSaving(false);
+    }
+  }
+
+  async function handleDeleteRate(rateId: number) {
+    try {
+      await api.delete(`/customer-rates/${rateId}/`);
+      fetchCustomers();
+    } catch {
+      alert('Failed to delete custom rate.');
     }
   }
 
@@ -722,6 +784,16 @@ export default function Customers() {
                   {editingId === c.id ? <X size={16} /> : <Pencil size={16} />}
                 </button>
 
+                {/* Custom Rates button */}
+                <button
+                  className="icon-button"
+                  title="Custom Cylinder Rates"
+                  onClick={() => ratesId === c.id ? closeRates() : loadRates(c.id)}
+                  style={ratesId === c.id ? { color: 'var(--primary)' } : {}}
+                >
+                  <Tag size={16} />
+                </button>
+
                 {/* Credentials button */}
                 <button
                   className="icon-button"
@@ -754,6 +826,82 @@ export default function Customers() {
                 </button>
               </div>
             </div>
+
+            {/* ── Inline Custom Rates panel ── */}
+            {ratesId === c.id && (
+              <div
+                style={{
+                  padding: '16px 18px',
+                  borderBottom: '1px solid var(--border)',
+                  background: 'var(--surface-muted)',
+                }}
+              >
+                <h3 style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Tag size={16} /> Custom Cylinder Rates
+                </h3>
+                
+                {/* Existing Rates */}
+                {c.custom_rates && c.custom_rates.length > 0 ? (
+                  <div style={{ marginBottom: '20px', display: 'grid', gap: '8px' }}>
+                    {c.custom_rates.map(rate => (
+                      <div key={rate.id} style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '10px 16px', background: 'var(--surface)',
+                        border: '1px solid var(--border)', borderRadius: '8px'
+                      }}>
+                        <span style={{ fontWeight: 600 }}>{rate.cylinder_type_name}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                          <span style={{ color: 'var(--success)', fontWeight: 600 }}>{money(rate.custom_price)}</span>
+                          <button
+                            className="icon-button"
+                            onClick={() => handleDeleteRate(rate.id)}
+                            title="Delete custom rate"
+                            style={{ color: 'var(--danger)', padding: '4px' }}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '16px' }}>
+                    No custom rates set for this customer yet.
+                  </p>
+                )}
+
+                {/* Add New Rate Form */}
+                <form onSubmit={(e) => handleAddRate(e, c.id)} className="grid-3" style={{ alignItems: 'flex-end', background: 'var(--surface)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <label>
+                    <span>Cylinder Type</span>
+                    <select
+                      value={rateCylinderId}
+                      onChange={(e) => setRateCylinderId(e.target.value)}
+                      required
+                    >
+                      {cylinderTypes.map(ct => (
+                        <option key={ct.id} value={ct.id}>{ct.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Custom Price (Rs.)</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={ratePrice}
+                      onChange={(e) => setRatePrice(e.target.value)}
+                      required
+                      placeholder="e.g. 900"
+                    />
+                  </label>
+                  <button className="btn btn-primary" type="submit" disabled={rateSaving}>
+                    {rateSaving ? 'Saving…' : 'Add Rate'}
+                  </button>
+                </form>
+              </div>
+            )}
 
             {/* ── Inline Edit panel ── */}
             {editingId === c.id && (

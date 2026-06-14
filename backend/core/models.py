@@ -4,12 +4,7 @@ from django.db import models
 
 
 class User(AbstractUser):
-    class Role(models.TextChoices):
-        ADMIN = "admin", "Admin"
-        STAFF = "staff", "Staff"
-        CUSTOMER = "customer", "Customer"
-
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.STAFF)
+    role = models.ForeignKey("Role", on_delete=models.PROTECT, null=True, blank=True, related_name="users")
     plain_password = models.CharField(max_length=128, blank=True, default="")
     must_change_password = models.BooleanField(default=False)
     phone = models.CharField(max_length=20, blank=True)
@@ -22,6 +17,14 @@ class TimeStampedModel(models.Model):
 
     class Meta:
         abstract = True
+
+
+class Role(TimeStampedModel):
+    name = models.CharField(max_length=50, unique=True)
+    code = models.SlugField(max_length=50, unique=True)
+
+    def __str__(self):
+        return self.name
 
 
 class CylinderType(TimeStampedModel):

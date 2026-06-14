@@ -29,6 +29,7 @@ function isProtectedAdmin(user: StaffUser) {
 
 export default function Staff() {
   const [users, setUsers] = useState<StaffUser[]>([]);
+  const [availableRoles, setAvailableRoles] = useState<{code: string; name: string}[]>([]);
   const [showAdd, setShowAdd] = useState(false);
 
   const [fullNameValue, setFullNameValue] = useState('');
@@ -54,6 +55,10 @@ export default function Staff() {
 
   function load() {
     api.get('/auth/users/').then((r) => setUsers(r.data)).catch(() => undefined);
+    api.get('/auth/roles/').then((r) => {
+      setAvailableRoles(r.data);
+      if (r.data.length > 0 && !role) setRole(r.data[0].code);
+    }).catch(() => undefined);
   }
 
   useEffect(() => { load(); }, []);
@@ -182,8 +187,9 @@ export default function Staff() {
             <label>
               <span>Role</span>
               <select value={role} onChange={(e) => setRole(e.target.value)}>
-                <option value="staff">Staff</option>
-                <option value="admin">Admin</option>
+                {availableRoles.map(r => (
+                  <option key={r.code} value={r.code}>{r.name}</option>
+                ))}
               </select>
             </label>
           </div>

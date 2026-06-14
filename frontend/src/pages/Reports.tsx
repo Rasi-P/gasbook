@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  IndianRupee, ReceiptText, Route, WalletCards,
-  AlertTriangle, Package, ChevronDown, ChevronUp, Boxes,
+  IndianRupee, WalletCards,
+  AlertTriangle, Package, Boxes,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -29,7 +29,8 @@ type CylinderSale = { cylinder_type__name: string; sale__location__name?: string
 type StockRow = {
   type: string; shop_filled: number; shop_empty: number;
   kandam_filled: number; kandam_empty: number;
-  with_customers: number; total: number;
+  with_customers: number; customer_credits: number;
+  supplier_stock: number; physical_stock: number; total: number;
 };
 type LoadRow = { cylinder_type__name: string; to_location__name: string; total_qty: number };
 type ReportsData = {
@@ -43,22 +44,13 @@ type ReportsData = {
   stock_snapshot: StockRow[];
   load_summary: LoadRow[];
   movement_history: Movement[];
+  supplier_balance?: { type: string; pending: number }[];
   expense_breakdown: { category: string; total: number }[];
 };
 
 function money(v: number | string) {
   return `Rs. ${Number(v || 0).toLocaleString('en-IN')}`;
 }
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-}
-function fmtDateTime(iso: string) {
-  return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-}
-
-const CATEGORY_LABELS: Record<string, string> = {
-  fuel: 'Fuel', salary: 'Salary', transport: 'Transport', misc: 'Miscellaneous',
-};
 
 type Tab = 'summary' | 'stock' | 'sales' | 'pending';
 
@@ -77,7 +69,6 @@ export default function Reports() {
   const [data, setData] = useState<ReportsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<Tab>('summary');
-  const [expandedSale, setExpandedSale] = useState<number | null>(null);
 
   function fetchData(s: string, e: string) {
     setLoading(true);

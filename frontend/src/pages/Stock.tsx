@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { ArrowDownUp, ArrowRight, Check, ChevronDown, Factory, Flame, Plus, Search, Trash2 } from 'lucide-react';
+import { ArrowDownUp, ArrowRight, Check, ChevronDown, Factory, Plus, Search, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 
 type Tab = 'movement' | 'new_load' | 'refuel' | 'history';

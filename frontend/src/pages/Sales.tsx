@@ -8,12 +8,13 @@ import { api } from '../lib/api';
 
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
-type SaleItem = { cylinder_type: number; quantity: number; rate: string; empty_returned: number; is_custom_rate?: boolean };
+type SaleItem = { cylinder_type: number; quantity: number; rate: string; empty_returned: number; rate_type: 'custom' | 'refill' | 'new' };
 type HistorySale = {
   id: number;
   customer_name: string;
   sold_by_name: string;
-  items: { cylinder_type_name: string; quantity: number; rate: number }[];
+  note?: string;
+  items: { cylinder_type_name: string; quantity: number; rate: number; empty_returned: number }[];
   total_amount: number;
   paid_amount: number;
   balance_due: number;
@@ -126,87 +127,53 @@ export default function Sales() {
 
   // ── Item helpers ──────────────────────────────────────────────────────────
 
-  function applyPricingRules(itemsToProcess: SaleItem[], customer: any | null): SaleItem[] {
-    const credits: Record<number, any> = {};
-    if (customer?.empty_credits) {
-      for (const k of Object.keys(customer.empty_credits)) {
-        credits[Number(k)] = { ...customer.empty_credits[Number(k)] };
-      }
-    }
+  // ── Item helpers ──────────────────────────────────────────────────────────
 
-    const newItems: SaleItem[] = [];
-    const customItems: SaleItem[] = [];
-    const grouped = new Map<number, { quantity: number; empty_returned: number }>();
-
-    for (const item of itemsToProcess) {
-      const t = cylinderTypes.find(c => c.id === item.cylinder_type);
-      if (!t || item.is_custom_rate) {
-        customItems.push({ ...item });
-        continue;
-      }
-
-      const existing = grouped.get(item.cylinder_type) || { quantity: 0, empty_returned: 0 };
-      grouped.set(item.cylinder_type, {
-        quantity: existing.quantity + item.quantity,
-        empty_returned: existing.empty_returned + item.empty_returned,
-      });
-    }
-
-    // Process grouped standard items
-    for (const [cylinder_type, data] of grouped.entries()) {
-      const t = cylinderTypes.find(c => c.id === cylinder_type)!;
+  function getApplicableRate(cylinder_type: number, rate_type: 'custom' | 'refill' | 'new', customer: any | null) {
+    const t = cylinderTypes.find(c => c.id === cylinder_type);
+    if (!t) return '0';
+    if (rate_type === 'custom') {
       const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === cylinder_type);
-      const applicableRefillRate = custom ? String(custom.custom_price) : String(t.refill_rate);
-
-      const availableCredit = credits[cylinder_type]?.credit || 0;
-      const refillAllowed = data.empty_returned + availableCredit;
-
-      if (data.quantity <= refillAllowed) {
-        newItems.push({ cylinder_type, quantity: data.quantity, rate: applicableRefillRate, empty_returned: data.empty_returned });
-        const usedCredit = Math.max(0, data.quantity - data.empty_returned);
-        if (credits[cylinder_type]) credits[cylinder_type].credit = availableCredit - usedCredit;
-      } else {
-        if (refillAllowed > 0) {
-          newItems.push({ cylinder_type, quantity: refillAllowed, rate: applicableRefillRate, empty_returned: data.empty_returned });
-          if (credits[cylinder_type]) credits[cylinder_type].credit = availableCredit - Math.max(0, refillAllowed - data.empty_returned);
-        }
-        const remainder = data.quantity - refillAllowed;
-        if (remainder > 0) {
-          newItems.push({ cylinder_type, quantity: remainder, rate: String(t.selling_price), empty_returned: 0 });
-        }
-      }
+      return custom ? String(custom.custom_price) : String(t.refill_rate);
+    } else if (rate_type === 'refill') {
+      return String(t.refill_rate);
+    } else {
+      return String(t.selling_price);
     }
-
-    // Add back the custom items exactly as they were
-    return [...newItems, ...customItems];
   }
 
   function updateItem(index: number, patch: Partial<SaleItem>) {
     setItems((prev) => {
-      const next = prev.map((item, i) => {
-        if (i !== index) return item;
-        const updated = { ...item, ...patch };
-        if (patch.rate !== undefined) updated.is_custom_rate = true;
-        if (patch.cylinder_type !== undefined) updated.is_custom_rate = false;
-        return updated;
-      });
-      // If user explicitly changed the rate, don't auto-recalculate the rest of the row's pricing
-      if (patch.rate !== undefined) return next;
-      
-      return applyPricingRules(next, selectedCustomer);
+      const next = [...prev];
+      const item = { ...next[index], ...patch };
+
+      // If cylinder_type or rate_type changes, update the rate automatically
+      if (patch.cylinder_type !== undefined || patch.rate_type !== undefined) {
+        item.rate = getApplicableRate(item.cylinder_type, item.rate_type, selectedCustomer);
+      }
+
+      next[index] = item;
+      return next;
     });
   }
 
   function addItem() {
     const t = cylinderTypes[0];
-    const newItem = { cylinder_type: t?.id ?? 0, quantity: 1, rate: String(t?.selling_price ?? '0'), empty_returned: 0 };
-    setItems((prev) => applyPricingRules([...prev, newItem], selectedCustomer));
+    if (!t) return;
+    const hasCustom = selectedCustomer?.custom_rates?.find((cr: any) => cr.cylinder_type === t.id);
+    const initialRateType = hasCustom ? 'custom' : 'refill';
+    const rate = getApplicableRate(t.id, initialRateType, selectedCustomer);
+    const newItem: SaleItem = { cylinder_type: t.id, quantity: 1, rate, empty_returned: 0, rate_type: initialRateType };
+    setItems((prev) => [...prev, newItem]);
   }
 
   // Update rates if customer selection changes
   useEffect(() => {
     if (items.length > 0) {
-      setItems((prev) => applyPricingRules(prev, selectedCustomer));
+      setItems((prev) => prev.map(item => ({
+        ...item,
+        rate: getApplicableRate(item.cylinder_type, item.rate_type, selectedCustomer)
+      })));
     }
   }, [selectedCustomer]);
 
@@ -626,13 +593,23 @@ export default function Sales() {
                           </div>
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr', gap: '12px', alignItems: 'end' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', gap: '12px', alignItems: 'end' }}>
                           <label>
                             <span>Cylinder</span>
                             <select value={item.cylinder_type} onChange={(e) => updateItem(i, { cylinder_type: Number(e.target.value) })}>
                               {cylinderTypes.map((t) => (
                                 <option key={t.id} value={t.id}>{t.name}</option>
                               ))}
+                            </select>
+                          </label>
+                          <label>
+                            <span>Rate Type</span>
+                            <select value={item.rate_type} onChange={(e) => updateItem(i, { rate_type: e.target.value as 'custom' | 'refill' | 'new' })}>
+                              {selectedCustomer?.custom_rates?.some((cr: any) => cr.cylinder_type === item.cylinder_type) && (
+                                <option value="custom">Agreed Rate</option>
+                              )}
+                              <option value="refill">Refill</option>
+                              <option value="new">New Cylinder</option>
                             </select>
                           </label>
                           <label>
@@ -686,10 +663,17 @@ export default function Sales() {
                             ))}
                           </div>
 
-                          <div style={{ fontWeight: 800, color: 'var(--primary)', fontSize: '1.2rem' }}>
+                          <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--primary)' }}>
                             {money(item.quantity * Number(item.rate || 0))}
                           </div>
                         </div>
+
+                        {item.rate_type !== 'new' && item.empty_returned < item.quantity && (
+                          <div style={{ marginTop: '12px', padding: '8px 12px', background: 'var(--warning-soft, rgba(245,158,11,0.1))', color: 'var(--warning, #d97706)', borderRadius: '6px', fontSize: '0.85rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'currentColor' }} />
+                            Warning: Quantity is {item.quantity} but only {item.empty_returned} empty returned. Ensure customer has empty credits or change Rate Type to New Cylinder.
+                          </div>
+                        )}
                       </div>
                     );
                   })}

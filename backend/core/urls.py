@@ -24,6 +24,7 @@ from .views import (
     user_detail,
     user_credentials,
     users_list,
+    roles_list,
     customer_credentials,
 )
 
@@ -47,6 +48,7 @@ urlpatterns = [
     path("auth/me/", me),
     path("auth/change-password/", change_password),
     path("auth/register/", register),
+    path("auth/roles/", roles_list),
     path("auth/users/", users_list),
     path("auth/users/<int:pk>/", user_detail),
     path("auth/users/<int:pk>/credentials/", user_credentials),
