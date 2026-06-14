@@ -185,11 +185,22 @@ export default function Stock() {
   useEffect(() => {
     const nonSupplier = locations.filter((l) => l.code !== 'supplier');
     if (nonSupplier.length >= 1 && fromLocation === 0) {
-      setFromLocation(nonSupplier[1]?.id ?? nonSupplier[0].id);
-      setToLocation(nonSupplier[0].id);
-      setLoadTo(nonSupplier[1]?.id ?? nonSupplier[0].id);
-      setRefuelSendLoc(nonSupplier[0].id);
-      setRefuelRecvLoc(nonSupplier[0].id);
+      const getInitialLoc = (key: string, fallback: number) => {
+        const savedStr = localStorage.getItem(key);
+        if (savedStr && nonSupplier.find(l => l.id === Number(savedStr))) {
+          return Number(savedStr);
+        }
+        return fallback;
+      };
+
+      const fallbackPrimary = nonSupplier[0].id;
+      const fallbackSecondary = nonSupplier.find(l => l.id !== fallbackPrimary)?.id ?? fallbackPrimary;
+
+      setFromLocation(getInitialLoc('lastStockFromLoc', fallbackPrimary));
+      setToLocation(getInitialLoc('lastStockToLoc', fallbackSecondary));
+      setLoadTo(getInitialLoc('lastStockLoadTo', fallbackPrimary));
+      setRefuelSendLoc(getInitialLoc('lastStockRefuelSendLoc', fallbackPrimary));
+      setRefuelRecvLoc(getInitialLoc('lastStockRefuelRecvLoc', fallbackPrimary));
     }
     if (cylinderTypes.length > 0) {
       const defaultId = cylinderTypes[0].id;
@@ -198,7 +209,14 @@ export default function Stock() {
       setRefuelSendItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
       setRefuelRecvItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
     }
-  }, [locations, cylinderTypes]);
+  }, [locations, cylinderTypes, fromLocation]);
+
+  // Persist location selections
+  useEffect(() => { if (fromLocation) localStorage.setItem('lastStockFromLoc', String(fromLocation)); }, [fromLocation]);
+  useEffect(() => { if (toLocation) localStorage.setItem('lastStockToLoc', String(toLocation)); }, [toLocation]);
+  useEffect(() => { if (loadTo) localStorage.setItem('lastStockLoadTo', String(loadTo)); }, [loadTo]);
+  useEffect(() => { if (refuelSendLoc) localStorage.setItem('lastStockRefuelSendLoc', String(refuelSendLoc)); }, [refuelSendLoc]);
+  useEffect(() => { if (refuelRecvLoc) localStorage.setItem('lastStockRefuelRecvLoc', String(refuelRecvLoc)); }, [refuelRecvLoc]);
 
   const fetchHistory = useCallback(() => {
     api.get('/movements/')
@@ -635,6 +653,31 @@ export default function Stock() {
             <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
               Send empty cylinders to the supplier for refilling.
             </p>
+
+            {(() => {
+              const emptiesAtLoc = stockData.filter(s => s.location === refuelSendLoc && s.status === 'empty' && s.quantity > 0);
+              if (emptiesAtLoc.length > 0) {
+                return (
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>Available Empties at Location:</span>
+                    {emptiesAtLoc.map((e, i) => {
+                      const cName = cylinderTypes.find(c => c.id === e.cylinder_type)?.name || 'Unknown';
+                      return (
+                        <span key={i} className="badge" style={{ background: 'var(--primary-soft, #e0e7ff)', color: 'var(--primary, #4f46e5)', border: '1px solid var(--primary)' }}>
+                          {e.quantity}× {cName}
+                        </span>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              return (
+                <div style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--success)' }}>
+                  ✓ No empty cylinders at this location.
+                </div>
+              );
+            })()}
+
             <form onSubmit={handleRefuelSend} className="form-stack">
               <label>
                 <span>From Location</span>

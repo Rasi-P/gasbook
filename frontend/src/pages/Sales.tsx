@@ -83,11 +83,20 @@ export default function Sales() {
         const locs: Location[] = (lr.data.results ?? lr.data).filter((l: Location) => !l.is_main_supplier && l.code !== 'supplier');
         setCylinderTypes(types);
         setLocations(locs);
-        setLocation(locs[0]?.id ?? 1);
+        const savedLoc = localStorage.getItem('lastSalesLoc');
+        if (savedLoc && locs.find(l => l.id === Number(savedLoc))) {
+          setLocation(Number(savedLoc));
+        } else {
+          setLocation(locs[0]?.id ?? 1);
+        }
         // Don't pre-populate items — user adds when ready
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (location) localStorage.setItem('lastSalesLoc', String(location));
+  }, [location]);
 
   // Fetch stock whenever location changes
   useEffect(() => {
