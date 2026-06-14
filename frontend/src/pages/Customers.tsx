@@ -11,7 +11,7 @@ type Customer = {
   address: string;
   opening_balance: number;
   pending_balance: number;
-  empties_owed: number;
+  empties_owed: Record<number, { owed: number; name: string }>;
   empty_credits: Record<number, { credit: number; name: string }>;
 };
 
@@ -343,11 +343,13 @@ export default function Customers() {
               </button>
             )}
           </div>
-          <div className={`metric-card ${customer.empties_owed > 0 ? 'strong' : ''}`}
-            style={customer.empties_owed > 0 ? { background: 'var(--danger)', color: 'white' } : {}}>
-            <RotateCcw style={customer.empties_owed > 0 ? { color: 'white' } : {}} />
-            <span style={customer.empties_owed > 0 ? { color: 'white' } : {}}>Empties Owed</span>
-            <strong>{customer.empties_owed} cylinder{customer.empties_owed !== 1 ? 's' : ''}</strong>
+          <div className={`metric-card ${Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? 'strong' : ''}`}
+            style={Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? { background: 'var(--danger)', color: 'white' } : {}}>
+            <RotateCcw style={Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? { color: 'white' } : {}} />
+            <span style={Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? { color: 'white' } : {}}>Empties Owed</span>
+            <strong>
+              {Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0)} cylinder{Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) !== 1 ? 's' : ''}
+            </strong>
           </div>
           <div className="metric-card">
             <Package />
@@ -361,7 +363,6 @@ export default function Customers() {
           </div>
         </section>
 
-        {/* Full-width Credits Banner */}
         {Object.values(customer.empty_credits || {}).length > 0 && (
           <div style={{ 
             marginBottom: '16px', 
@@ -380,6 +381,31 @@ export default function Customers() {
               {Object.values(customer.empty_credits).map((c, i) => (
                 <span key={i} style={{ fontSize: '1.05rem' }}>
                   <strong>{c.credit}</strong> <span style={{ opacity: 0.8, margin: '0 2px' }}>×</span> {c.name}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Full-width Owed Banner */}
+        {Object.values(customer.empties_owed || {}).length > 0 && (
+          <div style={{ 
+            marginBottom: '16px', 
+            background: 'var(--danger-soft)', 
+            border: '1px solid rgba(239, 68, 68, 0.2)', 
+            color: 'var(--danger)', 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '16px', 
+            padding: '14px 20px',
+            borderRadius: '12px'
+          }}>
+            <RotateCcw size={20} />
+            <span style={{ fontWeight: 600, fontSize: '0.95rem', whiteSpace: 'nowrap' }}>Empties Owed:</span>
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', flex: 1 }}>
+              {Object.values(customer.empties_owed).map((c, i) => (
+                <span key={i} style={{ fontSize: '1.05rem' }}>
+                  <strong>{c.owed}</strong> <span style={{ opacity: 0.8, margin: '0 2px' }}>×</span> {c.name}
                 </span>
               ))}
             </div>
@@ -679,10 +705,10 @@ export default function Customers() {
                 {Number(c.pending_balance) > 0 && (
                   <span className="badge badge-warning">{money(c.pending_balance)}</span>
                 )}
-                {c.empties_owed > 0 && (
+                {Object.values(c.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 && (
                   <span className="badge" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
                     <RotateCcw size={11} style={{ display: 'inline', marginRight: '3px' }} />
-                    {c.empties_owed} empty
+                    {Object.values(c.empties_owed || {}).reduce((s, x) => s + x.owed, 0)} empty
                   </span>
                 )}
 

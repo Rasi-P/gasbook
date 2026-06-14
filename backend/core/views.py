@@ -204,8 +204,23 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         if phone and not phone.isdigit():
             return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
+        if phone:
+            existing_user = User.objects.filter(phone=phone, role=User.Role.CUSTOMER).first()
+            if existing_user:
+                full_name = existing_user.get_full_name() or existing_user.username
+                return Response(
+                    {"detail": f"This mobile number is already in the system. The user is: {full_name} ({existing_user.username})."}, 
+                    status=drf_status.HTTP_400_BAD_REQUEST
+                )
+
+        base_name = "_".join(parts).lower() if parts else "customer"
+        username_str = f"{base_name}_{phone[-4:]}" if phone else f"{base_name}_{get_random_string(8)}"
+        
+        if User.objects.filter(username=username_str).exists():
+            username_str = f"{username_str}_{get_random_string(4)}"
+
         user = User.objects.create_user(
-            username=f"customer_{get_random_string(8)}",
+            username=username_str,
             first_name=parts[0] if parts else "",
             last_name=parts[1] if len(parts) > 1 else "",
             email=email,
@@ -228,19 +243,23 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         profile = serializer.save()
         user = profile.user
-        name = self.request.data.get("name", "")
-        phone = self.request.data.get("phone", "")
-        address = self.request.data.get("address", "")
+        name = self.request.data.get("name")
+        phone = self.request.data.get("phone")
+        address = self.request.data.get("address")
+        email = self.request.data.get("email")
 
-        if name:
-            parts = name.split(" ", 1)
+        if name is not None:
+            parts = name.strip().split(" ", 1)
             user.first_name = parts[0] if parts else ""
             user.last_name = parts[1] if len(parts) > 1 else ""
-        if phone:
-            user.phone = phone
-        if address:
-            user.address = address
-        user.save(update_fields=["first_name", "last_name", "phone", "address"])
+        if phone is not None:
+            user.phone = phone.strip()
+        if address is not None:
+            user.address = address.strip()
+        if email is not None:
+            user.email = email.strip()
+            
+        user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
 
 class SaleViewSet(viewsets.ModelViewSet):
@@ -954,7 +973,7 @@ def reports(request):
     from .models import SaleItem
     cylinder_sales = (
         SaleItem.objects.filter(sale__created_at__date__gte=start, sale__created_at__date__lte=end)
-        .values("cylinder_type__name")
+        .values("cylinder_type__name", "sale__location__name", "sale__sold_by__role")
         .annotate(total_qty=Sum("quantity"), total_amount=Sum("total_amount"))
         .order_by("cylinder_type__name")
     )
@@ -982,45 +1001,65 @@ def reports(request):
     
     # Calculate with_customers correctly by summing physical possession per customer per cylinder type
     # Using a chronological running balance
-    customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type")
+    customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type", "custom_rates")
     with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
+    customer_credits_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
     
     for customer in customers:
-        # We must process sales chronologically to maintain the correct running balance
         sales = customer.sales.filter(created_at__date__lte=end).order_by("created_at")
-        balances = {} # tid -> debt
+        custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in customer.custom_rates.all()}
+        balances = {} # tid -> {owed, credits}
         
         for sale in sales:
             for item in sale.items.all():
                 tid = item.cylinder_type_id
                 if tid not in balances:
-                    balances[tid] = 0
+                    balances[tid] = {"owed": 0, "credits": 0}
                 
-                taken = item.quantity
-                returned = item.empty_returned
+                returned_qty = item.empty_returned
+                balances[tid]["owed"] -= returned_qty
+                if balances[tid]["owed"] < 0:
+                    balances[tid]["credits"] += abs(balances[tid]["owed"])
+                    balances[tid]["owed"] = 0
                 
-                # 1. Returned empties pay off existing debt first
-                payoff = min(balances[tid], returned)
-                balances[tid] -= payoff
+                taken_qty = item.quantity
+                balances[tid]["owed"] += taken_qty
                 
-                # 2. Taken cylinders ALWAYS increase debt
-                balances[tid] += taken
+                refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
+                threshold = (item.cylinder_type.selling_price + refill_rate) / 2
                 
-        for tid, debt in balances.items():
-            if tid in with_customers_by_type and debt > 0:
-                with_customers_by_type[tid] += debt
+                if item.rate <= threshold and taken_qty > 0:
+                    credits_needed = max(0, taken_qty - returned_qty)
+                    balances[tid]["credits"] -= credits_needed
+                    if balances[tid]["credits"] < 0:
+                        balances[tid]["credits"] = 0
+                
+        for tid, data in balances.items():
+            if tid in with_customers_by_type and data["owed"] > 0:
+                with_customers_by_type[tid] += data["owed"]
+            if tid in customer_credits_by_type and data["credits"] > 0:
+                customer_credits_by_type[tid] += data["credits"]
                     
     for cylinder in CylinderType.objects.filter(is_active=True):
         cstocks = stocks.filter(cylinder_type=cylinder)
         with_customers = with_customers_by_type.get(cylinder.id, 0)
+        customer_credits = customer_credits_by_type.get(cylinder.id, 0)
+        
+        shop_filled = cstocks.filter(location__code="shop", status="filled").aggregate(t=Sum("quantity"))["t"] or 0
+        shop_empty = cstocks.filter(location__code="shop", status="empty").aggregate(t=Sum("quantity"))["t"] or 0
+        kandam_filled = cstocks.filter(location__code="kandam", status="filled").aggregate(t=Sum("quantity"))["t"] or 0
+        kandam_empty = cstocks.filter(location__code="kandam", status="empty").aggregate(t=Sum("quantity"))["t"] or 0
+        
         stock_snapshot.append({
             "type": cylinder.name,
-            "shop_filled": cstocks.filter(location__code="shop", status="filled").aggregate(t=Sum("quantity"))["t"] or 0,
-            "shop_empty": cstocks.filter(location__code="shop", status="empty").aggregate(t=Sum("quantity"))["t"] or 0,
-            "kandam_filled": cstocks.filter(location__code="kandam", status="filled").aggregate(t=Sum("quantity"))["t"] or 0,
-            "kandam_empty": cstocks.filter(location__code="kandam", status="empty").aggregate(t=Sum("quantity"))["t"] or 0,
+            "shop_filled": shop_filled,
+            "shop_empty": shop_empty,
+            "kandam_filled": kandam_filled,
+            "kandam_empty": kandam_empty,
             "with_customers": with_customers,
-            "total": (cstocks.aggregate(t=Sum("quantity"))["t"] or 0) + with_customers,
+            "customer_credits": customer_credits,
+            "supplier_stock": shop_filled + shop_empty + kandam_filled + kandam_empty + with_customers - customer_credits,
+            "physical_stock": shop_filled + shop_empty + kandam_filled + kandam_empty,
         })
 
     range_loads = range_movements.filter(

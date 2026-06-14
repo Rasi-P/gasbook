@@ -25,7 +25,7 @@ type PendingDue = {
   customer__user__first_name: string; customer__user__last_name: string; customer__user__phone: string;
   total_due: number; sale_count: number;
 };
-type CylinderSale = { cylinder_type__name: string; total_qty: number; total_amount: number };
+type CylinderSale = { cylinder_type__name: string; sale__location__name?: string; sale__sold_by__role?: string; total_qty: number; total_amount: number };
 type StockRow = {
   type: string; shop_filled: number; shop_empty: number;
   kandam_filled: number; kandam_empty: number;
@@ -177,30 +177,76 @@ export default function Reports() {
               </section>
 
               {data.cylinder_sales.length > 0 && (
-                <div className="card">
-                  <div className="section-head">
+                <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                  <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
                     <h2>Cylinder-wise Sales</h2>
                     <Package size={18} style={{ color: 'var(--primary)' }} />
                   </div>
                   <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Cylinder</th>
-                          <th style={{ textAlign: 'right' }}>Qty Sold</th>
-                          <th style={{ textAlign: 'right' }}>Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.cylinder_sales.map((c) => (
-                          <tr key={c.cylinder_type__name}>
-                            <td><strong>{c.cylinder_type__name}</strong></td>
-                            <td style={{ textAlign: 'right' }}>{c.total_qty}</td>
-                            <td style={{ textAlign: 'right' }}>{money(c.total_amount)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    {(() => {
+                      const saleGroups = data.cylinder_sales.reduce((acc, curr) => {
+                        const cyl = curr.cylinder_type__name;
+                        const loc = curr.sale__location__name || 'Unknown';
+                        const colKey = loc;
+                        
+                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
+                        if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
+                        
+                        acc[cyl][colKey].qty += curr.total_qty;
+                        acc[cyl][colKey].amount += curr.total_amount;
+                        
+                        acc[cyl].total_qty += curr.total_qty;
+                        acc[cyl].total_amount += curr.total_amount;
+                        return acc;
+                      }, {} as Record<string, any>);
+
+                      const colKeys = Array.from(new Set(data.cylinder_sales.map(s => {
+                        return s.sale__location__name || 'Unknown';
+                      }))).sort();
+
+                      return (
+                        <table style={{ minWidth: '100%', margin: 0 }}>
+                          <thead style={{ background: 'var(--surface-muted)' }}>
+                            <tr>
+                              <th style={{ padding: '12px 18px' }}>Cylinder</th>
+                              {colKeys.map((col) => (
+                                <th key={col} style={{ textAlign: 'center', borderLeft: '1px dashed var(--border)' }}>{col}</th>
+                              ))}
+                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Qty</th>
+                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(saleGroups).sort(([cylA], [cylB]) => parseFloat(cylA) - parseFloat(cylB)).map(([cyl, dataObj]) => (
+                              <tr key={cyl} style={{ borderTop: '1px solid var(--border)' }}>
+                                <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
+                                {colKeys.map((col) => (
+                                  <td key={col} style={{ textAlign: 'center', fontWeight: 700, borderLeft: '1px dashed var(--border)', background: 'var(--surface)' }}>
+                                    {dataObj[col] ? (
+                                      <span style={{ background: 'var(--info-soft)', color: 'var(--info)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
+                                        {dataObj[col].qty}
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: 'var(--border)' }}>-</span>
+                                    )}
+                                  </td>
+                                ))}
+                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
+                                  <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: '1rem' }}>
+                                    {dataObj.total_qty}
+                                  </span>
+                                </td>
+                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
+                                  <span style={{ fontWeight: 800, color: 'var(--text)', fontSize: '1.05rem' }}>
+                                    {money(dataObj.total_amount)}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -219,92 +265,117 @@ export default function Reports() {
 
           {/* STOCK TAB — full flow */}
           {tab === 'stock' && (
-            <>
+            <div style={{ display: 'grid', gap: '16px' }}>
               {/* Loads received in range */}
-              <div className="card">
-                <div className="section-head">
+              <div className="card" style={{ padding: 0 }}>
+                <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
                   <h2>New Cylinders Purchased (Loads)</h2>
                   <span className="badge">Supplier → Location</span>
                 </div>
                 {data.load_summary.length === 0
-                  ? <p style={{ textAlign: 'center', padding: '16px' }}>No loads in this range.</p>
-                  : (
-                    <div className="table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Cylinder</th>
-                            <th>Location</th>
-                            <th style={{ textAlign: 'right' }}>Qty Loaded</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {data.load_summary.map((l, i) => (
-                            <tr key={i}>
-                              <td><strong>{l.cylinder_type__name}</strong></td>
-                              <td>{l.to_location__name}</td>
-                              <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--success)' }}>{l.total_qty}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                  ? <p style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No loads in this range.</p>
+                  : (() => {
+                      const loadGroups = data.load_summary.reduce((acc, curr) => {
+                        const cyl = curr.cylinder_type__name;
+                        if (!acc[cyl]) acc[cyl] = { total: 0 };
+                        acc[cyl][curr.to_location__name] = (acc[cyl][curr.to_location__name] || 0) + curr.total_qty;
+                        acc[cyl].total += curr.total_qty;
+                        return acc;
+                      }, {} as Record<string, any>);
+                      const locs = Array.from(new Set(data.load_summary.map(l => l.to_location__name))).sort();
+                      
+                      return (
+                        <div className="table-wrap">
+                          <table style={{ minWidth: '100%', margin: 0 }}>
+                            <thead style={{ background: 'var(--surface-muted)' }}>
+                              <tr>
+                                <th style={{ padding: '12px 18px' }}>Cylinder</th>
+                                {locs.map((loc, idx) => (
+                                  <th key={loc} style={{ textAlign: 'center', borderLeft: idx >= 0 ? '1px dashed var(--border)' : 'none' }}>{loc}</th>
+                                ))}
+                                <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Added</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {Object.entries(loadGroups).sort(([cylA], [cylB]) => parseFloat(cylA) - parseFloat(cylB)).map(([cyl, locData]) => (
+                                <tr key={cyl} style={{ borderTop: '1px solid var(--border)' }}>
+                                  <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
+                                  {locs.map((loc, idx) => (
+                                    <td key={loc} style={{ textAlign: 'center', fontWeight: 700, borderLeft: idx >= 0 ? '1px dashed var(--border)' : 'none', background: 'var(--surface)' }}>
+                                      {locData[loc] ? (
+                                        <span style={{ background: 'var(--primary-soft)', color: 'var(--primary)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
+                                          {locData[loc]}
+                                        </span>
+                                      ) : (
+                                        <span style={{ color: 'var(--border)' }}>-</span>
+                                      )}
+                                    </td>
+                                  ))}
+                                  <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
+                                    <span className="badge badge-success" style={{ fontSize: '0.95rem', padding: '6px 12px' }}>
+                                      +{locData.total}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                  })()
+                }
               </div>
 
               {/* Supplier Balance */}
-              <div className="card">
-                <div className="section-head">
+              <div className="card" style={{ padding: 0 }}>
+                <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
                   <h2>Supplier Balance (All Time)</h2>
                   <span className="badge">Pending to Receive</span>
                 </div>
-                {data.supplier_balance && data.supplier_balance.length === 0
-                  ? <p style={{ textAlign: 'center', padding: '16px' }}>No supplier records found.</p>
+                {(data as any).supplier_balance && (data as any).supplier_balance.length === 0
+                  ? <p style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No supplier records found.</p>
                   : (
-                    <div className="table-wrap">
-                      <table>
-                        <thead>
-                            <tr>
-                              <th>Cylinder</th>
-                              <th style={{ textAlign: 'right' }}>Pending from Supplier</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                          {data.supplier_balance && data.supplier_balance.map((b, i) => (
-                            <tr key={i}>
-                              <td><strong>{b.type}</strong></td>
-                              <td style={{ textAlign: 'right', fontWeight: 700, color: b.pending > 0 ? 'var(--warning)' : 'var(--success)' }}>
-                                {b.pending > 0 ? `${b.pending}` : '0 (Settled)'}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                    <div>
+                      {data.supplier_balance && [...data.supplier_balance].sort((a: any, b: any) => parseFloat(a.type) - parseFloat(b.type)).map((b: any, i: number) => (
+                        <div key={i} style={{ 
+                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                          padding: '14px 18px', borderTop: '1px solid var(--border)'
+                        }}>
+                          <strong style={{ fontSize: '1.05rem', color: 'var(--text)' }}>{b.type}</strong>
+                          <span className={`badge ${b.pending > 0 ? 'badge-warning' : 'badge-success'}`} style={{ fontSize: '0.95rem', padding: '6px 12px' }}>
+                            {b.pending > 0 ? `${b.pending} Pending` : 'Settled'}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   )}
               </div>
 
               {/* Current stock snapshot */}
-              <div className="card">
-                <div className="section-head">
-                  <h2>Current Stock Snapshot</h2>
-                  <Boxes size={18} style={{ color: 'var(--primary)' }} />
+              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
+                  <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Boxes size={18} style={{ color: 'var(--primary)' }} />
+                    Current Stock Snapshot
+                  </h2>
                 </div>
                 <div className="table-wrap">
-                  <table>
-                    <thead>
+                  <table style={{ minWidth: '600px', margin: 0 }}>
+                    <thead style={{ background: 'var(--surface-muted)' }}>
                       <tr>
-                        <th>Type</th>
+                        <th style={{ padding: '12px 18px' }}>Type</th>
                         <th style={{ textAlign: 'center' }}>Shop (F/E)</th>
                         <th style={{ textAlign: 'center' }}>Kandam (F/E)</th>
-                        <th style={{ textAlign: 'right' }}>With Customers</th>
-                        <th style={{ textAlign: 'right' }}>Total</th>
+                        <th style={{ textAlign: 'center' }}>With Customers</th>
+                        <th style={{ textAlign: 'center' }}>Extras From Customers</th>
+                        <th style={{ textAlign: 'center', padding: '12px 18px' }}>Supplier Stock<br/><span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>(Base)</span></th>
+                        <th style={{ textAlign: 'right', padding: '12px 18px' }}>Total Physical<br/><span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>(Shop + Kandam)</span></th>
                       </tr>
                     </thead>
                     <tbody>
-                      {data.stock_snapshot.map((r) => (
+                      {[...data.stock_snapshot].sort((a, b) => parseFloat(a.type) - parseFloat(b.type)).map((r) => (
                         <tr key={r.type}>
-                          <td><strong>{r.type}</strong></td>
+                          <td style={{ padding: '14px 18px' }}><strong>{r.type}</strong></td>
                           <td style={{ textAlign: 'center' }}>
                             <span style={{ color: 'var(--success)', fontWeight: 600 }}>{r.shop_filled}</span>
                             <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>/</span>
@@ -315,12 +386,18 @@ export default function Reports() {
                             <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>/</span>
                             <span style={{ color: 'var(--danger)' }}>{r.kandam_empty}</span>
                           </td>
-                          <td style={{ textAlign: 'right' }}>
+                          <td style={{ textAlign: 'center' }}>
                             {r.with_customers > 0
-                              ? <span style={{ color: 'var(--warning)', fontWeight: 700 }}>{r.with_customers}</span>
+                              ? <span style={{ color: 'var(--danger)', fontWeight: 700 }}>{r.with_customers}</span>
                               : <span style={{ color: 'var(--text-muted)' }}>—</span>}
                           </td>
-                          <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{r.total}</td>
+                          <td style={{ textAlign: 'center' }}>
+                            {r.customer_credits > 0
+                              ? <span style={{ color: 'var(--success)', fontWeight: 700 }}>{r.customer_credits}</span>
+                              : <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                          </td>
+                          <td style={{ textAlign: 'center', padding: '14px 18px' }}>{r.supplier_stock}</td>
+                          <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '14px 18px' }}>{r.physical_stock}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -330,94 +407,173 @@ export default function Reports() {
 
               {/* Cylinder-wise sold in range */}
               {data.cylinder_sales.length > 0 && (
-                <div className="card">
-                  <div className="section-head">
-                    <h2>Sold in Range</h2>
-                    <Package size={18} style={{ color: 'var(--primary)' }} />
+                <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                  <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
+                    <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Package size={18} style={{ color: 'var(--primary)' }} />
+                      Sold in Range
+                    </h2>
                   </div>
                   <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Cylinder</th>
-                          <th style={{ textAlign: 'right' }}>Qty Sold</th>
-                          <th style={{ textAlign: 'right' }}>Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.cylinder_sales.map((c) => (
-                          <tr key={c.cylinder_type__name}>
-                            <td><strong>{c.cylinder_type__name}</strong></td>
-                            <td style={{ textAlign: 'right' }}>{c.total_qty}</td>
-                            <td style={{ textAlign: 'right' }}>{money(c.total_amount)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    {(() => {
+                      const saleGroups = data.cylinder_sales.reduce((acc, curr) => {
+                        const cyl = curr.cylinder_type__name;
+                        const loc = curr.sale__location__name || 'Unknown';
+                        const colKey = loc;
+                        
+                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
+                        if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
+                        
+                        acc[cyl][colKey].qty += curr.total_qty;
+                        acc[cyl][colKey].amount += curr.total_amount;
+                        
+                        acc[cyl].total_qty += curr.total_qty;
+                        acc[cyl].total_amount += curr.total_amount;
+                        return acc;
+                      }, {} as Record<string, any>);
+
+                      const colKeys = Array.from(new Set(data.cylinder_sales.map(s => {
+                        return s.sale__location__name || 'Unknown';
+                      }))).sort();
+
+                      return (
+                        <table style={{ minWidth: '100%', margin: 0 }}>
+                          <thead style={{ background: 'var(--surface-muted)' }}>
+                            <tr>
+                              <th style={{ padding: '12px 18px' }}>Cylinder</th>
+                              {colKeys.map((col) => (
+                                <th key={col} style={{ textAlign: 'center', borderLeft: '1px dashed var(--border)' }}>{col}</th>
+                              ))}
+                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Qty</th>
+                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {Object.entries(saleGroups).sort(([cylA], [cylB]) => parseFloat(cylA) - parseFloat(cylB)).map(([cyl, dataObj]) => (
+                              <tr key={cyl} style={{ borderTop: '1px solid var(--border)' }}>
+                                <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
+                                {colKeys.map((col) => (
+                                  <td key={col} style={{ textAlign: 'center', fontWeight: 700, borderLeft: '1px dashed var(--border)', background: 'var(--surface)' }}>
+                                    {dataObj[col] ? (
+                                      <span style={{ background: 'var(--info-soft)', color: 'var(--info)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
+                                        {dataObj[col].qty}
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: 'var(--border)' }}>-</span>
+                                    )}
+                                  </td>
+                                ))}
+                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
+                                  <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: '1rem' }}>
+                                    {dataObj.total_qty}
+                                  </span>
+                                </td>
+                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
+                                  <span style={{ fontWeight: 800, color: 'var(--text)', fontSize: '1.05rem' }}>
+                                    {money(dataObj.total_amount)}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
-            </>
+            </div>
           )}
 
           {/* SALES TAB */}
           {tab === 'sales' && (
             <div className="card" style={{ padding: 0 }}>
-              {data.sales_list.length === 0 && (
-                <p style={{ textAlign: 'center', padding: '24px' }}>No sales in this range.</p>
-              )}
-              {data.sales_list.map((s) => (
-                <div key={s.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <button
-                    onClick={() => setExpandedSale(expandedSale === s.id ? null : s.id)}
-                    style={{
-                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                      width: '100%', padding: '14px 18px', background: 'none', border: 'none',
-                      textAlign: 'left', cursor: 'pointer',
-                    }}
-                  >
-                    <div>
-                      <strong>{s.customer_name || 'Walk-in'}</strong>
-                      <p style={{ fontSize: '0.82rem', marginTop: '2px' }}>
-                        {fmtDateTime(s.created_at)} · {s.location_name} · {s.payment_mode.toUpperCase()} · by {s.sold_by_name}
-                      </p>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontWeight: 700 }}>{money(s.total_amount)}</div>
-                        {Number(s.balance_due) > 0
-                          ? <span className="badge badge-warning">Due {money(s.balance_due)}</span>
-                          : <span className="badge badge-success">Paid</span>}
-                      </div>
-                      {expandedSale === s.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </div>
-                  </button>
-                  {expandedSale === s.id && (
-                    <div style={{ background: 'var(--surface-muted)', padding: '10px 18px 14px', display: 'grid', gap: '6px' }}>
-                      {s.items.map((item, i) => (
-                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem' }}>
-                          <span><strong>{item.quantity} × {item.cylinder_type_name}</strong></span>
-                          <span style={{ color: 'var(--text-muted)' }}>@ {money(item.rate)} = {money(item.quantity * Number(item.rate))}</span>
-                        </div>
-                      ))}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', marginTop: '4px', paddingTop: '8px', borderTop: '1px solid var(--border)' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Paid</span>
-                        <strong style={{ color: 'var(--success)' }}>{money(s.paid_amount)}</strong>
-                      </div>
-                      {s.payments && s.payments.length > 0 && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '4px', paddingTop: '4px' }}>
-                          {s.payments.map((p, idx) => (
-                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                              <span>{p.date ? new Date(p.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : ''} · {p.mode.toUpperCase()}</span>
-                              <span>{money(p.amount)}</span>
-                            </div>
+              <div className="table-wrap">
+                <table style={{ minWidth: '100%', margin: 0 }}>
+                  <thead style={{ background: 'var(--surface-muted)' }}>
+                    <tr>
+                      <th style={{ padding: '12px 18px' }}>Customer</th>
+                      <th style={{ padding: '12px 18px' }}>Items</th>
+                      <th style={{ textAlign: 'right', padding: '12px 18px' }}>Total</th>
+                      <th style={{ textAlign: 'right', padding: '12px 18px' }}>Balance</th>
+                      <th style={{ padding: '12px 18px' }}>Mode</th>
+                      <th style={{ padding: '12px 18px' }}>Staff</th>
+                      <th style={{ padding: '12px 18px' }}>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.sales_list.map((sale) => (
+                      <tr key={sale.id} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ padding: '14px 18px' }}><strong>{sale.customer_name || 'Walk-in'}</strong></td>
+                        <td style={{ padding: '14px 18px' }}>
+                          {sale.items.map((item, i) => (
+                            <span key={i} style={{ display: 'block', fontSize: '0.82rem', marginBottom: '2px' }}>
+                              {item.quantity > 0 && <span>{item.quantity}×{item.cylinder_type_name} @ {money(item.rate)}</span>}
+                              {/* Assuming 'empty_returned' exists on item, but let's safely fall back if not */}
+                              {(item as any).empty_returned > 0 ? (
+                                <span style={{ 
+                                  color: (!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger)' : 'var(--text-muted)', 
+                                  marginLeft: item.quantity > 0 ? '6px' : '0',
+                                  background: (!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger-soft, #fee2e2)' : 'var(--surface)',
+                                  padding: '1px 6px',
+                                  borderRadius: '4px',
+                                  border: `1px solid ${(!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger)' : 'var(--border)'}`
+                                }}>
+                                  🔄 Returned {(item as any).empty_returned} × {item.cylinder_type_name} empties
+                                </span>
+                              ) : (
+                                !sale.customer_name && item.quantity > 0 && (
+                                  <span style={{ 
+                                    color: 'var(--danger)', 
+                                    marginLeft: '6px',
+                                    background: 'var(--danger-soft, #fee2e2)',
+                                    padding: '1px 6px',
+                                    borderRadius: '4px',
+                                    border: '1px solid var(--danger)'
+                                  }}>
+                                    ⚠️ 0 empties returned
+                                  </span>
+                                )
+                              )}
+                            </span>
                           ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '14px 18px' }}>
+                          {(sale as any).note === 'Empty cylinders returned' ? '-' : money(sale.total_amount)}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: '14px 18px' }}>
+                          {(sale as any).note === 'Empty cylinders returned' ? '-' : (
+                            Number(sale.balance_due) > 0
+                              ? <span className="badge badge-warning">{money(sale.balance_due)}</span>
+                              : <span className="badge badge-success">Paid</span>
+                          )}
+                        </td>
+                        <td style={{ whiteSpace: 'nowrap', padding: '14px 18px' }}>
+                          {(sale as any).note === 'Empty cylinders returned' ? (
+                            <span className="badge" style={{ background: 'var(--surface)', color: 'var(--text-muted)' }}>Return</span>
+                          ) : (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span className="badge">{sale.payment_mode}</span>
+                              {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && sale.payments && sale.payments.length > 0 && (
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                  {sale.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ fontSize: '0.82rem', padding: '14px 18px' }}>{sale.sold_by_name}</td>
+                        <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', padding: '14px 18px' }}>
+                          {new Date(sale.created_at).toLocaleDateString('en-IN')}
+                        </td>
+                      </tr>
+                    ))}
+                    {data.sales_list.length === 0 && (
+                      <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px' }}>No sales found in this range.</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

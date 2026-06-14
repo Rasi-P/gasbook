@@ -364,7 +364,11 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
     def get_empties_owed(self, obj):
         balances = self._calculate_cylinder_balances(obj)
-        return sum(data["owed"] for data in balances.values())
+        final_owed = {}
+        for tid, data in balances.items():
+            if data["owed"] > 0:
+                final_owed[tid] = {"owed": data["owed"], "name": data["name"]}
+        return final_owed
 
     def get_sales_count(self, obj):
         return obj.sales.count()

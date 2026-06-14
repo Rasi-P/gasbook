@@ -43,7 +43,7 @@ export default function Sales() {
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
-  const [customerSuggestions, setCustomerSuggestions] = useState<{ id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: number; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }> }[]>([]);
+  const [customerSuggestions, setCustomerSuggestions] = useState<{ id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: Record<number, { owed: number; name: string }>; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }> }[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [location, setLocation] = useState(0);
@@ -431,14 +431,6 @@ export default function Sales() {
                               {Number(c.pending_balance) > 0 && (
                                 <span className="badge badge-warning" style={{ fontSize: '0.75rem' }}>Due {money(c.pending_balance)}</span>
                               )}
-                              {c.empties_owed > 0 && (
-                                <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--danger-soft)', color: 'var(--danger)', display: 'block', marginTop: '3px' }}>{c.empties_owed} empty owed</span>
-                              )}
-                              {c.empty_credits && Object.values(c.empty_credits).map((ec: any) => (
-                                <span key={ec.name} className="badge badge-success" style={{ fontSize: '0.75rem', display: 'block', marginTop: '3px' }}>
-                                  {ec.credit} × {ec.name} credit
-                                </span>
-                              ))}
                             </div>
                           </div>
                         </button>
@@ -479,8 +471,12 @@ export default function Sales() {
                 </div>
                 <div style={{ flex: 1, minWidth: '120px' }}>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Empties Owed</div>
-                  {selectedCustomer.empties_owed > 0 ? (
-                    <strong style={{ color: 'var(--danger)', fontSize: '1.1rem' }}>{selectedCustomer.empties_owed} cylinders</strong>
+                  {selectedCustomer.empties_owed && Object.values(selectedCustomer.empties_owed).length > 0 ? (
+                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                      {Object.values(selectedCustomer.empties_owed).map((ec: any) => (
+                        <span key={ec.name} className="badge" style={{ padding: '4px 8px', background: 'var(--danger-soft)', color: 'var(--danger)' }}>{ec.owed} × {ec.name}</span>
+                      ))}
+                    </div>
                   ) : (
                     <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: '0.95rem' }}>None</span>
                   )}

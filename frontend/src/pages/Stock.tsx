@@ -91,7 +91,7 @@ function AppSelect<T extends string | number>({
 }
 
 export default function Stock() {
-  const [activeTab, setActiveTab] = useState<Tab>('movement');
+  const [activeTab, setActiveTab] = useState<Tab>('refuel');
   const [locations, setLocations] = useState<Location[]>([]);
   const [cylinderTypes, setCylinderTypes] = useState<CylinderType[]>([]);
 
@@ -440,9 +440,9 @@ export default function Stock() {
       </div>
 
       <div style={{ display: 'flex', background: 'var(--border)', borderRadius: '8px', padding: '4px', marginBottom: '16px' }}>
+        {tabBtn('refuel', '🔥 Refuel')}
         {tabBtn('movement', 'Movement')}
         {tabBtn('new_load', 'New Load')}
-        {tabBtn('refuel', '🔥 Refuel')}
         {tabBtn('history', 'History')}
       </div>
 
