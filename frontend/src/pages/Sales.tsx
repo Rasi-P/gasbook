@@ -224,6 +224,10 @@ export default function Sales() {
     e.preventDefault();
     setMessage(''); setError('');
     if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
+    if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
+      setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
+      return;
+    }
     try {
       let customerId: number | null = selectedCustomerId;
       if (!customerId) {

@@ -297,6 +297,16 @@ export default function Customers() {
   async function handleReceivePayment(e: FormEvent) {
     e.preventDefault();
     if (!selected) return;
+    
+    const totalPayment = paymentMode === 'split' 
+      ? Number(paymentSplit.cash) + Number(paymentSplit.gpay) + Number(paymentSplit.bank)
+      : Number(paymentAmount);
+      
+    if (totalPayment > Number(selected.customer.pending_balance)) {
+      alert(`Cannot receive more than the pending balance of Rs. ${selected.customer.pending_balance}.`);
+      return;
+    }
+
     setPaymentSaving(true);
     try {
       if (paymentMode === 'split') {
