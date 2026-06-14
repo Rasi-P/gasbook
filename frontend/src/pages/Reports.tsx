@@ -10,6 +10,7 @@ type Sale = {
   id: number; created_at: string; customer_name: string; sold_by_name: string;
   total_amount: number; paid_amount: number; balance_due: number;
   payment_mode: string; location_name: string; items: SaleItem[];
+  payments?: { amount: number; mode: string; date: string }[];
 };
 type Expense = {
   id: number; created_at: string; category: string;
@@ -21,7 +22,7 @@ type Movement = {
   moved_by_name: string; created_at: string;
 };
 type PendingDue = {
-  customer__name: string; customer__phone: string;
+  customer__user__first_name: string; customer__user__last_name: string; customer__user__phone: string;
   total_due: number; sale_count: number;
 };
 type CylinderSale = { cylinder_type__name: string; total_qty: number; total_amount: number };
@@ -371,6 +372,16 @@ export default function Reports() {
                         <span style={{ color: 'var(--text-muted)' }}>Paid</span>
                         <strong style={{ color: 'var(--success)' }}>{money(s.paid_amount)}</strong>
                       </div>
+                      {s.payments && s.payments.length > 0 && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', marginTop: '4px', paddingTop: '4px' }}>
+                          {s.payments.map((p, idx) => (
+                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              <span>{p.date ? new Date(p.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : ''} · {p.mode.toUpperCase()}</span>
+                              <span>{money(p.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -384,19 +395,22 @@ export default function Reports() {
               {data.pending_dues.length === 0 && (
                 <p style={{ textAlign: 'center', padding: '24px', color: 'var(--success)' }}>✓ No pending dues!</p>
               )}
-              {data.pending_dues.map((d, i) => (
-                <div key={i} style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '14px 18px', borderBottom: '1px solid var(--border)',
-                }}>
-                  <div>
-                    <strong>{d.customer__name || '—'}</strong>
-                    {d.customer__phone && <p style={{ fontSize: '0.82rem', marginTop: '2px' }}>{d.customer__phone}</p>}
-                    <p style={{ fontSize: '0.82rem' }}>{d.sale_count} sale{d.sale_count !== 1 ? 's' : ''} pending</p>
+              {data.pending_dues.map((d, i) => {
+                const fullName = `${d.customer__user__first_name || ''} ${d.customer__user__last_name || ''}`.trim();
+                return (
+                  <div key={i} style={{
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '14px 18px', borderBottom: '1px solid var(--border)',
+                  }}>
+                    <div>
+                      <strong>{fullName || 'Walk-in'}</strong>
+                      {d.customer__user__phone && <p style={{ fontSize: '0.82rem', marginTop: '2px' }}>{d.customer__user__phone}</p>}
+                      <p style={{ fontSize: '0.82rem' }}>{d.sale_count} sale{d.sale_count !== 1 ? 's' : ''} pending</p>
+                    </div>
+                    <span className="badge badge-warning" style={{ fontSize: '0.9rem' }}>{money(d.total_due)}</span>
                   </div>
-                  <span className="badge badge-warning" style={{ fontSize: '0.9rem' }}>{money(d.total_due)}</span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </>

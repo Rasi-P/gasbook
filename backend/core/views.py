@@ -208,6 +208,65 @@ class PaymentViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentSerializer
     permission_classes = [IsStaffOrAdmin]
 
+    @transaction.atomic
+    def perform_create(self, serializer):
+        payment = serializer.save()
+        if payment.sale:
+            sale = payment.sale
+            sale.paid_amount += payment.amount
+            sale.balance_due = max(Decimal(0), sale.total_amount - sale.paid_amount)
+            sale.save(update_fields=["paid_amount", "balance_due"])
+        else:
+            pending_sales = Sale.objects.filter(customer=payment.customer, balance_due__gt=0).order_by("created_at")
+            remaining_payment = payment.amount
+            first_allocation = True
+            for sale in pending_sales:
+                if remaining_payment <= 0:
+                    break
+                
+                allocated = sale.balance_due if remaining_payment >= sale.balance_due else remaining_payment
+                
+                sale.paid_amount += allocated
+                sale.balance_due -= allocated
+                sale.save(update_fields=["paid_amount", "balance_due"])
+                
+                if first_allocation:
+                    payment.sale = sale
+                    payment.amount = allocated
+                    payment.save(update_fields=["sale", "amount"])
+                    first_allocation = False
+                else:
+                    new_p = Payment.objects.create(
+                        customer=payment.customer,
+                        sale=sale,
+                        amount=allocated,
+                        payment_mode=payment.payment_mode,
+                        received_by=payment.received_by,
+                        note=payment.note,
+                        empty_collected=0,
+                    )
+                    # Sync created_at for grouping
+                    new_p.created_at = payment.created_at
+                    new_p.save(update_fields=["created_at"])
+                    
+                remaining_payment -= allocated
+
+            if remaining_payment > 0:
+                if first_allocation:
+                    pass # Left as generic
+                else:
+                    new_p = Payment.objects.create(
+                        customer=payment.customer,
+                        sale=None,
+                        amount=remaining_payment,
+                        payment_mode=payment.payment_mode,
+                        received_by=payment.received_by,
+                        note=payment.note,
+                        empty_collected=0,
+                    )
+                    new_p.created_at = payment.created_at
+                    new_p.save(update_fields=["created_at"])
+
 
 class ExpenseViewSet(viewsets.ModelViewSet):
     queryset = Expense.objects.select_related("spent_by")

@@ -125,7 +125,7 @@ class SaleSerializer(serializers.ModelSerializer):
     payments = serializers.SerializerMethodField()
 
     def get_payments(self, obj):
-        return [{"amount": p.amount, "mode": p.payment_mode} for p in obj.payments.all()]
+        return [{"amount": p.amount, "mode": p.payment_mode, "date": p.created_at} for p in obj.payments.order_by("created_at")]
 
     class Meta:
         model = Sale

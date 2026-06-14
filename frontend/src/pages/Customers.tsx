@@ -32,7 +32,7 @@ type Sale = {
   location_name: string;
   delivery_type: string;
   items: SaleItem[];
-  payments?: { amount: number; mode: string }[];
+  payments?: { amount: number; mode: string; date: string }[];
 };
 
 type Payment = {
@@ -95,6 +95,7 @@ export default function Customers() {
   const [credUserId, setCredUserId] = useState<number | null>(null);
   const [credMsg, setCredMsg] = useState('');
   const [createdPhone, setCreatedPhone] = useState('');
+  const [createdUsername, setCreatedUsername] = useState('');
 
   // Receive Payment Modal
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -200,6 +201,7 @@ export default function Customers() {
         setCredUserId(data.id);
         setCredMsg(tempPassword || 'Password securely generated.');
         setCreatedPhone(createdPhoneNum);
+        setCreatedUsername(username);
       }
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -500,8 +502,8 @@ export default function Customers() {
                       <p>
                         {fmtDate(s.created_at)} · {s.location_name} · {s.payment_mode.toUpperCase()}
                         {(s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0 && (
-                          <span style={{ marginLeft: '6px', opacity: 0.8 }}>
-                            ({s.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')})
+                          <span className="badge" style={{ marginLeft: '6px', fontSize: '0.7rem', padding: '2px 6px', background: 'var(--surface-muted)' }}>
+                            {s.payments.length} Payments
                           </span>
                         )}
                       </p>
@@ -548,6 +550,23 @@ export default function Customers() {
                         );
                       }
                       
+                      if ((s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0) {
+                        rows.push(
+                          <div key="payments" style={{ marginTop: '6px', paddingTop: '10px', borderTop: '1px dashed var(--border)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
+                              <span>Payment Breakdown</span>
+                              <span>Total Paid: {money(s.paid_amount)}</span>
+                            </div>
+                            {s.payments.map((p, idx) => (
+                              <div key={`pay-${idx}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
+                                <span>{p.date ? new Date(p.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : ''} · {p.mode.toUpperCase()}</span>
+                                <span style={{ color: 'var(--success)', fontWeight: 600 }}>{money(p.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }
+
                       return rows;
                     })()}
                   </div>
@@ -572,7 +591,7 @@ export default function Customers() {
         <button
           className="btn btn-primary"
           style={{ width: 'auto', padding: '0 16px' }}
-          onClick={() => { setShowAdd((v) => !v); setAddError(''); setCredUserId(null); setCredMsg(''); setCreatedPhone(''); }}
+          onClick={() => { setShowAdd((v) => !v); setAddError(''); setCredUserId(null); setCredMsg(''); setCreatedPhone(''); setCreatedUsername(''); }}
         >
           {showAdd ? <X size={18} /> : <UserPlus size={18} />}
           {showAdd ? 'Cancel' : 'Add'}
@@ -883,19 +902,111 @@ export default function Customers() {
 
             {/* ── New-customer temp password banner ── */}
             {credUserId && credMsg && c.phone === createdPhone && (
-              <div className="form-stack" style={{ padding: '0 18px 16px 18px', borderBottom: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <h2>Login Credentials Generated</h2>
-                  <button className="icon-button" onClick={() => { setCredUserId(null); setCredMsg(''); }}><X size={16} /></button>
+              <div
+                style={{
+                  padding: '12px 18px',
+                  borderBottom: '1px solid var(--border)',
+                  background: 'var(--surface-muted)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '16px'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <KeyRound size={16} style={{ color: 'var(--primary)' }} />
+                  <span style={{ fontSize: '0.95rem', fontWeight: 500 }}>Login Credentials</span>
                 </div>
-                <div style={{ background: 'var(--surface-muted)', borderRadius: 'var(--radius)', padding: '12px' }}>
-                  <p style={{ fontSize: '0.8rem', marginBottom: '4px' }}>Temporary Password</p>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <strong style={{ fontSize: '1.05rem', wordBreak: 'break-all' }}>{credMsg}</strong>
-                    <button className="icon-button" type="button" onClick={() => navigator.clipboard.writeText(credMsg)} title="Copy Password">
-                      <Copy size={16} />
-                    </button>
+
+                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px', flex: 1, justifyContent: 'flex-end' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                    {/* USERNAME */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>USERNAME</span>
+                      <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem' }}>{createdUsername}</span>
+                    </div>
+                    
+                    {/* TEMPORARY PASSWORD */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>TEMPORARY PASSWORD</span>
+                      <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem', letterSpacing: '0.5px' }}>{credMsg}</span>
+                      
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button 
+                          className="icon-button" 
+                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                          title="Copy Details"
+                          onClick={() => {
+                            const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${createdUsername}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
+                            navigator.clipboard.writeText(msg);
+                            alert('Credentials copied to clipboard!');
+                          }}
+                        >
+                          <Copy size={14} />
+                        </button>
+                        <a
+                          href={c.email ? `mailto:${c.email}?subject=${encodeURIComponent('Your GasBook Account Details')}&body=${encodeURIComponent(`Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${createdUsername}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.\n\nBest regards,\nGasBook Admin`)}` : '#'}
+                          className="icon-button"
+                          title={c.email ? "Email Details" : "No email saved"}
+                          style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center', 
+                            textDecoration: 'none', 
+                            color: 'inherit', 
+                            background: 'var(--surface)', 
+                            border: '1px solid var(--border)', 
+                            width: '28px', 
+                            height: '28px', 
+                            borderRadius: '6px',
+                            opacity: c.email ? 1 : 0.5,
+                            pointerEvents: c.email ? 'auto' : 'none'
+                          }}
+                          onClick={(e) => {
+                            if (!c.email) {
+                              e.preventDefault();
+                              alert('No email address saved for this customer.');
+                            }
+                          }}
+                        >
+                          <Mail size={14} />
+                        </a>
+                        <button 
+                          className="icon-button" 
+                          type="button"
+                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
+                          title="Share Details"
+                          onClick={async () => {
+                            const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${createdUsername}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
+                            if (navigator.share) {
+                              try {
+                                await navigator.share({
+                                  title: 'GasBook Login Details',
+                                  text: msg
+                                });
+                              } catch (err) {
+                                console.error('Error sharing', err);
+                              }
+                            } else {
+                              navigator.clipboard.writeText(msg);
+                              alert('Share not supported on this browser. Credentials copied to clipboard instead!');
+                            }
+                          }}
+                        >
+                          <Share2 size={14} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
+                  
+                  <button 
+                    className="icon-button" 
+                    onClick={() => { setCredUserId(null); setCredMsg(''); setCreatedUsername(''); }}
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', marginLeft: '4px', borderRadius: '6px' }}
+                  >
+                    <X size={14} />
+                  </button>
                 </div>
               </div>
             )}
