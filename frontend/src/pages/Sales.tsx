@@ -8,7 +8,7 @@ import { api } from '../lib/api';
 
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
-type SaleItem = { cylinder_type: number; quantity: number; rate: string; empty_returned: number; rate_type: 'custom' | 'refill' | 'new' };
+type SaleItem = { cylinder_type: number; quantity: number | string; rate: string; empty_returned: number | string; rate_type: 'custom' | 'refill' | 'new' };
 type HistorySale = {
   id: number;
   customer_name: string;
@@ -63,7 +63,7 @@ export default function Sales() {
 
   // Empty-return-only mode
   const [returnMode, setReturnMode] = useState(false);
-  const [returnEmpties, setReturnEmpties] = useState<{ cylinder_type: number; quantity: number }[]>([]);
+  const [returnEmpties, setReturnEmpties] = useState<{ cylinder_type: number; quantity: number | string }[]>([]);
 
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -172,7 +172,7 @@ export default function Sales() {
     const hasCustom = selectedCustomer?.custom_rates?.find((cr: any) => cr.cylinder_type === t.id);
     const initialRateType = hasCustom ? 'custom' : 'refill';
     const rate = getApplicableRate(t.id, initialRateType, selectedCustomer);
-    const newItem: SaleItem = { cylinder_type: t.id, quantity: 1, rate, empty_returned: 0, rate_type: initialRateType };
+    const newItem: SaleItem = { cylinder_type: t.id, quantity: 1, rate, empty_returned: 1, rate_type: initialRateType };
     setItems((prev) => [...prev, newItem]);
   }
 
@@ -193,10 +193,13 @@ export default function Sales() {
   // ── Empty-return-only helpers ─────────────────────────────────────────────
 
   function addReturnRow() {
-    setReturnEmpties((prev) => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: 1 }]);
+    const selectedIds = new Set(returnEmpties.map(r => r.cylinder_type));
+    const firstAvailable = cylinderTypes.find(t => !selectedIds.has(t.id));
+    if (!firstAvailable) return;
+    setReturnEmpties((prev) => [...prev, { cylinder_type: firstAvailable.id, quantity: 1 }]);
   }
 
-  function updateReturnRow(index: number, patch: Partial<{ cylinder_type: number; quantity: number }>) {
+  function updateReturnRow(index: number, patch: Partial<{ cylinder_type: number; quantity: number | string }>) {
     setReturnEmpties((prev) => prev.map((r, i) => i === index ? { ...r, ...patch } : r));
   }
 
@@ -207,7 +210,7 @@ export default function Sales() {
   // ── Totals ────────────────────────────────────────────────────────────────
 
   const total = useMemo(
-    () => items.reduce((sum, item) => sum + item.quantity * Number(item.rate || 0), 0),
+    () => items.reduce((sum, item) => sum + (Number(item.quantity) || 0) * Number(item.rate || 0), 0),
     [items],
   );
   const paid = paymentMode === 'split' ? (Number(saleSplit.cash || 0) + Number(saleSplit.gpay || 0) + Number(saleSplit.bank || 0)) : (paymentMode === 'credit' ? Number(paidAmount || 0) : total);
@@ -242,9 +245,9 @@ export default function Sales() {
         paid_amount: paid,
         sale_items: items.map((item) => ({
           cylinder_type: item.cylinder_type,
-          quantity: item.quantity,
+          quantity: Number(item.quantity) || 1,
           rate: item.rate,
-          empty_returned: item.empty_returned,
+          empty_returned: Number(item.empty_returned) || 0,
         })),
       };
 
@@ -292,7 +295,7 @@ export default function Sales() {
     setMessage(''); setError('');
     if (!selectedCustomerId) { setError('Select a customer to record empty returns.'); return; }
     if (returnEmpties.length === 0) { setError('Add at least one cylinder type to return.'); return; }
-    const totalEmpties = returnEmpties.reduce((s, r) => s + r.quantity, 0);
+    const totalEmpties = returnEmpties.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
     try {
       await api.post('/sales/', {
         customer: selectedCustomerId,
@@ -304,7 +307,7 @@ export default function Sales() {
           cylinder_type: r.cylinder_type,
           quantity: 0,
           rate: 0,
-          empty_returned: r.quantity,
+          empty_returned: Number(r.quantity) || 1,
         })),
       });
       const locName = locations.find(l => l.id === location)?.name || '';
@@ -479,9 +482,11 @@ export default function Sales() {
               <div className="card">
                 <div className="section-head">
                   <h2><RotateCcw size={18} style={{ display: 'inline', marginRight: '6px', color: 'var(--primary)' }} />Empty Cylinders Returned</h2>
-                  <button type="button" className="btn btn-outline" style={{ width: 'auto', minHeight: '36px', padding: '6px 14px' }} onClick={addReturnRow}>
-                    <Plus size={16} /> Add
-                  </button>
+                  {returnEmpties.length < cylinderTypes.length && (
+                    <button type="button" className="btn btn-outline" style={{ width: 'auto', minHeight: '36px', padding: '6px 14px' }} onClick={addReturnRow}>
+                      <Plus size={16} /> Add
+                    </button>
+                  )}
                 </div>
 
                 {returnEmpties.length === 0 && (
@@ -496,26 +501,19 @@ export default function Sales() {
                       <label style={{ flex: 2, margin: 0 }}>
                         <span>Cylinder Type</span>
                         <select value={row.cylinder_type} onChange={(e) => updateReturnRow(i, { cylinder_type: Number(e.target.value) })}>
-                          {cylinderTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                          {cylinderTypes.filter(t => !returnEmpties.some((r, j) => j !== i && r.cylinder_type === t.id)).map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
                         </select>
                       </label>
                       <label style={{ flex: 1, margin: 0 }}>
                         <span>Qty Returned</span>
-                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                          <button type="button"
-                            onClick={() => updateReturnRow(i, { quantity: Math.max(1, row.quantity - 1) })}
-                            style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px' }}>
-                            <Minus size={14} />
-                          </button>
-                          <input type="number" min="1" value={row.quantity}
-                            onChange={(e) => updateReturnRow(i, { quantity: Math.max(1, Number(e.target.value) || 1) })}
-                            style={{ textAlign: 'center', flex: 1 }} />
-                          <button type="button"
-                            onClick={() => updateReturnRow(i, { quantity: row.quantity + 1 })}
-                            style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px' }}>
-                            <Plus size={14} />
-                          </button>
-                        </div>
+                        <input
+                          type="number" min="1" placeholder="0"
+                          value={row.quantity}
+                          onChange={(e) => updateReturnRow(i, { quantity: e.target.value })}
+                          style={{ textAlign: 'center', width: '100%' }}
+                        />
                       </label>
                       <button type="button" onClick={() => removeReturnRow(i)}
                         style={{ background: 'none', border: 'none', color: 'var(--danger)', padding: '4px', marginTop: '20px' }}>
@@ -627,37 +625,21 @@ export default function Sales() {
                           </label>
                           <label>
                             <span>Qty</span>
-                            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                              <button type="button"
-                                onClick={() => updateItem(i, { quantity: Math.max(1, item.quantity - 1) })}
-                                style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px', fontSize: '1.2rem' }}>
-                                <Minus size={14} />
-                              </button>
-                              <input
-                                type="number"
-                                min="1"
-                                value={item.quantity}
-                                onChange={(e) => {
-                                  const v = parseInt(e.target.value, 10);
-                                  updateItem(i, { quantity: v > 0 ? v : 1 });
-                                }}
-                                style={{ textAlign: 'center', flex: 1, minWidth: '40px' }}
-                              />
-                              <button type="button"
-                                onClick={() => updateItem(i, { quantity: item.quantity + 1 })}
-                                style={{ background: 'var(--border)', border: 'none', borderRadius: '6px', width: '36px', height: '40px', fontSize: '1.2rem' }}>
-                                <Plus size={14} />
-                              </button>
-                            </div>
+                            <input
+                              type="number" min="1" placeholder="0"
+                              value={item.quantity}
+                              onChange={(e) => updateItem(i, { quantity: e.target.value })}
+                              style={{ textAlign: 'center' }}
+                            />
                           </label>
                           <label>
                             <span style={{ color: 'var(--primary)' }}>Empty Returned</span>
-                            <div style={{ position: 'relative' }}>
-                              <RotateCcw size={15} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--primary)' }} />
-                              <input type="number" min="0" value={item.empty_returned}
-                                onChange={(e) => updateItem(i, { empty_returned: Math.max(0, Number(e.target.value) || 0) })}
-                                style={{ paddingLeft: '36px', textAlign: 'center', borderColor: 'var(--primary)', color: 'var(--primary)', background: 'var(--primary-soft)' }} />
-                            </div>
+                            <input
+                              type="number" min="0" placeholder="0"
+                              value={item.empty_returned}
+                              onChange={(e) => updateItem(i, { empty_returned: e.target.value })}
+                              style={{ textAlign: 'center', borderColor: 'var(--primary)', color: 'var(--primary)', background: 'var(--primary-soft)' }}
+                            />
                           </label>
                         </div>
 
@@ -673,11 +655,11 @@ export default function Sales() {
                           </div>
 
                           <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--primary)' }}>
-                            {money(item.quantity * Number(item.rate || 0))}
+                            {money((Number(item.quantity) || 0) * Number(item.rate || 0))}
                           </div>
                         </div>
 
-                        {item.rate_type !== 'new' && item.empty_returned < item.quantity && (
+                        {item.rate_type !== 'new' && Number(item.empty_returned) < Number(item.quantity) && (
                           <div style={{ marginTop: '12px', padding: '8px 12px', background: 'var(--warning-soft, rgba(245,158,11,0.1))', color: 'var(--warning, #d97706)', borderRadius: '6px', fontSize: '0.85rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'currentColor' }} />
                             Warning: Quantity is {item.quantity} but only {item.empty_returned} empty returned. Ensure customer has empty credits or change Rate Type to New Cylinder.

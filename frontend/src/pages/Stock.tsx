@@ -6,7 +6,7 @@ import { api } from '../lib/api';
 type Tab = 'movement' | 'new_load' | 'refuel' | 'history';
 type Location = { id: number; name: string; code: string };
 type CylinderType = { id: number; name: string };
-type RefuelItem = { cylinder_type: number; quantity: string };
+type RefuelItem = { cylinder_type: number; quantity: string; status?: string };
 type StockRow = { id: number; cylinder_type: number; location: number; status: string; quantity: number; cylinder_type_name: string; location_name: string };
 type SelectOption<T extends string | number> = { value: T; label: string };
 type Movement = {
@@ -107,7 +107,7 @@ export default function Stock() {
   // ── Movement form ────────────────────────────────────────────────────────
   const [fromLocation, setFromLocation] = useState(0);
   const [toLocation, setToLocation] = useState(0);
-  const [moveItems, setMoveItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '' }]);
+  const [moveItems, setMoveItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '', status: 'filled' }]);
   const [moveStatus, setMoveStatus] = useState('filled');
   const [moveMsg, setMoveMsg] = useState('');
   const [moveErr, setMoveErr] = useState('');
@@ -181,6 +181,41 @@ export default function Stock() {
     { value: 'empty', label: 'Empty' },
   ];
 
+  const getAvailableOptions = (items: RefuelItem[], currentIndex: number) => {
+    const selectedIds = new Set(items.filter((_, i) => i !== currentIndex).map(it => it.cylinder_type));
+    return cylinderOptions.filter(opt => !selectedIds.has(opt.value));
+  };
+
+  const getNextAvailableId = (items: RefuelItem[]) => {
+    const selectedIds = new Set(items.map(it => it.cylinder_type));
+    return cylinderTypes.find(t => !selectedIds.has(t.id))?.id ?? 0;
+  };
+
+  const getMoveAvailableOptions = (items: RefuelItem[], currentIndex: number) => {
+    const currentItem = items[currentIndex];
+    const currentStatus = currentItem.status || 'filled';
+    const selectedIds = new Set(items.filter((it, i) => i !== currentIndex && (it.status || 'filled') === currentStatus).map(it => it.cylinder_type));
+    return cylinderOptions.filter(opt => !selectedIds.has(opt.value));
+  };
+
+  const getNextMoveAvailableItem = (items: RefuelItem[]) => {
+    for (const t of cylinderTypes) {
+      const hasFilled = items.some(it => it.cylinder_type === t.id && (it.status || 'filled') === 'filled');
+      const hasEmpty = items.some(it => it.cylinder_type === t.id && it.status === 'empty');
+      if (!hasFilled) return { cylinder_type: t.id, status: 'filled' };
+      if (!hasEmpty) return { cylinder_type: t.id, status: 'empty' };
+    }
+    return { cylinder_type: cylinderTypes[0]?.id ?? 0, status: 'filled' };
+  };
+
+  const getMoveStatusOptions = (items: RefuelItem[], currentIndex: number) => {
+    const currentItem = items[currentIndex];
+    const otherStatusesForSameType = new Set(
+      items.filter((it, i) => i !== currentIndex && it.cylinder_type === currentItem.cylinder_type).map(it => it.status || 'filled')
+    );
+    return statusOptions.filter(opt => !otherStatusesForSameType.has(opt.value));
+  };
+
   // Set defaults once data loads
   useEffect(() => {
     const nonSupplier = locations.filter((l) => l.code !== 'supplier');
@@ -245,7 +280,7 @@ export default function Stock() {
           cylinder_type: item.cylinder_type,
           from_location: fromLocation,
           to_location: toLocation,
-          status: moveStatus,
+          status: item.status || 'filled',
           quantity: Number(item.quantity),
         });
       }
@@ -255,8 +290,8 @@ export default function Stock() {
         return `${item.quantity}× ${name}`;
       }).join(', ');
 
-      setMoveMsg(`✓ Moved ${summary} ${moveStatus} cylinders successfully.`);
-      setMoveItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }]);
+      setMoveMsg(`✓ Moved ${summary} cylinders successfully.`);
+      setMoveItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '', status: 'filled' }]);
       fetchStock();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: unknown } })?.response?.data;
@@ -486,16 +521,11 @@ export default function Stock() {
               </label>
             </div>
 
-            <label>
-              <span>Status</span>
-              <AppSelect ariaLabel="Cylinder status" value={moveStatus} options={statusOptions} onChange={setMoveStatus} />
-            </label>
-
             {/* Multi-row items */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {moveItems.map((item, idx) => {
                 const srcStock = stockData.find(
-                  (s) => s.cylinder_type === item.cylinder_type && s.location === fromLocation && s.status === moveStatus
+                  (s) => s.cylinder_type === item.cylinder_type && s.location === fromLocation && s.status === (item.status || 'filled')
                 );
                 const available = srcStock?.quantity ?? 0;
                 return (
@@ -509,8 +539,17 @@ export default function Stock() {
                       <AppSelect
                         ariaLabel="Cylinder type"
                         value={item.cylinder_type}
-                        options={cylinderOptions}
+                        options={getMoveAvailableOptions(moveItems, idx)}
                         onChange={(v) => setMoveItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
+                      />
+                    </label>
+                    <label style={{ flex: 0.8, minWidth: '90px' }}>
+                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Status</span>}
+                      <AppSelect
+                        ariaLabel="Status"
+                        value={item.status || 'filled'}
+                        options={getMoveStatusOptions(moveItems, idx)}
+                        onChange={(v) => setMoveItems(prev => prev.map((it, i) => i === idx ? { ...it, status: String(v) } : it))}
                       />
                     </label>
                     <label style={{ flex: 0.6, minWidth: '90px' }}>
@@ -549,14 +588,19 @@ export default function Stock() {
               })}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setMoveItems(prev => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }])}
-              className="btn btn-secondary"
-              style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-            >
-              <Plus size={16} /> Add Cylinder Type
-            </button>
+            {moveItems.length < cylinderTypes.length * 2 && (
+              <button
+                type="button"
+                onClick={() => setMoveItems(prev => {
+                  const nextItem = getNextMoveAvailableItem(prev);
+                  return [...prev, { cylinder_type: nextItem.cylinder_type, quantity: '', status: nextItem.status }];
+                })}
+                className="btn btn-secondary"
+                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
+              >
+                <Plus size={16} /> Add Cylinder Type
+              </button>
+            )}
 
             {moveErr && <p className="form-error">{moveErr}</p>}
             {moveMsg && <p className="form-note">{moveMsg}</p>}
@@ -594,7 +638,7 @@ export default function Stock() {
                     <AppSelect
                       ariaLabel="Cylinder size"
                       value={item.cylinder_type}
-                      options={cylinderOptions}
+                      options={getAvailableOptions(loadItems, idx)}
                       onChange={(v) => setLoadItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                     />
                   </label>
@@ -624,14 +668,16 @@ export default function Stock() {
               ))}
             </div>
 
-            <button
-              type="button"
-              onClick={() => setLoadItems(prev => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }])}
-              className="btn btn-secondary"
-              style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-            >
-              <Plus size={16} /> Add Cylinder Type
-            </button>
+            {loadItems.length < cylinderTypes.length && (
+              <button
+                type="button"
+                onClick={() => setLoadItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
+                className="btn btn-secondary"
+                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
+              >
+                <Plus size={16} /> Add Cylinder Type
+              </button>
+            )}
 
             {loadErr && <p className="form-error">{loadErr}</p>}
             {loadMsg && <p className="form-note">{loadMsg}</p>}
@@ -701,7 +747,7 @@ export default function Stock() {
                         <AppSelect
                           ariaLabel="Cylinder type"
                           value={item.cylinder_type}
-                          options={cylinderOptions}
+                          options={getAvailableOptions(refuelSendItems, idx)}
                           onChange={(v) => setRefuelSendItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                         />
                       </label>
@@ -737,14 +783,16 @@ export default function Stock() {
                 })}
               </div>
 
-              <button
-                type="button"
-                onClick={() => setRefuelSendItems(prev => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }])}
-                className="btn btn-secondary"
-                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-              >
-                <Plus size={16} /> Add
-              </button>
+              {refuelSendItems.length < cylinderTypes.length && (
+                <button
+                  type="button"
+                  onClick={() => setRefuelSendItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
+                  className="btn btn-secondary"
+                  style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
+                >
+                  <Plus size={16} /> Add
+                </button>
+              )}
 
               <div style={{ marginTop: '16px' }}>
                 <label>Reference Note (Optional)</label>
@@ -822,7 +870,7 @@ export default function Stock() {
                       <AppSelect
                         ariaLabel="Cylinder size"
                         value={item.cylinder_type}
-                        options={cylinderOptions}
+                        options={getAvailableOptions(refuelRecvItems, idx)}
                         onChange={(v) => setRefuelRecvItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                       />
                     </label>
@@ -848,14 +896,16 @@ export default function Stock() {
                 ))}
               </div>
 
-              <button
-                type="button"
-                onClick={() => setRefuelRecvItems(prev => [...prev, { cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }])}
-                className="btn btn-secondary"
-                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-              >
-                <Plus size={16} /> Add
-              </button>
+              {refuelRecvItems.length < cylinderTypes.length && (
+                <button
+                  type="button"
+                  onClick={() => setRefuelRecvItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
+                  className="btn btn-secondary"
+                  style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
+                >
+                  <Plus size={16} /> Add
+                </button>
+              )}
 
               <div style={{ marginTop: '16px' }}>
                 <label>Reference Note (Optional)</label>
