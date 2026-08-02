@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Banknote, CheckCircle2, Navigation, PackageCheck, RotateCcw, Truck } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -26,30 +26,53 @@ export default function StaffDashboard() {
   const [stock, setStock] = useState<Stock[]>([]);
   const [collections, setCollections] = useState<Record<number, { amount: string; method: string; paid_method: string; empty: string; split_cash: string; split_gpay: string; split_bank: string }>>({});
   const [message, setMessage] = useState('');
-  const [userName, setUserName] = useState('');
-  const [vehicleLocation, setVehicleLocation] = useState('');
+  const [userName] = useState(() => localStorage.getItem('gasbook_name') || '');
+  const [vehicleLocation] = useState(() => localStorage.getItem('gasbook_vehicle_location') || '');
 
-  function load() {
-    setUserName(localStorage.getItem('gasbook_name') || '');
-    setVehicleLocation(localStorage.getItem('gasbook_vehicle_location') || '');
-    Promise.all([api.get('/deliveries/'), api.get('/stock/')])
-      .then(([deliveryRes, stockRes]) => {
-        const rows = deliveryRes.data.results ?? deliveryRes.data;
-        setDeliveries(rows);
-        setStock(stockRes.data.results ?? stockRes.data);
-        setCollections(Object.fromEntries(rows.map((d: Delivery) => [d.id, { amount: '', method: 'cash', paid_method: 'cash', empty: String(d.quantity), split_cash: '', split_gpay: '', split_bank: '' }])));
+  const load = useCallback(() => {
+    api.get('/deliveries/assigned/')
+      .then((res) => {
+        const data: Delivery[] = res.data.results ?? res.data;
+        setDeliveries(data);
+        setCollections(
+          Object.fromEntries(
+            data.map((d) => [
+              d.id,
+              {
+                amount: d.pending_amount,
+                method: 'credit',
+                paid_method: 'cash',
+                empty: String(d.quantity),
+                split_cash: '',
+                split_gpay: '',
+                split_bank: '',
+              },
+            ])
+          )
+        );
       })
       .catch(() => undefined);
-  }
 
-  useEffect(load, []);
+    api.get('/stock/')
+      .then((res) => {
+        const raw = res.data.results ?? res.data;
+        setStock(Array.isArray(raw) ? raw : []);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   // Filter filled stock to only vehicle stock
   const vehicleFilledStock = stock
-    .filter((s) => s.location_name === vehicleLocation && s.status === 'filled')
+    .filter((s) => vehicleLocation && s.location_name.toLowerCase() === vehicleLocation.toLowerCase() && s.status === 'filled')
     .reduce((sum, s) => sum + s.quantity, 0);
 
-  const filteredStock = vehicleLocation ? stock.filter((s) => s.location_name === vehicleLocation) : stock;
+  const filteredStock = vehicleLocation
+    ? stock.filter((s) => s.location_name.toLowerCase() === vehicleLocation.toLowerCase())
+    : stock;
 
   async function start(id: number) {
     await api.post(`/deliveries/${id}/start/`);
@@ -60,19 +83,25 @@ export default function StaffDashboard() {
   async function complete(id: number) {
     const form = collections[id] || { amount: '0', method: 'credit', paid_method: 'cash', empty: '0', split_cash: '', split_gpay: '', split_bank: '' };
     
-    const payload: any = {
+    const splitPayments: { mode: string; amount: number }[] = [];
+    const payload: {
+      payment_method: string;
+      empty_collected: number;
+      split_payments?: { mode: string; amount: number }[];
+      payment_collected?: string;
+      paid_payment_mode?: string;
+    } = {
       payment_method: form.method,
       empty_collected: Number(form.empty || 0),
     };
 
     if (form.method === 'split') {
-      payload.split_payments = [];
-      if (Number(form.split_cash) > 0) payload.split_payments.push({ mode: 'cash', amount: Number(form.split_cash) });
-      if (Number(form.split_gpay) > 0) payload.split_payments.push({ mode: 'gpay', amount: Number(form.split_gpay) });
-      if (Number(form.split_bank) > 0) payload.split_payments.push({ mode: 'bank', amount: Number(form.split_bank) });
+      if (Number(form.split_cash) > 0) splitPayments.push({ mode: 'cash', amount: Number(form.split_cash) });
+      if (Number(form.split_gpay) > 0) splitPayments.push({ mode: 'gpay', amount: Number(form.split_gpay) });
+      if (Number(form.split_bank) > 0) splitPayments.push({ mode: 'bank', amount: Number(form.split_bank) });
+      payload.split_payments = splitPayments;
     } else {
       payload.payment_collected = form.amount || '0';
-      payload.paid_payment_mode = form.paid_method;
     }
 
     await api.post(`/deliveries/${id}/complete/`, payload);
@@ -223,7 +252,14 @@ export default function StaffDashboard() {
 
         <div className="card">
           <div className="section-head">
-            <h2>{vehicleLocation || 'All Locations'} Stock</h2>
+            <div>
+              <h2>{vehicleLocation ? `${vehicleLocation} Stock` : 'All Locations Stock'}</h2>
+              {!vehicleLocation && (
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  No vehicle location assigned to your profile by admin.
+                </p>
+              )}
+            </div>
             <PackageCheck />
           </div>
           <div className="table-wrap">

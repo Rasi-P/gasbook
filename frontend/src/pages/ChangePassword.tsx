@@ -1,7 +1,55 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { LockKeyhole } from 'lucide-react';
+import { LockKeyhole, Eye, EyeOff } from 'lucide-react';
 import { api, changePassword, getRoleHome, logout } from '../lib/api';
+
+function PasswordInput({
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ position: 'relative' }}>
+      <input
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete={autoComplete}
+        required
+        style={{ paddingRight: '44px' }}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((v) => !v)}
+        title={show ? 'Hide password' : 'View password'}
+        style={{
+          position: 'absolute',
+          right: '12px',
+          top: '50%',
+          transform: 'translateY(-50%)',
+          background: 'none',
+          border: 'none',
+          color: 'var(--text-muted)',
+          padding: '4px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {show ? <EyeOff size={18} /> : <Eye size={18} />}
+      </button>
+    </div>
+  );
+}
 
 export default function ChangePassword() {
   const [currentPassword, setCurrentPassword] = useState('');
@@ -41,15 +89,27 @@ export default function ChangePassword() {
         <form onSubmit={handleSubmit} className="form-stack">
           <label>
             <span>Current / Temporary Password</span>
-            <input type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} autoComplete="current-password" required />
+            <PasswordInput
+              value={currentPassword}
+              onChange={setCurrentPassword}
+              autoComplete="current-password"
+            />
           </label>
           <label>
             <span>New Password</span>
-            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" required />
+            <PasswordInput
+              value={newPassword}
+              onChange={setNewPassword}
+              autoComplete="new-password"
+            />
           </label>
           <label>
             <span>Confirm New Password</span>
-            <input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" required />
+            <PasswordInput
+              value={confirmPassword}
+              onChange={setConfirmPassword}
+              autoComplete="new-password"
+            />
           </label>
           {error && <p className="form-error">{error}</p>}
           <button className="btn btn-primary" type="submit" disabled={saving}>
@@ -63,3 +123,4 @@ export default function ChangePassword() {
     </main>
   );
 }
+

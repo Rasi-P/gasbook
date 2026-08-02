@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { FormEvent } from 'react';
 import { ArrowDownUp, ArrowRight, Check, ChevronDown, Factory, Plus, Search, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -18,9 +18,23 @@ type Movement = {
   to_location_name: string;
   moved_by_name: string;
   created_at: string;
-  note: string;
+  note: string | null;
   supplier_pending_after?: number | null;
 };
+
+function getErrorMessage(err: unknown, fallback: string): string {
+  const data = (err as { response?: { data?: unknown } })?.response?.data;
+  if (!data) return fallback;
+  if (typeof data === 'string') return data;
+  if (typeof data === 'object') {
+    const d = data as Record<string, unknown>;
+    if (d.detail && typeof d.detail === 'string') return d.detail;
+    return Object.entries(d)
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+      .join(' | ');
+  }
+  return fallback;
+}
 
 function AppSelect<T extends string | number>({
   value,
@@ -35,8 +49,24 @@ function AppSelect<T extends string | number>({
 }) {
   const [open, setOpen] = useState(false);
   const [openUp, setOpenUp] = useState(false);
-  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const selected = options.find((option) => option.value === value) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClickOutside = (event: MouseEvent | TouchEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
+    };
+  }, [open]);
 
   const handleOpen = () => {
     setOpen((current) => {
@@ -50,7 +80,7 @@ function AppSelect<T extends string | number>({
   };
 
   return (
-    <div className="app-select" onBlur={() => setOpen(false)}>
+    <div className="app-select" ref={containerRef}>
       <button
         ref={triggerRef}
         aria-expanded={open}
@@ -71,7 +101,6 @@ function AppSelect<T extends string | number>({
                 aria-selected={isSelected}
                 className={isSelected ? 'selected' : ''}
                 key={option.value}
-                onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   onChange(option.value);
                   setOpen(false);
@@ -95,20 +124,10 @@ export default function Stock() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [cylinderTypes, setCylinderTypes] = useState<CylinderType[]>([]);
 
-  useEffect(() => {
-    Promise.all([api.get('/locations/'), api.get('/cylinder-types/')])
-      .then(([lr, tr]) => {
-        setLocations(lr.data.results ?? lr.data);
-        setCylinderTypes(tr.data.results ?? tr.data);
-      })
-      .catch(() => undefined);
-  }, []);
-
   // ── Movement form ────────────────────────────────────────────────────────
   const [fromLocation, setFromLocation] = useState(0);
   const [toLocation, setToLocation] = useState(0);
   const [moveItems, setMoveItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '', status: 'filled' }]);
-  const [moveStatus, setMoveStatus] = useState('filled');
   const [moveMsg, setMoveMsg] = useState('');
   const [moveErr, setMoveErr] = useState('');
   const [moveSaving, setMoveSaving] = useState(false);
@@ -138,8 +157,47 @@ export default function Stock() {
   const [justSentItems, setJustSentItems] = useState<RefuelItem[] | null>(null);
   const [supplierPending, setSupplierPending] = useState<{cylinder_type_id: number, cylinder_type_name: string, pending: number}[]>([]);
 
-  // ── Stock data (for showing available empties) ──────────────────────────
+  // ── Stock data (for showing available empties/stock) ────────────────────
   const [stockData, setStockData] = useState<StockRow[]>([]);
+
+  useEffect(() => {
+    Promise.all([api.get('/locations/'), api.get('/cylinder-types/')])
+      .then(([lr, tr]) => {
+        const locs: Location[] = lr.data.results ?? lr.data;
+        const types: CylinderType[] = tr.data.results ?? tr.data;
+        setLocations(locs);
+        setCylinderTypes(types);
+
+        const nonSupplier = locs.filter((l) => l.code !== 'supplier');
+        if (nonSupplier.length >= 1) {
+          const getInitialLoc = (key: string, fallback: number) => {
+            const savedStr = localStorage.getItem(key);
+            if (savedStr && nonSupplier.find(l => l.id === Number(savedStr))) {
+              return Number(savedStr);
+            }
+            return fallback;
+          };
+
+          const fallbackPrimary = nonSupplier[0].id;
+          const fallbackSecondary = nonSupplier.find(l => l.id !== fallbackPrimary)?.id ?? fallbackPrimary;
+
+          setFromLocation(prev => prev || getInitialLoc('lastStockFromLoc', fallbackPrimary));
+          setToLocation(prev => prev || getInitialLoc('lastStockToLoc', fallbackSecondary));
+          setLoadTo(prev => prev || getInitialLoc('lastStockLoadTo', fallbackPrimary));
+          setRefuelSendLoc(prev => prev || getInitialLoc('lastStockRefuelSendLoc', fallbackPrimary));
+          setRefuelRecvLoc(prev => prev || getInitialLoc('lastStockRefuelRecvLoc', fallbackPrimary));
+        }
+
+        if (types.length > 0) {
+          const defaultId = types[0].id;
+          setMoveItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
+          setLoadItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
+          setRefuelSendItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
+          setRefuelRecvItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   const fetchStock = useCallback(() => {
     api.get('/stock/')
@@ -216,36 +274,6 @@ export default function Stock() {
     return statusOptions.filter(opt => !otherStatusesForSameType.has(opt.value));
   };
 
-  // Set defaults once data loads
-  useEffect(() => {
-    const nonSupplier = locations.filter((l) => l.code !== 'supplier');
-    if (nonSupplier.length >= 1 && fromLocation === 0) {
-      const getInitialLoc = (key: string, fallback: number) => {
-        const savedStr = localStorage.getItem(key);
-        if (savedStr && nonSupplier.find(l => l.id === Number(savedStr))) {
-          return Number(savedStr);
-        }
-        return fallback;
-      };
-
-      const fallbackPrimary = nonSupplier[0].id;
-      const fallbackSecondary = nonSupplier.find(l => l.id !== fallbackPrimary)?.id ?? fallbackPrimary;
-
-      setFromLocation(getInitialLoc('lastStockFromLoc', fallbackPrimary));
-      setToLocation(getInitialLoc('lastStockToLoc', fallbackSecondary));
-      setLoadTo(getInitialLoc('lastStockLoadTo', fallbackPrimary));
-      setRefuelSendLoc(getInitialLoc('lastStockRefuelSendLoc', fallbackPrimary));
-      setRefuelRecvLoc(getInitialLoc('lastStockRefuelRecvLoc', fallbackPrimary));
-    }
-    if (cylinderTypes.length > 0) {
-      const defaultId = cylinderTypes[0].id;
-      setMoveItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-      setLoadItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-      setRefuelSendItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-      setRefuelRecvItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-    }
-  }, [locations, cylinderTypes, fromLocation]);
-
   // Persist location selections
   useEffect(() => { if (fromLocation) localStorage.setItem('lastStockFromLoc', String(fromLocation)); }, [fromLocation]);
   useEffect(() => { if (toLocation) localStorage.setItem('lastStockToLoc', String(toLocation)); }, [toLocation]);
@@ -270,11 +298,45 @@ export default function Stock() {
 
   async function handleMovement(e: FormEvent) {
     e.preventDefault();
-    setMoveMsg(''); setMoveErr(''); setMoveSaving(true);
-    try {
-      const validItems = moveItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
-      if (validItems.length === 0) { setMoveErr('Add at least one cylinder type with quantity.'); return; }
+    setMoveMsg(''); setMoveErr('');
+    if (!fromLocation || !toLocation) {
+      setMoveErr('Please select valid From and To locations.');
+      return;
+    }
+    if (fromLocation === toLocation) {
+      setMoveErr('From and To locations cannot be the same.');
+      return;
+    }
+    const validItems = moveItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
+    if (validItems.length === 0) {
+      setMoveErr('Add at least one cylinder type with a valid quantity.');
+      return;
+    }
 
+    const qtyByKey: Record<string, { cylinder_type: number; status: string; qty: number }> = {};
+    for (const item of validItems) {
+      const status = item.status || 'filled';
+      const key = `${item.cylinder_type}_${status}`;
+      if (!qtyByKey[key]) {
+        qtyByKey[key] = { cylinder_type: item.cylinder_type, status, qty: 0 };
+      }
+      qtyByKey[key].qty += Number(item.quantity);
+    }
+
+    for (const entry of Object.values(qtyByKey)) {
+      const srcStock = stockData.find(
+        (s) => s.cylinder_type === entry.cylinder_type && s.location === fromLocation && s.status === entry.status
+      );
+      const available = srcStock?.quantity ?? 0;
+      if (entry.qty > available) {
+        const cName = cylinderTypes.find(c => c.id === entry.cylinder_type)?.name || 'selected type';
+        setMoveErr(`Cannot move ${entry.qty} of ${cName} (${entry.status}). Only ${available} available at source location.`);
+        return;
+      }
+    }
+
+    setMoveSaving(true);
+    try {
       for (const item of validItems) {
         await api.post('/movements/', {
           cylinder_type: item.cylinder_type,
@@ -287,15 +349,15 @@ export default function Stock() {
 
       const summary = validItems.map(item => {
         const name = cylinderTypes.find(c => c.id === item.cylinder_type)?.name ?? '';
-        return `${item.quantity}× ${name}`;
+        return `${item.quantity}× ${name} (${item.status || 'filled'})`;
       }).join(', ');
 
       setMoveMsg(`✓ Moved ${summary} cylinders successfully.`);
       setMoveItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '', status: 'filled' }]);
       fetchStock();
+      fetchSupplierPending();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setMoveErr(msg ? JSON.stringify(msg) : 'Movement failed. Check stock levels.');
+      setMoveErr(getErrorMessage(err, 'Movement failed. Check stock levels.'));
     } finally {
       setMoveSaving(false);
     }
@@ -304,14 +366,18 @@ export default function Stock() {
   async function handleNewLoad(e: FormEvent) {
     e.preventDefault();
     setLoadMsg(''); setLoadErr('');
+    if (!loadTo) {
+      setLoadErr('Please select a destination location.');
+      return;
+    }
+    const supplier = locations.find((l) => l.code === 'supplier');
+    if (!supplier) { setLoadErr('Supplier location not found.'); return; }
+
+    const validItems = loadItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
+    if (validItems.length === 0) { setLoadErr('Add at least one cylinder type with a valid quantity.'); return; }
+
     setLoadSaving(true);
     try {
-      const supplier = locations.find((l) => l.code === 'supplier');
-      if (!supplier) { setLoadErr('Supplier location not found.'); return; }
-
-      const validItems = loadItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
-      if (validItems.length === 0) { setLoadErr('Add at least one cylinder type with quantity.'); return; }
-
       for (const item of validItems) {
         await api.post('/movements/', {
           cylinder_type: item.cylinder_type,
@@ -332,9 +398,9 @@ export default function Stock() {
       setLoadMsg(`✓ Added ${summary} filled cylinders to ${locName}.`);
       setLoadItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }]);
       fetchStock();
+      fetchSupplierPending();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setLoadErr(msg ? JSON.stringify(msg) : 'Failed to save load. Check backend connection.');
+      setLoadErr(getErrorMessage(err, 'Failed to save load. Check backend connection.'));
     } finally {
       setLoadSaving(false);
     }
@@ -343,15 +409,38 @@ export default function Stock() {
   // Refuel: Send Empties
   async function handleRefuelSend(e: FormEvent) {
     e.preventDefault();
-    setRefuelSendMsg(''); setRefuelSendErr(''); setRefuelSendSaving(true);
+    setRefuelSendMsg(''); setRefuelSendErr('');
+    if (!refuelSendLoc) {
+      setRefuelSendErr('Please select a source location.');
+      return;
+    }
+    const supplier = locations.find((l) => l.code === 'supplier');
+    if (!supplier) { setRefuelSendErr('Supplier location not found.'); return; }
+
+    const validItems = refuelSendItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
+    if (validItems.length === 0) { setRefuelSendErr('Add at least one cylinder type with a valid quantity.'); return; }
+
+    const qtyByType: Record<number, number> = {};
+    for (const item of validItems) {
+      qtyByType[item.cylinder_type] = (qtyByType[item.cylinder_type] || 0) + Number(item.quantity);
+    }
+
+    for (const [typeIdStr, totalQty] of Object.entries(qtyByType)) {
+      const typeId = Number(typeIdStr);
+      const emptyStock = stockData.find(
+        (s) => s.cylinder_type === typeId && s.location === refuelSendLoc && s.status === 'empty'
+      );
+      const available = emptyStock?.quantity ?? 0;
+      if (totalQty > available) {
+        const cName = cylinderTypes.find(c => c.id === typeId)?.name || 'selected type';
+        setRefuelSendErr(`Cannot send ${totalQty} empty cylinders of ${cName}. Only ${available} empty cylinders available at this location.`);
+        return;
+      }
+    }
+
+    setRefuelSendSaving(true);
     try {
-      const supplier = locations.find((l) => l.code === 'supplier');
-      if (!supplier) { setRefuelSendErr('Supplier location not found.'); return; }
       const fromName = locations.find((l) => l.id === refuelSendLoc)?.name ?? '';
-
-      const validItems = refuelSendItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
-      if (validItems.length === 0) { setRefuelSendErr('Add at least one cylinder type with quantity.'); return; }
-
       for (const item of validItems) {
         await api.post('/movements/', {
           cylinder_type: item.cylinder_type,
@@ -374,26 +463,31 @@ export default function Stock() {
       setJustSentItems(validItems);
       fetchStock();
       fetchSupplierPending();
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setRefuelSendErr(detail || 'Failed. Check stock levels.');
+    } catch (err: unknown) {
+      setRefuelSendErr(getErrorMessage(err, 'Failed to send empties. Check stock levels.'));
     } finally {
       setRefuelSendSaving(false);
     }
   }
 
   async function handleQuickReceive(items: RefuelItem[]) {
-    setRefuelRecvMsg(''); setRefuelRecvErr(''); setRefuelRecvSaving(true);
-    try {
-      const supplier = locations.find((l) => l.code === 'supplier');
-      if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
-      const toName = locations.find((l) => l.id === refuelRecvLoc)?.name ?? '';
+    setRefuelRecvMsg(''); setRefuelRecvErr('');
+    const targetLoc = refuelRecvLoc || refuelSendLoc;
+    if (!targetLoc) {
+      setRefuelRecvErr('Please select a valid receive location.');
+      return;
+    }
+    const supplier = locations.find((l) => l.code === 'supplier');
+    if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
 
+    setRefuelRecvSaving(true);
+    try {
+      const toName = locations.find((l) => l.id === targetLoc)?.name ?? '';
       for (const item of items) {
         await api.post('/movements/', {
           cylinder_type: item.cylinder_type,
           from_location: supplier.id,
-          to_location: refuelRecvLoc,
+          to_location: targetLoc,
           status: 'filled',
           quantity: Number(item.quantity),
           note: 'Received refilled cylinders',
@@ -404,9 +498,8 @@ export default function Stock() {
       setJustSentItems(null);
       fetchStock();
       fetchSupplierPending();
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setRefuelRecvErr(detail || 'Failed to record received stock.');
+    } catch (err: unknown) {
+      setRefuelRecvErr(getErrorMessage(err, 'Failed to record received stock.'));
     } finally {
       setRefuelRecvSaving(false);
     }
@@ -415,15 +508,36 @@ export default function Stock() {
   // Refuel: Receive Filled
   async function handleRefuelReceive(e: FormEvent) {
     e.preventDefault();
-    setRefuelRecvMsg(''); setRefuelRecvErr(''); setRefuelRecvSaving(true);
+    setRefuelRecvMsg(''); setRefuelRecvErr('');
+    if (!refuelRecvLoc) {
+      setRefuelRecvErr('Please select a receive location.');
+      return;
+    }
+    const supplier = locations.find((l) => l.code === 'supplier');
+    if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
+
+    const validItems = refuelRecvItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
+    if (validItems.length === 0) { setRefuelRecvErr('Add at least one cylinder type with a valid quantity.'); return; }
+
+    const qtyByType: Record<number, number> = {};
+    for (const item of validItems) {
+      qtyByType[item.cylinder_type] = (qtyByType[item.cylinder_type] || 0) + Number(item.quantity);
+    }
+
+    for (const [typeIdStr, totalQty] of Object.entries(qtyByType)) {
+      const typeId = Number(typeIdStr);
+      const p = supplierPending.find(sp => sp.cylinder_type_id === typeId);
+      const pendingQty = p?.pending ?? 0;
+      if (totalQty > pendingQty) {
+        const cName = cylinderTypes.find(c => c.id === typeId)?.name || 'selected type';
+        setRefuelRecvErr(`Cannot receive ${totalQty} of ${cName}. The supplier only owes you ${pendingQty} of this cylinder type.`);
+        return;
+      }
+    }
+
+    setRefuelRecvSaving(true);
     try {
-      const supplier = locations.find((l) => l.code === 'supplier');
-      if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
       const toName = locations.find((l) => l.id === refuelRecvLoc)?.name ?? '';
-
-      const validItems = refuelRecvItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
-      if (validItems.length === 0) { setRefuelRecvErr('Add at least one cylinder type with quantity.'); return; }
-
       for (const item of validItems) {
         await api.post('/movements/', {
           cylinder_type: item.cylinder_type,
@@ -446,26 +560,27 @@ export default function Stock() {
       setJustSentItems(null);
       fetchStock();
       fetchSupplierPending();
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setRefuelRecvErr(detail || 'Failed to record received stock.');
+    } catch (err: unknown) {
+      setRefuelRecvErr(getErrorMessage(err, 'Failed to record received stock.'));
     } finally {
       setRefuelRecvSaving(false);
     }
   }
 
   const filtered = movements.filter((m) => {
-    if (historyFilter === 'new_load' && m.note !== 'New supplier load') return false;
-    if (historyFilter === 'refuel_sent' && !m.note.startsWith('Sent for refilling')) return false;
-    if (historyFilter === 'refuel_received' && !m.note.startsWith('Received refilled cylinders')) return false;
+    const note = m.note || '';
+    if (historyFilter === 'new_load' && note !== 'New supplier load') return false;
+    if (historyFilter === 'refuel_sent' && !note.startsWith('Sent for refilling')) return false;
+    if (historyFilter === 'refuel_received' && !note.startsWith('Received refilled cylinders')) return false;
 
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return (
-      m.cylinder_type_name.toLowerCase().includes(q) ||
-      m.from_location_name.toLowerCase().includes(q) ||
-      m.to_location_name.toLowerCase().includes(q) ||
-      m.moved_by_name.toLowerCase().includes(q)
+      (m.cylinder_type_name || '').toLowerCase().includes(q) ||
+      (m.from_location_name || '').toLowerCase().includes(q) ||
+      (m.to_location_name || '').toLowerCase().includes(q) ||
+      (m.moved_by_name || '').toLowerCase().includes(q) ||
+      note.toLowerCase().includes(q)
     );
   });
 
@@ -804,7 +919,7 @@ export default function Stock() {
                 />
               </div>
 
-              {refuelSendErr && <div className="error-text" style={{ marginTop: '16px' }}>{refuelSendErr}</div>}
+              {refuelSendErr && <p className="form-error" style={{ marginTop: '16px' }}>{refuelSendErr}</p>}
               {refuelSendMsg && <p className="form-note">{refuelSendMsg}</p>}
               <button type="submit" className="btn btn-primary" style={{ background: 'var(--warning)', color: 'black' }} disabled={refuelSendSaving}>
                 <ArrowRight size={18} /> {refuelSendSaving ? 'Sending…' : `Send to Supplier`}
@@ -917,7 +1032,7 @@ export default function Stock() {
                 />
               </div>
 
-              {refuelRecvErr && <div className="error-text" style={{ marginTop: '16px' }}>{refuelRecvErr}</div>}
+              {refuelRecvErr && <p className="form-error" style={{ marginTop: '16px' }}>{refuelRecvErr}</p>}
               {refuelRecvMsg && <p className="form-note">{refuelRecvMsg}</p>}
               <button type="submit" className="btn btn-primary" style={{ background: '#0284c7' }} disabled={refuelRecvSaving}>
                 <Check size={18} /> {refuelRecvSaving ? 'Recording…' : `Receive from Supplier`}
@@ -934,7 +1049,7 @@ export default function Stock() {
             <div style={{ position: 'relative', flex: 1 }}>
               <Search size={16} style={{ position: 'absolute', left: '10px', top: '14px', color: 'var(--text-muted)' }} />
               <input
-                placeholder="Search cylinder, location, staff…"
+                placeholder="Search cylinder, location, staff, note…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 style={{ paddingLeft: '36px' }}
@@ -942,7 +1057,7 @@ export default function Stock() {
             </div>
             <select
               value={historyFilter}
-              onChange={(e) => setHistoryFilter(e.target.value as any)}
+              onChange={(e) => setHistoryFilter(e.target.value as 'all' | 'new_load' | 'refuel_sent' | 'refuel_received')}
               style={{ width: '200px', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)', cursor: 'pointer' }}
             >
               <option value="all">All Movements</option>
@@ -961,7 +1076,7 @@ export default function Stock() {
                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                     <strong>{m.quantity} × {m.cylinder_type_name}</strong>
                     
-                    {/* Beautiful Status Badge */}
+                    {/* Status Badge */}
                     <span style={{ 
                       padding: '2px 8px', 
                       borderRadius: '12px', 
@@ -977,8 +1092,8 @@ export default function Stock() {
                     </span>
                     
                     {m.note === 'New supplier load' && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--success-soft)', color: 'var(--success)' }}>New Load</span>}
-                    {m.note.startsWith('Sent for refilling') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--warning-soft, #fff7ed)', color: 'var(--warning, #c2410c)', border: '1px solid var(--warning)' }}>🔥 Refuel Sent</span>}
-                    {m.note.startsWith('Received refilled cylinders') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--info-soft, #eff6ff)', color: 'var(--info, #1d4ed8)', border: '1px solid var(--info)' }}>🔥 Refuel Received</span>}
+                    {m.note && m.note.startsWith('Sent for refilling') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--warning-soft, #fff7ed)', color: 'var(--warning, #c2410c)', border: '1px solid var(--warning)' }}>🔥 Refuel Sent</span>}
+                    {m.note && m.note.startsWith('Received refilled cylinders') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--info-soft, #eff6ff)', color: 'var(--info, #1d4ed8)', border: '1px solid var(--info)' }}>🔥 Refuel Received</span>}
                     
                     {m.supplier_pending_after !== undefined && m.supplier_pending_after !== null && (
                       <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>

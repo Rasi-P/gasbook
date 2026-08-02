@@ -74,6 +74,13 @@ class CylinderTypeViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrReadOnly]
     search_fields = ["name"]
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        role = getattr(getattr(self.request.user, "role", None), "code", "")
+        if role == "customer":
+            return queryset.filter(is_active=True)
+        return queryset
+
 
 class StockLocationViewSet(viewsets.ModelViewSet):
     queryset = StockLocation.objects.all()

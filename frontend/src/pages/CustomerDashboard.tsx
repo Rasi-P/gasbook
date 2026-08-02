@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { Bell, CalendarClock, IndianRupee, PackagePlus } from 'lucide-react';
 import { api } from '../lib/api';
 
-type CylinderType = { id: number; name: string; selling_price: number };
+type CylinderType = { id: number; name: string; selling_price: number; is_active?: boolean };
 type Rate = { cylinder_type: number; custom_price: string };
 type Profile = {
   id: number;
@@ -50,27 +50,46 @@ export default function CustomerDashboard() {
   const [message, setMessage] = useState('');
 
   function load() {
-    Promise.all([
-      api.get('/customer-profiles/'),
-      api.get('/cylinder-types/'),
-      api.get('/bookings/'),
-      api.get('/notifications/'),
-    ]).then(([profileRes, typeRes, bookingRes, notificationRes]) => {
-      const profileRows = profileRes.data.results ?? profileRes.data;
-      const typeRows = typeRes.data.results ?? typeRes.data;
-      setProfile(profileRows[0] || null);
-      setTypes(typeRows);
-      setCylinderType(String(typeRows[0]?.id || ''));
-      setBookings(bookingRes.data.results ?? bookingRes.data);
-      setNotifications(notificationRes.data.results ?? notificationRes.data);
-    }).catch(() => undefined);
+    api.get('/cylinder-types/')
+      .then((res) => {
+        const raw = res.data.results ?? res.data;
+        const list: CylinderType[] = (Array.isArray(raw) ? raw : []).filter((t: CylinderType) => t.is_active !== false);
+        setTypes(list);
+        if (list.length > 0) {
+          setCylinderType((prev) => prev || String(list[0].id));
+        }
+      })
+      .catch(() => undefined);
+
+    api.get('/customer-profiles/')
+      .then((res) => {
+        const rows = res.data.results ?? res.data;
+        if (Array.isArray(rows) && rows.length > 0) {
+          setProfile(rows[0]);
+        }
+      })
+      .catch(() => undefined);
+
+    api.get('/bookings/')
+      .then((res) => {
+        const rows = res.data.results ?? res.data;
+        if (Array.isArray(rows)) setBookings(rows);
+      })
+      .catch(() => undefined);
+
+    api.get('/notifications/')
+      .then((res) => {
+        const rows = res.data.results ?? res.data;
+        if (Array.isArray(rows)) setNotifications(rows);
+      })
+      .catch(() => undefined);
   }
 
   useEffect(load, []);
 
   const activeType = useMemo(() => types.find((t) => String(t.id) === cylinderType), [types, cylinderType]);
   const activeRate = useMemo(() => {
-    const custom = profile?.custom_rates.find((r) => String(r.cylinder_type) === cylinderType);
+    const custom = profile?.custom_rates?.find((r) => String(r.cylinder_type) === cylinderType);
     return custom?.custom_price || activeType?.selling_price || 0;
   }, [activeType, cylinderType, profile]);
 

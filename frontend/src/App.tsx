@@ -10,6 +10,7 @@ import Login from './pages/Login';
 import Customers from './pages/Customers';
 import Staff from './pages/Staff';
 import CustomerDashboard from './pages/CustomerDashboard';
+import StaffDashboard from './pages/StaffDashboard';
 import ChangePassword from './pages/ChangePassword';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';
@@ -129,7 +130,7 @@ export default function App() {
             <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
           } />
           <Route path="/staff-dashboard" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
+            <RoleGuard allowed={['admin', 'staff']} role={role}><StaffDashboard /></RoleGuard>
           } />
           <Route path="/stock" element={
             <RoleGuard allowed={['admin', 'staff']} role={role}><Stock /></RoleGuard>
