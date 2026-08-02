@@ -1,7 +1,7 @@
 import { Navigate, Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { BarChart3, Bell, CalendarDays, Home, LogOut, Package, ShoppingCart, Users, UserCog } from 'lucide-react';
+import { BarChart3, Bell, CalendarDays, ClipboardList, Home, LogOut, Package, ShoppingCart, Users, UserCog } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Stock from './pages/Stock';
 import Sales from './pages/Sales';
@@ -11,6 +11,7 @@ import Customers from './pages/Customers';
 import Staff from './pages/Staff';
 import CustomerDashboard from './pages/CustomerDashboard';
 import StaffDashboard from './pages/StaffDashboard';
+import AdminBookings from './pages/AdminBookings';
 import ChangePassword from './pages/ChangePassword';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';
@@ -132,6 +133,9 @@ export default function App() {
           <Route path="/staff-dashboard" element={
             <RoleGuard allowed={['admin', 'staff']} role={role}><StaffDashboard /></RoleGuard>
           } />
+          <Route path="/bookings" element={
+            <RoleGuard allowed={['admin']} role={role}><AdminBookings /></RoleGuard>
+          } />
           <Route path="/stock" element={
             <RoleGuard allowed={['admin', 'staff']} role={role}><Stock /></RoleGuard>
           } />
@@ -196,6 +200,9 @@ function NavItems({ role }: { role: string }) {
     <>
       <NavLink to="/admin-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
         <Home /><span>Home</span>
+      </NavLink>
+      <NavLink to="/bookings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+        <ClipboardList /><span>Bookings</span>
       </NavLink>
       <NavLink to="/stock" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
         <Package /><span>Stock</span>

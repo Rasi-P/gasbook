@@ -275,11 +275,13 @@ export default function Stock() {
   };
 
   // Persist location selections
-  useEffect(() => { if (fromLocation) localStorage.setItem('lastStockFromLoc', String(fromLocation)); }, [fromLocation]);
-  useEffect(() => { if (toLocation) localStorage.setItem('lastStockToLoc', String(toLocation)); }, [toLocation]);
-  useEffect(() => { if (loadTo) localStorage.setItem('lastStockLoadTo', String(loadTo)); }, [loadTo]);
-  useEffect(() => { if (refuelSendLoc) localStorage.setItem('lastStockRefuelSendLoc', String(refuelSendLoc)); }, [refuelSendLoc]);
-  useEffect(() => { if (refuelRecvLoc) localStorage.setItem('lastStockRefuelRecvLoc', String(refuelRecvLoc)); }, [refuelRecvLoc]);
+  useEffect(() => {
+    if (fromLocation) localStorage.setItem('lastStockFromLoc', String(fromLocation));
+    if (toLocation) localStorage.setItem('lastStockToLoc', String(toLocation));
+    if (loadTo) localStorage.setItem('lastStockLoadTo', String(loadTo));
+    if (refuelSendLoc) localStorage.setItem('lastStockRefuelSendLoc', String(refuelSendLoc));
+    if (refuelRecvLoc) localStorage.setItem('lastStockRefuelRecvLoc', String(refuelRecvLoc));
+  }, [fromLocation, toLocation, loadTo, refuelSendLoc, refuelRecvLoc]);
 
   const fetchHistory = useCallback(() => {
     api.get('/movements/')
