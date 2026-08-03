@@ -1,17 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import {
   IndianRupee, WalletCards,
   AlertTriangle, Package, Boxes,
 } from 'lucide-react';
 import { api } from '../lib/api';
 
-type SaleItem = { cylinder_type_name: string; quantity: number; rate: number };
+type SaleItem = { cylinder_type_name: string; quantity: number; rate: number; empty_returned?: number };
 type Sale = {
   id: number; created_at: string; customer_name: string; sold_by_name: string;
   total_amount: number; paid_amount: number; balance_due: number;
-  payment_mode: string; location_name: string; items: SaleItem[];
+  payment_mode: string; location_name: string; note?: string; items: SaleItem[];
   payments?: { amount: number; mode: string; date: string }[];
 };
+type CylinderSaleRow = {
+  total_qty: number;
+  total_amount: number;
+  locations: Record<string, { qty: number; amount: number }>;
+};
+type CylinderGroupMap = Record<string, CylinderSaleRow>;
 type Expense = {
   id: number; created_at: string; category: string;
   amount: number; note: string; spent_by_name: string;
@@ -70,15 +76,16 @@ export default function Reports() {
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<Tab>('summary');
 
-  function fetchData(s: string, e: string) {
-    setLoading(true);
+  const fetchData = useCallback((s: string, e: string) => {
     api.get('/reports/', { params: { start: s, end: e } })
       .then((r) => setData(r.data))
       .catch(() => undefined)
       .finally(() => setLoading(false));
-  }
+  }, []);
 
-  useEffect(() => { fetchData(start, end); }, []);
+  useEffect(() => {
+    fetchData(start, end);
+  }, [fetchData, start, end]);
 
   function applyRange(s: string, e: string) {
     setStart(s); setEnd(e); fetchData(s, e);
@@ -178,18 +185,17 @@ export default function Reports() {
                       const saleGroups = data.cylinder_sales.reduce((acc, curr) => {
                         const cyl = curr.cylinder_type__name;
                         const loc = curr.sale__location__name || 'Unknown';
-                        const colKey = loc;
                         
-                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
-                        if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
+                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0, locations: {} };
+                        if (!acc[cyl].locations[loc]) acc[cyl].locations[loc] = { qty: 0, amount: 0 };
                         
-                        acc[cyl][colKey].qty += curr.total_qty;
-                        acc[cyl][colKey].amount += curr.total_amount;
+                        acc[cyl].locations[loc].qty += curr.total_qty;
+                        acc[cyl].locations[loc].amount += curr.total_amount;
                         
                         acc[cyl].total_qty += curr.total_qty;
                         acc[cyl].total_amount += curr.total_amount;
                         return acc;
-                      }, {} as Record<string, any>);
+                      }, {} as CylinderGroupMap);
 
                       const colKeys = Array.from(new Set(data.cylinder_sales.map(s => {
                         return s.sale__location__name || 'Unknown';
@@ -213,9 +219,9 @@ export default function Reports() {
                                 <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
                                 {colKeys.map((col) => (
                                   <td key={col} style={{ textAlign: 'center', fontWeight: 700, borderLeft: '1px dashed var(--border)', background: 'var(--surface)' }}>
-                                    {dataObj[col] ? (
+                                    {dataObj.locations[col] ? (
                                       <span style={{ background: 'var(--info-soft)', color: 'var(--info)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
-                                        {dataObj[col].qty}
+                                        {dataObj.locations[col].qty}
                                       </span>
                                     ) : (
                                       <span style={{ color: 'var(--border)' }}>-</span>
@@ -272,7 +278,7 @@ export default function Reports() {
                         acc[cyl][curr.to_location__name] = (acc[cyl][curr.to_location__name] || 0) + curr.total_qty;
                         acc[cyl].total += curr.total_qty;
                         return acc;
-                      }, {} as Record<string, any>);
+                      }, {} as Record<string, Record<string, number>>);
                       const locs = Array.from(new Set(data.load_summary.map(l => l.to_location__name))).sort();
                       
                       return (
@@ -323,11 +329,11 @@ export default function Reports() {
                   <h2>Supplier Balance (All Time)</h2>
                   <span className="badge">Pending to Receive</span>
                 </div>
-                {(data as any).supplier_balance && (data as any).supplier_balance.length === 0
+                {data.supplier_balance && data.supplier_balance.length === 0
                   ? <p style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No supplier records found.</p>
                   : (
                     <div>
-                      {data.supplier_balance && [...data.supplier_balance].sort((a: any, b: any) => parseFloat(a.type) - parseFloat(b.type)).map((b: any, i: number) => (
+                      {data.supplier_balance && [...data.supplier_balance].sort((a, b) => parseFloat(a.type) - parseFloat(b.type)).map((b, i: number) => (
                         <div key={i} style={{ 
                           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                           padding: '14px 18px', borderTop: '1px solid var(--border)'
@@ -356,11 +362,11 @@ export default function Reports() {
                       <tr>
                         <th style={{ padding: '12px 18px' }}>Type</th>
                         <th style={{ textAlign: 'center' }}>Shop (F/E)</th>
-                        <th style={{ textAlign: 'center' }}>Kandam (F/E)</th>
+                        <th style={{ textAlign: 'center' }}>Warehouse (F/E)</th>
                         <th style={{ textAlign: 'center' }}>With Customers</th>
                         <th style={{ textAlign: 'center' }}>Extras From Customers</th>
                         <th style={{ textAlign: 'center', padding: '12px 18px' }}>Supplier Stock<br/><span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>(Base)</span></th>
-                        <th style={{ textAlign: 'right', padding: '12px 18px' }}>Total Physical<br/><span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>(Shop + Kandam)</span></th>
+                        <th style={{ textAlign: 'right', padding: '12px 18px' }}>Total Physical<br/><span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>(Shop + Warehouse)</span></th>
                       </tr>
                     </thead>
                     <tbody>
@@ -410,18 +416,17 @@ export default function Reports() {
                       const saleGroups = data.cylinder_sales.reduce((acc, curr) => {
                         const cyl = curr.cylinder_type__name;
                         const loc = curr.sale__location__name || 'Unknown';
-                        const colKey = loc;
                         
-                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
-                        if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
+                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0, locations: {} };
+                        if (!acc[cyl].locations[loc]) acc[cyl].locations[loc] = { qty: 0, amount: 0 };
                         
-                        acc[cyl][colKey].qty += curr.total_qty;
-                        acc[cyl][colKey].amount += curr.total_amount;
+                        acc[cyl].locations[loc].qty += curr.total_qty;
+                        acc[cyl].locations[loc].amount += curr.total_amount;
                         
                         acc[cyl].total_qty += curr.total_qty;
                         acc[cyl].total_amount += curr.total_amount;
                         return acc;
-                      }, {} as Record<string, any>);
+                      }, {} as CylinderGroupMap);
 
                       const colKeys = Array.from(new Set(data.cylinder_sales.map(s => {
                         return s.sale__location__name || 'Unknown';
@@ -445,9 +450,9 @@ export default function Reports() {
                                 <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
                                 {colKeys.map((col) => (
                                   <td key={col} style={{ textAlign: 'center', fontWeight: 700, borderLeft: '1px dashed var(--border)', background: 'var(--surface)' }}>
-                                    {dataObj[col] ? (
+                                    {dataObj.locations[col] ? (
                                       <span style={{ background: 'var(--info-soft)', color: 'var(--info)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
-                                        {dataObj[col].qty}
+                                        {dataObj.locations[col].qty}
                                       </span>
                                     ) : (
                                       <span style={{ color: 'var(--border)' }}>-</span>
@@ -500,17 +505,16 @@ export default function Reports() {
                           {sale.items.map((item, i) => (
                             <span key={i} style={{ display: 'block', fontSize: '0.82rem', marginBottom: '2px' }}>
                               {item.quantity > 0 && <span>{item.quantity}×{item.cylinder_type_name} @ {money(item.rate)}</span>}
-                              {/* Assuming 'empty_returned' exists on item, but let's safely fall back if not */}
-                              {(item as any).empty_returned > 0 ? (
+                              {(item.empty_returned ?? 0) > 0 ? (
                                 <span style={{ 
-                                  color: (!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger)' : 'var(--text-muted)', 
+                                  color: (!sale.customer_name && item.quantity > 0 && (item.empty_returned ?? 0) < item.quantity) ? 'var(--danger)' : 'var(--text-muted)', 
                                   marginLeft: item.quantity > 0 ? '6px' : '0',
-                                  background: (!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger-soft, #fee2e2)' : 'var(--surface)',
+                                  background: (!sale.customer_name && item.quantity > 0 && (item.empty_returned ?? 0) < item.quantity) ? 'var(--danger-soft, #fee2e2)' : 'var(--surface)',
                                   padding: '1px 6px',
                                   borderRadius: '4px',
-                                  border: `1px solid ${(!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger)' : 'var(--border)'}`
+                                  border: `1px solid ${(!sale.customer_name && item.quantity > 0 && (item.empty_returned ?? 0) < item.quantity) ? 'var(--danger)' : 'var(--border)'}`
                                 }}>
-                                  🔄 Returned {(item as any).empty_returned} × {item.cylinder_type_name} empties
+                                  🔄 Returned {item.empty_returned} × {item.cylinder_type_name} empties
                                 </span>
                               ) : (
                                 !sale.customer_name && item.quantity > 0 && (
@@ -530,17 +534,17 @@ export default function Reports() {
                           ))}
                         </td>
                         <td style={{ textAlign: 'right', padding: '14px 18px' }}>
-                          {(sale as any).note === 'Empty cylinders returned' ? '-' : money(sale.total_amount)}
+                          {sale.note === 'Empty cylinders returned' ? '-' : money(sale.total_amount)}
                         </td>
                         <td style={{ textAlign: 'right', padding: '14px 18px' }}>
-                          {(sale as any).note === 'Empty cylinders returned' ? '-' : (
+                          {sale.note === 'Empty cylinders returned' ? '-' : (
                             Number(sale.balance_due) > 0
                               ? <span className="badge badge-warning">{money(sale.balance_due)}</span>
                               : <span className="badge badge-success">Paid</span>
                           )}
                         </td>
                         <td style={{ whiteSpace: 'nowrap', padding: '14px 18px' }}>
-                          {(sale as any).note === 'Empty cylinders returned' ? (
+                          {sale.note === 'Empty cylinders returned' ? (
                             <span className="badge" style={{ background: 'var(--surface)', color: 'var(--text-muted)' }}>Return</span>
                           ) : (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

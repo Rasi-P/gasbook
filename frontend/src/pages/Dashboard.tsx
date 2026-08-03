@@ -66,7 +66,7 @@ export default function Dashboard() {
           <select aria-label="Branch filter">
             <option>All Branches</option>
             <option>Main Shop</option>
-            <option>Kandam</option>
+            <option>Warehouse</option>
           </select>
           <button className="btn btn-compact" type="button" onClick={loadDashboard}>
             <RefreshCw size={16} />
@@ -217,7 +217,7 @@ export default function Dashboard() {
               <tr>
                 <th>Type</th>
                 <th style={{ textAlign: 'center' }}>Shop (F/E)</th>
-                <th style={{ textAlign: 'center' }}>Kandam (F/E)</th>
+                <th style={{ textAlign: 'center' }}>Warehouse (F/E)</th>
                 <th style={{ textAlign: 'right' }}>With Customers</th>
                 <th style={{ textAlign: 'right' }}>Total</th>
               </tr>

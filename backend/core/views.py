@@ -476,6 +476,10 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(status=status_param)
         return queryset
 
+    @action(detail=False, methods=["get"])
+    def assigned(self, request):
+        return self.list(request)
+
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
         delivery = self.get_object()

@@ -12,7 +12,7 @@ class Command(BaseCommand):
         Role.objects.get_or_create(code="customer", defaults={"name": "Customer"})
 
         shop, _ = StockLocation.objects.get_or_create(code="shop", defaults={"name": "Shop"})
-        kandam, _ = StockLocation.objects.get_or_create(code="kandam", defaults={"name": "Kandam"})
+        kandam, _ = StockLocation.objects.get_or_create(code="kandam", defaults={"name": "Warehouse"})
         StockLocation.objects.get_or_create(code="supplier", defaults={"name": "Supplier"})
 
         if not User.objects.filter(username="admin").exists():
