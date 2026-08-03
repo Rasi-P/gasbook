@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Bell, CalendarClock, IndianRupee, PackagePlus } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type CylinderType = { id: number; name: string; selling_price: number; is_active?: boolean };
 type Rate = { cylinder_type: number; custom_price: string };

@@ -2,17 +2,17 @@ import { Navigate, Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BarChart3, Bell, CalendarDays, ClipboardList, Home, LogOut, Package, ShoppingCart, Users, UserCog } from 'lucide-react';
-import Dashboard from './pages/Dashboard';
-import Stock from './pages/Stock';
-import Sales from './pages/Sales';
-import Reports from './pages/Reports';
-import Login from './pages/Login';
-import Customers from './pages/Customers';
-import Staff from './pages/Staff';
-import CustomerDashboard from './pages/CustomerDashboard';
-import StaffDashboard from './pages/StaffDashboard';
-import AdminBookings from './pages/AdminBookings';
-import ChangePassword from './pages/ChangePassword';
+import Dashboard from './pages/admin/Dashboard';
+import Stock from './pages/admin/Stock';
+import Sales from './pages/admin/Sales';
+import Reports from './pages/admin/Reports';
+import Login from './pages/auth/Login';
+import Customers from './pages/admin/Customers';
+import Staff from './pages/admin/Staff';
+import CustomerDashboard from './pages/customer/CustomerDashboard';
+import StaffDashboard from './pages/staff/StaffDashboard';
+import AdminBookings from './pages/admin/AdminBookings';
+import ChangePassword from './pages/auth/ChangePassword';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';
 
@@ -30,23 +30,14 @@ function RoleGuard({ allowed, role, children }: { allowed: string[]; role: strin
 export default function App() {
   const location = useLocation();
   const isAuthPage = location.pathname === '/login';
-  const [role, setRole] = useState('');
-  const [userName, setUserName] = useState('');
+  const [role, setRole] = useState(() => localStorage.getItem('gasbook_role') || '');
+  const [userName, setUserName] = useState(() => localStorage.getItem('gasbook_name') || '');
   const today = new Date();
   const monthLabel = today.toLocaleDateString('en-IN', { month: 'short', day: '2-digit' });
   const yearLabel = today.getFullYear();
 
   useEffect(() => {
     if (!isAuthPage && isAuthenticated()) {
-      const storedRole = localStorage.getItem('gasbook_role');
-      const storedName = localStorage.getItem('gasbook_name');
-      if (storedRole) {
-        setRole(storedRole);
-      }
-      if (storedName) {
-        setUserName(storedName);
-      }
-      
       api.get('/auth/me/').then((r) => {
         localStorage.setItem('gasbook_role', r.data.role);
         localStorage.setItem('gasbook_name', r.data.name);

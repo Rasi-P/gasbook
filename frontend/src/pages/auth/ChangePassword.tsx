@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { LockKeyhole, Eye, EyeOff } from 'lucide-react';
-import { api, changePassword, getRoleHome, logout } from '../lib/api';
+import { api, changePassword, getRoleHome, logout } from '../../lib/api';
 
 function PasswordInput({
   value,

@@ -3,7 +3,7 @@ import {
   IndianRupee, WalletCards,
   AlertTriangle, Package, Boxes,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type SaleItem = { cylinder_type_name: string; quantity: number; rate: number; empty_returned?: number };
 type Sale = {

@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
 import {
   Banknote, Building2, CreditCard, Plus,
   RotateCcw, Search, Smartphone, Trash2, User,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
@@ -35,6 +35,19 @@ function money(v: number | string) {
   return `Rs. ${Number(v || 0).toLocaleString('en-IN')}`;
 }
 
+type EmptyStat = { owed?: number; credit?: number; name: string };
+type CustomerInfo = {
+  id: number;
+  name: string;
+  phone: string;
+  address: string;
+  pending_balance: number;
+  empties_owed: Record<number, EmptyStat>;
+  empty_credits: Record<number, EmptyStat>;
+  sales_count: number;
+  custom_rates: { cylinder_type: number; custom_price: number }[];
+};
+
 export default function Sales() {
   const [tab, setTab] = useState<'new' | 'history'>('new');
   const [cylinderTypes, setCylinderTypes] = useState<CylinderType[]>([]);
@@ -44,9 +57,9 @@ export default function Sales() {
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
-  const [customerSuggestions, setCustomerSuggestions] = useState<{ id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: Record<number, { owed: number; name: string }>; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }> }[]>([]);
+  const [customerSuggestions, setCustomerSuggestions] = useState<CustomerInfo[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
-  const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerInfo | null>(null);
   const [location, setLocation] = useState(0);
 
   // Sale items (start empty — user adds as needed)
@@ -110,7 +123,6 @@ export default function Sales() {
 
   useEffect(() => {
     if (!customerName.trim() || selectedCustomerId !== null) {
-      setCustomerSuggestions([]);
       return;
     }
     const t = setTimeout(() => {
@@ -121,28 +133,28 @@ export default function Sales() {
     return () => clearTimeout(t);
   }, [customerName, selectedCustomerId]);
 
-  function fetchHistory() {
+  const fetchHistory = useCallback(() => {
     const params: Record<string, string> = {};
     if (search) params.search = search;
     if (filterPending) params.pending = '1';
     api.get('/sales/', { params })
       .then((r) => setSales(r.data.results ?? r.data))
       .catch(() => undefined);
-  }
+  }, [search, filterPending]);
 
   useEffect(() => {
     if (tab === 'history') fetchHistory();
-  }, [tab, search, filterPending]);
+  }, [tab, fetchHistory]);
 
   // ── Item helpers ──────────────────────────────────────────────────────────
 
   // ── Item helpers ──────────────────────────────────────────────────────────
 
-  function getApplicableRate(cylinder_type: number, rate_type: 'custom' | 'refill' | 'new', customer: any | null) {
+  function getApplicableRate(cylinder_type: number, rate_type: 'custom' | 'refill' | 'new', customer: CustomerInfo | null) {
     const t = cylinderTypes.find(c => c.id === cylinder_type);
     if (!t) return '0';
     if (rate_type === 'custom') {
-      const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === cylinder_type);
+      const custom = customer?.custom_rates?.find((cr) => cr.cylinder_type === cylinder_type);
       return custom ? String(custom.custom_price) : String(t.refill_rate);
     } else if (rate_type === 'refill') {
       return String(t.refill_rate);
@@ -169,22 +181,22 @@ export default function Sales() {
   function addItem() {
     const t = cylinderTypes[0];
     if (!t) return;
-    const hasCustom = selectedCustomer?.custom_rates?.find((cr: any) => cr.cylinder_type === t.id);
+    const hasCustom = selectedCustomer?.custom_rates?.find((cr) => cr.cylinder_type === t.id);
     const initialRateType = hasCustom ? 'custom' : 'refill';
     const rate = getApplicableRate(t.id, initialRateType, selectedCustomer);
     const newItem: SaleItem = { cylinder_type: t.id, quantity: 1, rate, empty_returned: 1, rate_type: initialRateType };
     setItems((prev) => [...prev, newItem]);
   }
 
-  // Update rates if customer selection changes
-  useEffect(() => {
-    if (items.length > 0) {
+  function selectCustomer(c: CustomerInfo | null) {
+    setSelectedCustomer(c);
+    if (c && items.length > 0) {
       setItems((prev) => prev.map(item => ({
         ...item,
-        rate: getApplicableRate(item.cylinder_type, item.rate_type, selectedCustomer)
+        rate: getApplicableRate(item.cylinder_type, item.rate_type, c)
       })));
     }
-  }, [selectedCustomer]);
+  }
 
   function removeItem(index: number) {
     setItems((prev) => prev.filter((_, i) => i !== index));
@@ -242,7 +254,14 @@ export default function Sales() {
         const res = await api.post('/customers/', { name: customerName.trim(), phone, address });
         customerId = res.data.id;
       }
-      const salePayload: any = {
+      const splitPayments: { mode: string; amount: number }[] = [];
+      if (paymentMode === 'split') {
+        if (Number(saleSplit.cash) > 0) splitPayments.push({ mode: 'cash', amount: Number(saleSplit.cash) });
+        if (Number(saleSplit.gpay) > 0) splitPayments.push({ mode: 'gpay', amount: Number(saleSplit.gpay) });
+        if (Number(saleSplit.bank) > 0) splitPayments.push({ mode: 'bank', amount: Number(saleSplit.bank) });
+      }
+
+      const salePayload = {
         customer: customerId,
         location,
         payment_mode: paymentMode,
@@ -253,16 +272,8 @@ export default function Sales() {
           rate: item.rate,
           empty_returned: Number(item.empty_returned) || 0,
         })),
+        ...(paymentMode === 'split' ? { split_payments: splitPayments } : { paid_payment_mode: paidPaymentMode }),
       };
-
-      if (paymentMode === 'split') {
-        salePayload.split_payments = [];
-        if (Number(saleSplit.cash) > 0) salePayload.split_payments.push({ mode: 'cash', amount: Number(saleSplit.cash) });
-        if (Number(saleSplit.gpay) > 0) salePayload.split_payments.push({ mode: 'gpay', amount: Number(saleSplit.gpay) });
-        if (Number(saleSplit.bank) > 0) salePayload.split_payments.push({ mode: 'bank', amount: Number(saleSplit.bank) });
-      } else {
-        salePayload.paid_payment_mode = paidPaymentMode;
-      }
 
       await api.post('/sales/', salePayload);
 
@@ -400,7 +411,7 @@ export default function Sales() {
                   setPhone(c.phone);
                   setAddress(c.address);
                   setSelectedCustomerId(c.id);
-                  setSelectedCustomer(c);
+                  selectCustomer(c);
                   setCustomerSuggestions([]);
                 }}
                           style={{ display: 'block', width: '100%', padding: '10px 14px', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
@@ -456,7 +467,7 @@ export default function Sales() {
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Empties Owed</div>
                   {selectedCustomer.empties_owed && Object.values(selectedCustomer.empties_owed).length > 0 ? (
                     <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                      {Object.values(selectedCustomer.empties_owed).map((ec: any) => (
+                      {Object.values(selectedCustomer.empties_owed).map((ec) => (
                         <span key={ec.name} className="badge" style={{ padding: '4px 8px', background: 'var(--danger-soft)', color: 'var(--danger)' }}>{ec.owed} × {ec.name}</span>
                       ))}
                     </div>
@@ -468,7 +479,7 @@ export default function Sales() {
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Empty Credits</div>
                   {selectedCustomer.empty_credits && Object.values(selectedCustomer.empty_credits).length > 0 ? (
                     <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                      {Object.values(selectedCustomer.empty_credits).map((ec: any) => (
+                      {Object.values(selectedCustomer.empty_credits).map((ec) => (
                         <span key={ec.name} className="badge badge-success" style={{ padding: '4px 8px' }}>{ec.credit} × {ec.name}</span>
                       ))}
                     </div>
@@ -616,7 +627,7 @@ export default function Sales() {
                           <label>
                             <span>Rate Type</span>
                             <select value={item.rate_type} onChange={(e) => updateItem(i, { rate_type: e.target.value as 'custom' | 'refill' | 'new' })}>
-                              {selectedCustomer?.custom_rates?.some((cr: any) => cr.cylinder_type === item.cylinder_type) && (
+                              {selectedCustomer?.custom_rates?.some((cr) => cr.cylinder_type === item.cylinder_type) && (
                                 <option value="custom">Agreed Rate</option>
                               )}
                               <option value="refill">Refill</option>

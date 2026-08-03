@@ -525,8 +525,11 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         if split_payments:
             payment_collected = sum(Decimal(str(p.get("amount", 0))) for p in split_payments)
             
-        if payment_collected < 0 or payment_collected > total:
-            return Response({"detail": "Collected amount must be between 0 and sale total."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if payment_collected < 0:
+            return Response({"detail": "Collected amount cannot be negative."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        sale_paid = min(payment_collected, total)
+        sale_balance = max(Decimal('0'), total - payment_collected)
 
         payment_method = request.data.get("payment_method") or Sale.PaymentMode.CREDIT
         paid_payment_mode = request.data.get("paid_payment_mode", "cash")
@@ -551,14 +554,14 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         if split_payments:
             sale_payment_mode = Sale.PaymentMode.SPLIT
         else:
-            sale_payment_mode = Sale.PaymentMode.CREDIT if payment_collected < total else payment_method
+            sale_payment_mode = Sale.PaymentMode.CREDIT if sale_paid < total else payment_method
         
         sale = Sale.objects.create(
             customer=profile,
             location=location,
             total_amount=total,
-            paid_amount=payment_collected,
-            balance_due=total - payment_collected,
+            paid_amount=sale_paid,
+            balance_due=sale_balance,
             payment_mode=sale_payment_mode,
             delivery_type=Sale.DeliveryType.DELIVERY,
             delivery_staff=delivery.staff.get_full_name() or delivery.staff.username,

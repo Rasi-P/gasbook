@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Check, ClipboardList, Truck, X } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type Booking = {
   id: number;

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type StaffUser = {
   id: number;
@@ -78,7 +78,7 @@ export default function Staff() {
     }
   }
 
-  function load() {
+  const load = useCallback(() => {
     api.get('/auth/users/').then((r) => setUsers(r.data)).catch(() => undefined);
     api.get('/auth/roles/').then((r) => {
       setAvailableRoles(r.data);
@@ -86,9 +86,9 @@ export default function Staff() {
     }).catch(() => undefined);
     api.get('/locations/').then((r) => setLocations(r.data.results ?? r.data)).catch(() => undefined);
     api.get('/staff-profiles/').then((r) => setStaffProfiles(r.data.results ?? r.data)).catch(() => undefined);
-  }
+  }, [role]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [load]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();

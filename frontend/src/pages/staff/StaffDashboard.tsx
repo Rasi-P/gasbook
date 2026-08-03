@@ -3,7 +3,7 @@ import {
   Banknote, CheckCircle2, Navigation, PackageCheck, Phone,
   RotateCcw, Truck, MapPin
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type Delivery = {
   id: number;
@@ -54,22 +54,24 @@ export default function StaffDashboard() {
       .then((res) => {
         const data: Delivery[] = res.data.results ?? res.data;
         setDeliveries(data);
-        setCollections(
-          Object.fromEntries(
-            data.map((d) => [
-              d.id,
-              {
-                amount: d.pending_amount,
-                method: 'credit',
+        setCollections((prev) => {
+          const next = { ...prev };
+          data.forEach((d) => {
+            if (!next[d.id]) {
+              const defaultAmt = String(Number(d.quantity) * Number(d.rate));
+              next[d.id] = {
+                amount: defaultAmt,
+                method: 'cash',
                 paid_method: 'cash',
                 empty: String(d.quantity),
                 split_cash: '',
                 split_gpay: '',
                 split_bank: '',
-              },
-            ])
-          )
-        );
+              };
+            }
+          });
+          return next;
+        });
       })
       .catch(() => undefined);
 
@@ -110,7 +112,16 @@ export default function StaffDashboard() {
   async function complete(id: number) {
     setMessage(''); setError(''); setLoadingId(id);
     try {
-      const form = collections[id] || { amount: '0', method: 'credit', paid_method: 'cash', empty: '0', split_cash: '', split_gpay: '', split_bank: '' };
+      const d = deliveries.find((item) => item.id === id);
+      const defaultAmount = d ? String(Number(d.quantity) * Number(d.rate)) : '0';
+      const defaultEmpty = d ? String(d.quantity) : '0';
+      const form = collections[id] || {
+        amount: defaultAmount,
+        method: 'cash',
+        paid_method: 'cash',
+        empty: defaultEmpty,
+        split_cash: '', split_gpay: '', split_bank: ''
+      };
       
       const splitPayments: { mode: string; amount: number }[] = [];
       const payload: {
@@ -134,7 +145,7 @@ export default function StaffDashboard() {
       }
 
       await api.post(`/deliveries/${id}/complete/`, payload);
-      setMessage('✓ Delivery completed. Stock, payments, and cylinder ledger updated.');
+      setMessage('✓ Delivery completed successfully. Stock, payment, and cylinder ledger updated.');
       load();
     } catch (err) {
       setError(getErrorMessage(err, 'Failed to complete delivery. Check vehicle stock level.'));
@@ -263,7 +274,6 @@ export default function StaffDashboard() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {displayedDeliveries.map((delivery) => {
-              const form = collections[delivery.id] || { amount: '', method: 'cash', paid_method: 'cash', empty: '', split_cash: '', split_gpay: '', split_bank: '' };
               const isCompleted = delivery.status === 'delivered';
               const isOut = delivery.status === 'out_for_delivery';
 
@@ -346,84 +356,106 @@ export default function StaffDashboard() {
                   </div>
 
                   {/* Fulfillment Form (Active Deliveries Only) */}
-                  {!isCompleted && (
-                    <div style={{
-                      display: 'flex', flexDirection: 'column', gap: '14px',
-                      background: 'var(--surface-muted)', padding: '16px', borderRadius: '10px',
-                      border: '1px solid var(--border)'
-                    }}>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                        <div>
-                          <label style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '4px', display: 'block' }}>Payment Method</label>
-                          <select
-                            value={form.method}
-                            onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, method: e.target.value } }))}
-                            style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
-                          >
-                            <option value="cash">💵 Cash</option>
-                            <option value="gpay">📱 GPay / UPI</option>
-                            <option value="bank">🏦 Bank Transfer</option>
-                            <option value="credit">⏳ Credit (Pending)</option>
-                            <option value="split">🔀 Split Payment</option>
-                          </select>
+                  {!isCompleted && (() => {
+                    const orderCost = Number(delivery.quantity) * Number(delivery.rate);
+                    const form = collections[delivery.id] || {
+                      amount: String(orderCost),
+                      method: 'cash',
+                      paid_method: 'cash',
+                      empty: String(delivery.quantity),
+                      split_cash: '', split_gpay: '', split_bank: ''
+                    };
+                    const collectedAmt = Number(form.amount || 0);
+
+                    return (
+                      <div style={{
+                        display: 'flex', flexDirection: 'column', gap: '14px',
+                        background: 'var(--surface-muted)', padding: '16px', borderRadius: '10px',
+                        border: '1px solid var(--border)'
+                      }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                          <div>
+                            <label style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '4px', display: 'block' }}>Payment Method</label>
+                            <select
+                              value={form.method}
+                              onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, method: e.target.value } }))}
+                              style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+                            >
+                              <option value="cash">💵 Cash</option>
+                              <option value="gpay">📱 GPay / UPI</option>
+                              <option value="bank">🏦 Bank Transfer</option>
+                              <option value="credit">⏳ Credit (Pending)</option>
+                              <option value="split">🔀 Split Payment</option>
+                            </select>
+                          </div>
+
+                          {form.method !== 'split' && (
+                            <div>
+                              <label style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '4px', display: 'block' }}>Amount Collected (Rs)</label>
+                              <input
+                                type="number"
+                                min="0"
+                                placeholder={String(orderCost)}
+                                value={form.amount}
+                                onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, amount: e.target.value } }))}
+                                style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border)', textAlign: 'right', fontWeight: 700 }}
+                              />
+                            </div>
+                          )}
+
+                          {form.method === 'split' && (
+                            <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                              <div>
+                                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Cash</span>
+                                <input
+                                  type="number" min="0" placeholder="0" value={form.split_cash}
+                                  onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_cash: e.target.value } }))}
+                                  style={{ width: '100%', padding: '6px', textAlign: 'center' }}
+                                />
+                              </div>
+                              <div>
+                                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>GPay</span>
+                                <input
+                                  type="number" min="0" placeholder="0" value={form.split_gpay}
+                                  onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_gpay: e.target.value } }))}
+                                  style={{ width: '100%', padding: '6px', textAlign: 'center' }}
+                                />
+                              </div>
+                              <div>
+                                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Bank</span>
+                                <input
+                                  type="number" min="0" placeholder="0" value={form.split_bank}
+                                  onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_bank: e.target.value } }))}
+                                  style={{ width: '100%', padding: '6px', textAlign: 'center' }}
+                                />
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         {form.method !== 'split' && (
-                          <div>
-                            <label style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '4px', display: 'block' }}>Amount Collected (Rs)</label>
-                            <input
-                              type="number"
-                              min="0"
-                              placeholder="0"
-                              value={form.amount}
-                              onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, amount: e.target.value } }))}
-                              style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border)', textAlign: 'right', fontWeight: 700 }}
-                            />
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '4px' }}>
+                            <span>Order Total: <strong>{money(orderCost)}</strong></span>
+                            {collectedAmt > orderCost && (
+                              <span style={{ color: 'var(--primary)', fontWeight: 600 }}>
+                                ✨ {money(orderCost)} order + {money(collectedAmt - orderCost)} ledger
+                              </span>
+                            )}
                           </div>
                         )}
 
-                        {form.method === 'split' && (
-                          <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-                            <div>
-                              <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Cash</span>
-                              <input
-                                type="number" min="0" placeholder="0" value={form.split_cash}
-                                onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_cash: e.target.value } }))}
-                                style={{ width: '100%', padding: '6px', textAlign: 'center' }}
-                              />
-                            </div>
-                            <div>
-                              <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>GPay</span>
-                              <input
-                                type="number" min="0" placeholder="0" value={form.split_gpay}
-                                onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_gpay: e.target.value } }))}
-                                style={{ width: '100%', padding: '6px', textAlign: 'center' }}
-                              />
-                            </div>
-                            <div>
-                              <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Bank</span>
-                              <input
-                                type="number" min="0" placeholder="0" value={form.split_bank}
-                                onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, split_bank: e.target.value } }))}
-                                style={{ width: '100%', padding: '6px', textAlign: 'center' }}
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Empty Cylinder Collected */}
-                      <div>
-                        <label style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '4px', display: 'block' }}>Empty Cylinders Collected</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={form.empty}
-                          onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, empty: e.target.value } }))}
-                          placeholder="Number of empty cylinders"
-                          style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
-                        />
-                      </div>
+                        {/* Empty Cylinder Collected */}
+                        <div>
+                          <label style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '4px', display: 'block' }}>Empty Cylinders Collected</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={form.empty}
+                            onChange={(e) => setCollections((prev) => ({ ...prev, [delivery.id]: { ...form, empty: e.target.value } }))}
+                            placeholder="Number of empty cylinders"
+                            style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)' }}
+                          />
+                        </div>
 
                       {/* Action Buttons */}
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '4px' }}>
@@ -448,8 +480,9 @@ export default function StaffDashboard() {
                           <CheckCircle2 size={18} /> {loadingId === delivery.id ? 'Completing…' : 'Complete & Deliver'}
                         </button>
                       </div>
-                    </div>
-                  )}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}

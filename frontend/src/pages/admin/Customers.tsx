@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
 import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type Customer = {
   id: number;

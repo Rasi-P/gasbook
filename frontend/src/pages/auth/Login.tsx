@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { LockKeyhole, Package, Eye, EyeOff } from 'lucide-react';
-import { login, api, getRoleHome } from '../lib/api';
+import { login, api, getRoleHome } from '../../lib/api';
 
 function PasswordInput({ value, onChange, placeholder, autoComplete }: {
   value: string;
