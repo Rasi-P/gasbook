@@ -14,6 +14,9 @@ class Command(BaseCommand):
         shop, _ = StockLocation.objects.get_or_create(code="shop", defaults={"name": "Shop"})
         kandam, _ = StockLocation.objects.get_or_create(code="kandam", defaults={"name": "Warehouse"})
         StockLocation.objects.get_or_create(code="supplier", defaults={"name": "Supplier"})
+        StockLocation.objects.get_or_create(code="auto_1", defaults={"name": "Auto 1"})
+        StockLocation.objects.get_or_create(code="auto_2", defaults={"name": "Auto 2"})
+        StockLocation.objects.get_or_create(code="van_1", defaults={"name": "Van 1"})
 
         if not User.objects.filter(username="admin").exists():
             User.objects.create_superuser(

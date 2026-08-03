@@ -27,9 +27,14 @@ function isProtectedAdmin(user: StaffUser) {
   return user.username === 'admin';
 }
 
+type StockLocation = { id: number; name: string; code: string };
+type StaffProfile = { id: number; user: number; vehicle_location: number | null; vehicle_location_name?: string; vehicle_number: string; assigned_area: string };
+
 export default function Staff() {
   const [users, setUsers] = useState<StaffUser[]>([]);
   const [availableRoles, setAvailableRoles] = useState<{code: string; name: string}[]>([]);
+  const [locations, setLocations] = useState<StockLocation[]>([]);
+  const [staffProfiles, setStaffProfiles] = useState<StaffProfile[]>([]);
   const [showAdd, setShowAdd] = useState(false);
 
   const [fullNameValue, setFullNameValue] = useState('');
@@ -38,6 +43,8 @@ export default function Staff() {
   const [email, setEmail] = useState('');
   const [address, setAddress] = useState('');
   const [role, setRole] = useState('staff');
+  const [vehicleLocation, setVehicleLocation] = useState<string>('');
+  const [vehicleNumber, setVehicleNumber] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -46,6 +53,8 @@ export default function Staff() {
   const [editPhone, setEditPhone] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editAddress, setEditAddress] = useState('');
+  const [editVehicleLocation, setEditVehicleLocation] = useState<string>('');
+  const [editVehicleNumber, setEditVehicleNumber] = useState('');
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
   const [credUserId, setCredUserId] = useState<number | null>(null);
@@ -53,12 +62,30 @@ export default function Staff() {
   const [credSaving, setCredSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
+  const vehicleLocations = locations.filter((loc) => loc.code !== 'shop' && loc.code !== 'supplier');
+
+  async function handleCreateNewVehicle(targetSetter: (id: string) => void) {
+    const name = window.prompt('Enter new vehicle name (e.g. Auto 3, Van 2):');
+    if (!name || !name.trim()) return;
+    const trimmed = name.trim();
+    const code = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    try {
+      const { data } = await api.post('/locations/', { name: trimmed, code });
+      setLocations((prev) => [...prev, data]);
+      targetSetter(String(data.id));
+    } catch {
+      alert('Failed to create vehicle location.');
+    }
+  }
+
   function load() {
     api.get('/auth/users/').then((r) => setUsers(r.data)).catch(() => undefined);
     api.get('/auth/roles/').then((r) => {
       setAvailableRoles(r.data);
       if (r.data.length > 0 && !role) setRole(r.data[0].code);
     }).catch(() => undefined);
+    api.get('/locations/').then((r) => setLocations(r.data.results ?? r.data)).catch(() => undefined);
+    api.get('/staff-profiles/').then((r) => setStaffProfiles(r.data.results ?? r.data)).catch(() => undefined);
   }
 
   useEffect(() => { load(); }, []);
@@ -76,10 +103,13 @@ export default function Staff() {
         email,
         address,
         role,
+        vehicle_location: vehicleLocation || null,
+        vehicle_number: vehicleNumber.trim(),
       });
       const tempPassword = (data as { temporary_password?: string }).temporary_password;
 
       setFullNameValue(''); setUsername(''); setPhone(''); setEmail(''); setAddress(''); setRole('staff');
+      setVehicleLocation(''); setVehicleNumber('');
       setShowAdd(false);
       await load();
 
@@ -103,6 +133,9 @@ export default function Staff() {
     setEditPhone(user.phone || '');
     setEditEmail(user.email || '');
     setEditAddress(user.address || '');
+    const sp = staffProfiles.find((p) => p.user === user.id);
+    setEditVehicleLocation(sp?.vehicle_location ? String(sp.vehicle_location) : '');
+    setEditVehicleNumber(sp?.vehicle_number || '');
     setEditError('');
   }
 
@@ -117,8 +150,24 @@ export default function Staff() {
         email: editEmail.trim(),
         address: editAddress.trim(),
       });
+
+      const sp = staffProfiles.find((p) => p.user === editingId);
+      if (sp) {
+        await api.patch(`/staff-profiles/${sp.id}/`, {
+          vehicle_location: editVehicleLocation ? Number(editVehicleLocation) : null,
+          vehicle_number: editVehicleNumber.trim(),
+        });
+      } else {
+        await api.post('/staff-profiles/', {
+          user: editingId,
+          vehicle_location: editVehicleLocation ? Number(editVehicleLocation) : null,
+          vehicle_number: editVehicleNumber.trim(),
+        });
+      }
+
       setUsers((prev) => prev.map((u) => (u.id === editingId ? data : u)));
       setEditingId(null);
+      await load();
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setEditError(detail || 'Failed to save. Try again.');
@@ -203,6 +252,30 @@ export default function Staff() {
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Optional" />
             </label>
           </div>
+          {role === 'staff' && (
+            <div className="grid-2">
+              <label>
+                <span>Assigned Vehicle Location</span>
+                <select value={vehicleLocation} onChange={(e) => {
+                  if (e.target.value === '__add_new__') {
+                    handleCreateNewVehicle(setVehicleLocation);
+                  } else {
+                    setVehicleLocation(e.target.value);
+                  }
+                }}>
+                  <option value="">-- Select Vehicle Location --</option>
+                  {vehicleLocations.map((loc) => (
+                    <option key={loc.id} value={loc.id}>🚚 {loc.name}</option>
+                  ))}
+                  <option value="__add_new__">+ Add New Vehicle Location...</option>
+                </select>
+              </label>
+              <label>
+                <span>Vehicle Number</span>
+                <input value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value)} placeholder="e.g. TN-38-AX-1234" />
+              </label>
+            </div>
+          )}
           <label>
             <span>Address</span>
             <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
@@ -245,6 +318,15 @@ export default function Staff() {
                     {u.email && <span>{u.email}</span>}
                     {u.address && <span>{u.address}</span>}
                   </div>
+                  {u.role === 'staff' && (() => {
+                    const sp = staffProfiles.find((p) => p.user === u.id);
+                    return (
+                      <div style={{ marginTop: '4px', fontSize: '0.8rem', color: 'var(--primary)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span>🚚 Vehicle Location: <strong>{sp?.vehicle_location_name || 'Unassigned'}</strong></span>
+                        {sp?.vehicle_number && <span style={{ color: 'var(--text-muted)' }}>({sp.vehicle_number})</span>}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                   <button
@@ -431,6 +513,30 @@ export default function Staff() {
                       <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
                     </label>
                   </div>
+                  {u.role === 'staff' && (
+                    <div className="grid-2">
+                      <label>
+                        <span>Assigned Vehicle Location</span>
+                        <select value={editVehicleLocation} onChange={(e) => {
+                          if (e.target.value === '__add_new__') {
+                            handleCreateNewVehicle(setEditVehicleLocation);
+                          } else {
+                            setEditVehicleLocation(e.target.value);
+                          }
+                        }}>
+                          <option value="">-- Select Vehicle Location --</option>
+                          {vehicleLocations.map((loc) => (
+                            <option key={loc.id} value={loc.id}>🚚 {loc.name}</option>
+                          ))}
+                          <option value="__add_new__">+ Add New Vehicle Location...</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>Vehicle Number</span>
+                        <input value={editVehicleNumber} onChange={(e) => setEditVehicleNumber(e.target.value)} placeholder="e.g. TN-38-AX-1234" />
+                      </label>
+                    </div>
+                  )}
                   {editError && <p className="form-error">{editError}</p>}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="btn btn-primary" type="submit" disabled={editSaving}>
