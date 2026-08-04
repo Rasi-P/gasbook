@@ -1,4 +1,4 @@
-import { Navigate, Routes, Route, NavLink, useLocation } from 'react-router-dom';
+import { Navigate, Routes, Route, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BarChart3, Bell, CalendarDays, Home, LogOut, Package, ShoppingCart, Users, UserCog } from 'lucide-react';
@@ -11,6 +11,7 @@ import Customers from './pages/Customers';
 import Staff from './pages/Staff';
 import CustomerDashboard from './pages/CustomerDashboard';
 import ChangePassword from './pages/ChangePassword';
+import Notifications from './pages/Notifications';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';
 
@@ -27,6 +28,7 @@ function RoleGuard({ allowed, role, children }: { allowed: string[]; role: strin
 
 export default function App() {
   const location = useLocation();
+  const navigate = useNavigate();
   const isAuthPage = location.pathname === '/login';
   const [role, setRole] = useState('');
   const [userName, setUserName] = useState('');
@@ -85,7 +87,17 @@ export default function App() {
             {monthLabel}, {yearLabel}
           </span>
           <span className="role-pill">{role}</span>
-          <button className="icon-button" title="Notifications" type="button">
+          <button 
+            className="icon-button" 
+            title="Notifications" 
+            type="button"
+            onClick={() => {
+              console.log('[DEBUG] Header Bell Icon Clicked! Navigating to /notifications');
+              alert('Header Bell Icon Clicked! Navigating to Notifications...');
+              navigate('/notifications');
+            }}
+            style={{ cursor: 'pointer' }}
+          >
             <Bell size={18} />
           </button>
           <div className="profile-avatar topbar-avatar">
@@ -149,6 +161,9 @@ export default function App() {
           <Route path="/customer-dashboard" element={
             <RoleGuard allowed={['customer']} role={role}><CustomerDashboard /></RoleGuard>
           } />
+          <Route path="/notifications" element={
+            <Protected><Notifications /></Protected>
+          } />
 
           <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
         </Routes>
@@ -165,9 +180,14 @@ export default function App() {
 function NavItems({ role }: { role: string }) {
   if (role === 'customer') {
     return (
-      <NavLink to="/customer-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <Home /><span>Home</span>
-      </NavLink>
+      <>
+        <NavLink to="/customer-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <Home /><span>Home</span>
+        </NavLink>
+        <NavLink to="/notifications" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <Bell /><span>Notifications</span>
+        </NavLink>
+      </>
     );
   }
 
@@ -185,6 +205,9 @@ function NavItems({ role }: { role: string }) {
         </NavLink>
         <NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           <Users /><span>Customers</span>
+        </NavLink>
+        <NavLink to="/notifications" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <Bell /><span>Notifications</span>
         </NavLink>
       </>
     );
@@ -210,6 +233,9 @@ function NavItems({ role }: { role: string }) {
       </NavLink>
       <NavLink to="/reports" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
         <BarChart3 /><span>Reports</span>
+      </NavLink>
+      <NavLink to="/notifications" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+        <Bell /><span>Notifications</span>
       </NavLink>
     </>
   );

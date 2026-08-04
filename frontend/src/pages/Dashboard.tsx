@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRightCircle,
+  Bell,
   Boxes,
   CalendarDays,
   IndianRupee,
@@ -12,7 +13,7 @@ import {
   TrendingUp,
   Warehouse,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 
 type DashboardData = {
@@ -34,7 +35,15 @@ function percent(value: number, total: number) {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [data, setData] = useState<DashboardData | null>(null);
+  const [showNotificationModal, setShowNotificationModal] = useState(false);
+
+  const handleNotificationClick = () => {
+    console.log('[DEBUG] Notification button clicked on Admin Dashboard!');
+    alert('Notification button clicked on Admin Dashboard!');
+    setShowNotificationModal((prev) => !prev);
+  };
 
   const loadDashboard = useCallback(() => {
     api.get('/dashboard/')
@@ -53,7 +62,7 @@ export default function Dashboard() {
 
   const filledPercent = percent(data.filled_cylinders, data.total_cylinders);
   const emptyPercent = percent(data.empty_cylinders, data.total_cylinders);
-  const customerTotal = data.stock_rows.reduce((sum, item) => sum + item.with_customers, 0);
+  const customerTotal = data.stock_rows.reduce((sum: number, item: { with_customers: number }) => sum + item.with_customers, 0);
 
   return (
     <div>
@@ -72,8 +81,57 @@ export default function Dashboard() {
             <RefreshCw size={16} />
             Refresh
           </button>
+          <button 
+            className="btn btn-compact btn-primary" 
+            type="button" 
+            onClick={handleNotificationClick}
+            style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <Bell size={16} />
+            Notifications
+          </button>
         </div>
       </div>
+
+      {showNotificationModal && (
+        <div className="modal-backdrop" onClick={() => setShowNotificationModal(false)} style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0, 0, 0, 0.5)', zIndex: 9999,
+          display: 'flex', justifyContent: 'center', alignItems: 'center'
+        }}>
+          <div className="card" onClick={(e) => e.stopPropagation()} style={{
+            maxWidth: '500px', width: '90%', maxHeight: '80vh', overflowY: 'auto',
+            background: 'var(--surface)', padding: '24px', borderRadius: '12px'
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+                <Bell style={{ color: 'var(--primary)' }} /> Notifications (Admin)
+              </h2>
+              <button className="btn btn-compact" onClick={() => setShowNotificationModal(false)}>✕ Close</button>
+            </div>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <div style={{ padding: '12px', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '8px', borderLeft: '4px solid #3b82f6' }}>
+                <strong style={{ display: 'block', marginBottom: '4px' }}>Notification API Connected</strong>
+                <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  GET /api/admin/notifications scaffold is active.
+                </p>
+              </div>
+              <div style={{ padding: '12px', background: 'rgba(245, 158, 11, 0.1)', borderRadius: '8px', borderLeft: '4px solid #f59e0b' }}>
+                <strong style={{ display: 'block', marginBottom: '4px' }}>Low Stock Alert</strong>
+                <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  Main Shop: Commercial stock threshold reached.
+                </p>
+              </div>
+            </div>
+            <div style={{ marginTop: '20px', textAlign: 'right' }}>
+              <button className="btn btn-primary" onClick={() => navigate('/notifications')}>
+                Open Full Page →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="stat-grid">
         <div className="metric-card strong purple">
@@ -94,11 +152,16 @@ export default function Dashboard() {
           <strong>{data.empty_cylinders}</strong>
           <small>{emptyPercent}% ready to refill</small>
         </div>
-        <div className="metric-card orange">
+        <div 
+          className="metric-card orange"
+          style={{ cursor: 'pointer' }}
+          onClick={() => navigate('/notifications')}
+          title="Click to view notifications"
+        >
           <AlertTriangle />
           <span>Pending Payments</span>
           <strong>{money(data.pending_payments)}</strong>
-          <small>{data.low_stock.length} stock warnings</small>
+          <small>{data.low_stock.length} stock warnings (View alerts)</small>
         </div>
       </section>
 
@@ -155,7 +218,7 @@ export default function Dashboard() {
               <TrendingUp size={18} />
             </div>
             <div className="progress-list">
-              {data.stock_rows.slice(0, 4).map((item) => (
+              {data.stock_rows.slice(0, 4).map((item: any) => (
                 <ProgressRow key={item.id} label={item.type} value={item.total} total={data.total_cylinders} color="green" />
               ))}
             </div>
@@ -223,7 +286,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {data.stock_rows.map((item) => (
+              {data.stock_rows.map((item: any) => (
                 <tr key={item.id}>
                   <td><strong>{item.type}</strong></td>
                   <td style={{ textAlign: 'center' }}>

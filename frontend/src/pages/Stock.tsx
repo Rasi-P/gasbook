@@ -108,7 +108,7 @@ export default function Stock() {
   const [fromLocation, setFromLocation] = useState(0);
   const [toLocation, setToLocation] = useState(0);
   const [moveItems, setMoveItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '', status: 'filled' }]);
-  const [moveStatus, setMoveStatus] = useState('filled');
+  const [_moveStatus, _setMoveStatus] = useState('filled');
   const [moveMsg, setMoveMsg] = useState('');
   const [moveErr, setMoveErr] = useState('');
   const [moveSaving, setMoveSaving] = useState(false);
