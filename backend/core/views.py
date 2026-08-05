@@ -898,12 +898,13 @@ def dashboard(request):
     # Calculate with_customers correctly by summing physical possession per customer per cylinder type
     # Using a chronological running balance where returned empties pay off existing debt first,
     # and excess returns (banked credits) do NOT artificially lower the debt below 0.
-    customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type")
+    customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type", "custom_rates")
     with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
     
     for customer in customers:
         # We must process sales chronologically to maintain the correct running balance
         sales = customer.sales.order_by("created_at")
+        custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in customer.custom_rates.all()}
         balances = {} # tid -> debt
         
         for sale in sales:
@@ -919,8 +920,11 @@ def dashboard(request):
                 payoff = min(balances[tid], returned)
                 balances[tid] -= payoff
                 
-                # 2. Taken cylinders ALWAYS increase debt
-                balances[tid] += taken
+                # 2. Taken cylinders increase debt ONLY if they are refill cylinders (rate <= threshold)
+                refill_rate = Decimal(str(custom_rates.get(tid, item.cylinder_type.refill_rate)))
+                threshold = (item.cylinder_type.selling_price + refill_rate) / 2
+                if Decimal(str(item.rate)) <= threshold:
+                    balances[tid] += taken
                 
         for tid, debt in balances.items():
             if tid in with_customers_by_type and debt > 0:
@@ -1041,12 +1045,13 @@ def reports(request):
                     balances[tid]["owed"] = 0
                 
                 taken_qty = item.quantity
-                balances[tid]["owed"] += taken_qty
-                
-                refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
+                refill_rate = Decimal(str(custom_rates.get(tid, item.cylinder_type.refill_rate)))
                 threshold = (item.cylinder_type.selling_price + refill_rate) / 2
                 
-                if item.rate <= threshold and taken_qty > 0:
+                if Decimal(str(item.rate)) <= threshold:
+                    balances[tid]["owed"] += taken_qty
+                
+                if Decimal(str(item.rate)) <= threshold and taken_qty > 0:
                     credits_needed = max(0, taken_qty - returned_qty)
                     balances[tid]["credits"] -= credits_needed
                     if balances[tid]["credits"] < 0:

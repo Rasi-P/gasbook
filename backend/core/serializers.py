@@ -310,6 +310,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     sales_count = serializers.SerializerMethodField()
     empty_credits = serializers.SerializerMethodField()
+    deposit_cylinders = serializers.IntegerField(source="get_owned_cylinders_count", read_only=True)
 
     class Meta:
         model = CustomerProfile
@@ -347,14 +348,14 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
                     balances[tid]["credits"] += abs(balances[tid]["owed"])
                     balances[tid]["owed"] = 0
                 
-                # Step 2: Process taken cylinders
+                # Step 2: Process taken cylinders (only if refill)
                 taken_qty = item.quantity
-                balances[tid]["owed"] += taken_qty
-                
-                # Step 3: Consume credits if they got the discounted refill rate
                 refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
                 threshold = (item.cylinder_type.selling_price + refill_rate) / 2
+                if item.rate <= threshold:
+                    balances[tid]["owed"] += taken_qty
                 
+                # Step 3: Consume credits if they got the discounted refill rate
                 if item.rate <= threshold and taken_qty > 0:
                     credits_needed = max(0, taken_qty - returned_qty)
                     balances[tid]["credits"] -= credits_needed
@@ -476,7 +477,7 @@ class DeliverySerializer(serializers.ModelSerializer):
     staff_name = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
     pending_amount = serializers.SerializerMethodField()
-    deposit_cylinders = serializers.IntegerField(source="booking.customer.deposit_cylinders", read_only=True)
+    deposit_cylinders = serializers.IntegerField(source="booking.customer.get_owned_cylinders_count", read_only=True)
 
     class Meta:
         model = Delivery

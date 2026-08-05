@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
@@ -101,6 +102,18 @@ class CustomerProfile(TimeStampedModel):
 
     def __str__(self):
         return self.user.get_full_name() or self.user.username
+
+    def get_owned_cylinders_count(self):
+        total_owned = self.deposit_cylinders
+        custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in self.custom_rates.all()}
+        for sale in self.sales.prefetch_related('items__cylinder_type'):
+            for item in sale.items.all():
+                tid = item.cylinder_type_id
+                refill_rate = Decimal(str(custom_rates.get(tid, item.cylinder_type.refill_rate)))
+                threshold = (item.cylinder_type.selling_price + refill_rate) / 2
+                if Decimal(str(item.rate)) > threshold:
+                    total_owned += item.quantity
+        return total_owned
 
 
 class StaffProfile(TimeStampedModel):
