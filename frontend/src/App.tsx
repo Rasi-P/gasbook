@@ -2,14 +2,14 @@ import { Navigate, Routes, Route, NavLink, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { BarChart3, Bell, CalendarDays, Home, LogOut, Package, ShoppingCart, Users, UserCog } from 'lucide-react';
-import Dashboard from './pages/Dashboard';
+import Dashboard from './pages/admin/Dashboard';
 import Stock from './pages/Stock';
 import Sales from './pages/Sales';
-import Reports from './pages/Reports';
+import Reports from './pages/admin/Reports';
 import Login from './pages/Login';
 import Customers from './pages/Customers';
-import Staff from './pages/Staff';
-import CustomerDashboard from './pages/CustomerDashboard';
+import Staff from './pages/admin/Staff';
+import CustomerDashboard from './pages/customer/CustomerDashboard';
 import ChangePassword from './pages/ChangePassword';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';

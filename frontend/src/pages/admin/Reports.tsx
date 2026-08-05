@@ -3,7 +3,7 @@ import {
   IndianRupee, WalletCards,
   AlertTriangle, Package, Boxes,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type SaleItem = { cylinder_type_name: string; quantity: number; rate: number };
 type Sale = {
@@ -73,7 +73,7 @@ export default function Reports() {
   function fetchData(s: string, e: string) {
     setLoading(true);
     api.get('/reports/', { params: { start: s, end: e } })
-      .then((r) => setData(r.data))
+      .then((r: any) => setData(r.data))
       .catch(() => undefined)
       .finally(() => setLoading(false));
   }
