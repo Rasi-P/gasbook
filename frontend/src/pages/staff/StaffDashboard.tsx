@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Banknote, CheckCircle2, Navigation, PackageCheck, RotateCcw, Truck } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type Delivery = {
   id: number;

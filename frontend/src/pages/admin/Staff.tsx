@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type StaffUser = {
   id: number;
@@ -54,8 +54,8 @@ export default function Staff() {
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
   function load() {
-    api.get('/auth/users/').then((r) => setUsers(r.data)).catch(() => undefined);
-    api.get('/auth/roles/').then((r) => {
+    api.get('/auth/users/').then((r: any) => setUsers(r.data)).catch(() => undefined);
+    api.get('/auth/roles/').then((r: any) => {
       setAvailableRoles(r.data);
       if (r.data.length > 0 && !role) setRole(r.data[0].code);
     }).catch(() => undefined);

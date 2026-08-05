@@ -13,7 +13,7 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api } from '../lib/api';
+import { api } from '../../lib/api';
 
 type DashboardData = {
   total_cylinders: number; filled_cylinders: number; empty_cylinders: number;
@@ -38,7 +38,7 @@ export default function Dashboard() {
 
   const loadDashboard = useCallback(() => {
     api.get('/dashboard/')
-      .then((response) => setData(response.data))
+      .then((response: any) => setData(response.data))
       .catch(() => undefined);
   }, []);
 
