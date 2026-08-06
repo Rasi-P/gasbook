@@ -736,9 +736,10 @@ def user_detail(request, pk):
         user.first_name = parts[0] if parts else ""
         user.last_name = parts[1] if len(parts) > 1 else ""
     if phone is not None:
-        user.phone = phone.strip()
-        if not user.phone:
-            return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        try:
+            user.phone = check_phone_number(phone)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=drf_status.HTTP_400_BAD_REQUEST)
     if address is not None:
         user.address = address.strip()
     if email is not None:

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2 } from 'lucide-react';
 import { api } from '../../lib/api';
+import { PHONE_LENGTH, PHONE_LENGTH_MESSAGE, isValidPhone, phoneError, sanitizePhone } from '../../lib/phone';
 
 type StaffUser = {
   id: number;
@@ -66,6 +67,7 @@ export default function Staff() {
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    if (!isValidPhone(phone)) { setError(PHONE_LENGTH_MESSAGE); return; }
     setSaving(true);
     try {
       const createdUsername = username.trim();
@@ -109,7 +111,9 @@ export default function Staff() {
   async function handleEdit(e: React.FormEvent) {
     e.preventDefault();
     if (!editingId) return;
-    setEditSaving(true); setEditError('');
+    setEditError('');
+    if (!isValidPhone(editPhone)) { setEditError(PHONE_LENGTH_MESSAGE); return; }
+    setEditSaving(true);
     try {
       const { data } = await api.patch(`/auth/users/${editingId}/`, {
         full_name: editName.trim(),
@@ -196,7 +200,21 @@ export default function Staff() {
           <div className="grid-2">
             <label>
               <span>Phone *</span>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" placeholder="Required" required />
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(sanitizePhone(e.target.value))}
+                inputMode="numeric"
+                maxLength={PHONE_LENGTH}
+                title="Only digits allowed"
+                placeholder="10-digit mobile number"
+                required
+              />
+              {phoneError(phone) && (
+                <span style={{ color: 'var(--danger)', fontSize: '0.78rem', marginTop: '4px', display: 'block' }}>
+                  {phoneError(phone)}
+                </span>
+              )}
             </label>
             <label>
               <span>Email</span>
@@ -418,7 +436,20 @@ export default function Staff() {
                     </label>
                     <label>
                       <span>Phone *</span>
-                      <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" required />
+                      <input
+                        type="tel"
+                        value={editPhone}
+                        onChange={(e) => setEditPhone(sanitizePhone(e.target.value))}
+                        inputMode="numeric"
+                        maxLength={PHONE_LENGTH}
+                        title="Only digits allowed"
+                        required
+                      />
+                      {phoneError(editPhone) && (
+                        <span style={{ color: 'var(--danger)', fontSize: '0.78rem', marginTop: '4px', display: 'block' }}>
+                          {phoneError(editPhone)}
+                        </span>
+                      )}
                     </label>
                   </div>
                   <div className="grid-2">

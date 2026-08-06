@@ -3,7 +3,6 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
-from django.core.validators import RegexValidator
 from rest_framework import serializers
 
 from .models import (
@@ -15,17 +14,10 @@ from .models import (
 from .validators import (
     CUSTOMER_NOT_FOUND_MESSAGE,
     CUSTOMER_REQUIRED_MESSAGE,
-    PHONE_DIGITS_MESSAGE,
-    PHONE_LENGTH_MESSAGE,
 )
-
-phone_digits_validator = RegexValidator(regex=r"^[0-9]*$", message=PHONE_DIGITS_MESSAGE)
-phone_length_validator = RegexValidator(regex=r"^[0-9]{10}$", message=PHONE_LENGTH_MESSAGE)
-phone_validators = [phone_digits_validator, phone_length_validator]
 
 
 class UserSerializer(serializers.ModelSerializer):
-    phone = serializers.CharField(validators=phone_validators, required=False, allow_blank=True)
     role = serializers.SlugRelatedField(slug_field='code', queryset=Role.objects.all())
 
     class Meta:
