@@ -46,6 +46,7 @@ export default function Sales() {
   const [address, setAddress] = useState('');
   const [customerSuggestions, setCustomerSuggestions] = useState<{ id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: Record<number, { owed: number; name: string }>; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }> }[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [customerSearchEmpty, setCustomerSearchEmpty] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [location, setLocation] = useState(0);
 
@@ -108,18 +109,38 @@ export default function Sales() {
       .catch(() => undefined);
   }, [location, locations]);
 
+  // Search registered customers by name or phone
   useEffect(() => {
-    if (!customerName.trim() || selectedCustomerId !== null) {
+    const term = customerName.trim() || phone.trim();
+    if (!term || selectedCustomerId !== null) {
       setCustomerSuggestions([]);
+      setCustomerSearchEmpty(false);
       return;
     }
     const t = setTimeout(() => {
-      api.get('/customers/', { params: { search: customerName } })
-        .then((r) => setCustomerSuggestions((r.data.results ?? r.data).slice(0, 5)))
+      api.get('/customers/', { params: { search: term } })
+        .then((r) => {
+          const found = (r.data.results ?? r.data).slice(0, 5);
+          setCustomerSuggestions(found);
+          setCustomerSearchEmpty(found.length === 0);
+        })
         .catch(() => undefined);
     }, 300);
     return () => clearTimeout(t);
-  }, [customerName, selectedCustomerId]);
+  }, [customerName, phone, selectedCustomerId]);
+
+  // Phone must be digits only (0-9) and exactly 10 of them
+  const phoneError = phone.length > 0 && phone.length !== 10
+    ? 'Phone number must be exactly 10 digits.'
+    : '';
+
+  function handlePhoneChange(raw: string) {
+    if (!/^[0-9]*$/.test(raw)) return;   // block letters, spaces, symbols
+    if (raw.length > 10) return;          // block more than 10 digits
+    setPhone(raw);
+    setSelectedCustomerId(null);
+    setSelectedCustomer(null);
+  }
 
   function fetchHistory() {
     const params: Record<string, string> = {};
@@ -224,23 +245,17 @@ export default function Sales() {
     e.preventDefault();
     setMessage(''); setError('');
     if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
+    if (selectedCustomerId === null) { setError('No customer found. Please register the customer first.'); return; }
+    if (phoneError) { setError(phoneError); return; }
     if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
       setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
       return;
     }
     try {
-      let customerId: number | null = selectedCustomerId;
+      const customerId: number | null = selectedCustomerId;
       if (!customerId) {
-        if (!customerName.trim()) {
-          setError('Please select a customer or enter details to register a new one.');
-          return;
-        }
-        if (!phone.trim()) {
-          setError('Phone number is required to register a new customer.');
-          return;
-        }
-        const res = await api.post('/customers/', { name: customerName.trim(), phone, address });
-        customerId = res.data.id;
+        setError('No customer found. Please register the customer first.');
+        return;
       }
       const salePayload: any = {
         customer: customerId,
@@ -386,8 +401,8 @@ export default function Sales() {
                     <User size={18} />
                     <input
                       value={customerName}
-                      onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); }}
-                      placeholder="Search or enter new customer"
+                      onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); setSelectedCustomer(null); }}
+                      placeholder="Search registered customer by name"
                       autoComplete="off"
                     />
                   </div>
@@ -421,10 +436,27 @@ export default function Sales() {
                     </div>
                   )}
                 </div>
+                {customerSearchEmpty && selectedCustomerId === null && (
+                  <span style={{ color: 'var(--danger)', fontSize: '0.78rem', marginTop: '4px', display: 'block' }}>
+                    No customer found. Please register the customer first.
+                  </span>
+                )}
               </label>
               <label>
                 <span>Phone</span>
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Required for new customer" required={Boolean(customerName.trim() && selectedCustomerId === null && !returnMode)} />
+                <input
+                  value={phone}
+                  onChange={(e) => handlePhoneChange(e.target.value)}
+                  inputMode="numeric"
+                  maxLength={10}
+                  placeholder="Search by 10-digit mobile number"
+                  autoComplete="off"
+                />
+                {phoneError && (
+                  <span style={{ color: 'var(--danger)', fontSize: '0.78rem', marginTop: '4px', display: 'block' }}>
+                    {phoneError}
+                  </span>
+                )}
               </label>
             </div>
             <div style={{ marginTop: '12px' }}>
@@ -783,7 +815,7 @@ export default function Sales() {
               {error && <p className="form-error">{error}</p>}
               {message && <p className="form-note">{message}</p>}
 
-              <button type="submit" className="btn btn-primary">
+              <button type="submit" className="btn btn-primary" disabled={selectedCustomerId === null || Boolean(phoneError)}>
                 <Plus size={20} /> Complete Sale
               </button>
             </form>

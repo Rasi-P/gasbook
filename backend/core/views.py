@@ -8,7 +8,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework import status as drf_status
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -18,6 +18,7 @@ from .models import (
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
+from .validators import check_phone_number
 from .serializers import (
     ActivityLogSerializer,
     BookingSerializer,
@@ -201,8 +202,10 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         address = request.data.get("address", "").strip()
         parts = name.split(" ", 1)
         
-        if phone and not phone.isdigit():
-            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        try:
+            phone = check_phone_number(phone)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=drf_status.HTTP_400_BAD_REQUEST)
 
         if phone:
             existing_user = User.objects.filter(phone=phone, role__code="customer").first()
@@ -219,6 +222,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         if User.objects.filter(username=username_str).exists():
             username_str = f"{username_str}_{get_random_string(4)}"
 
+        customer_role, _ = Role.objects.get_or_create(code="customer", defaults={"name": "Customer"})
         user = User.objects.create_user(
             username=username_str,
             first_name=parts[0] if parts else "",
@@ -226,7 +230,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             email=email,
             phone=phone,
             address=address,
-            role__code="customer",
+            role=customer_role,
             must_change_password=True,
             is_active=True
         )
@@ -241,19 +245,26 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments})
 
     def perform_update(self, serializer):
-        profile = serializer.save()
-        user = profile.user
         name = self.request.data.get("name")
         phone = self.request.data.get("phone")
         address = self.request.data.get("address")
         email = self.request.data.get("email")
+
+        if phone is not None:
+            try:
+                phone = check_phone_number(phone)
+            except ValueError as exc:
+                raise ValidationError({"detail": str(exc)})
+
+        profile = serializer.save()
+        user = profile.user
 
         if name is not None:
             parts = name.strip().split(" ", 1)
             user.first_name = parts[0] if parts else ""
             user.last_name = parts[1] if len(parts) > 1 else ""
         if phone is not None:
-            user.phone = phone.strip()
+            user.phone = phone
         if address is not None:
             user.address = address.strip()
         if email is not None:
@@ -809,10 +820,10 @@ def register(request):
     area = request.data.get("area", "").strip()
     if not username:
         return Response({"detail": "Username required."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if not phone:
-        return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if phone and not phone.isdigit():
-        return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    try:
+        phone = check_phone_number(phone)
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=drf_status.HTTP_400_BAD_REQUEST)
     if User.objects.filter(username=username).exists():
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if role not in [r.code for r in Role.objects.all()]:

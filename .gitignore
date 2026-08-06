@@ -18,3 +18,13 @@ frontend/dist/
 
 # Logs
 *.log
+
+# Python virtualenv
+backend/.venv/
+
+# Editor / local caches
+.vscode/
+frontend/.npm-cache/
+
+# Use package-lock.json, not yarn
+frontend/yarn.lock

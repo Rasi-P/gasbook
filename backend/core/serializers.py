@@ -12,11 +12,20 @@ from .models import (
     StaffProfile, Stock, StockLocation, StockMovement, User,
 )
 
-phone_validator = RegexValidator(regex=r"^\d+$", message="Phone number must contain only digits.")
+from .validators import (
+    CUSTOMER_NOT_FOUND_MESSAGE,
+    CUSTOMER_REQUIRED_MESSAGE,
+    PHONE_DIGITS_MESSAGE,
+    PHONE_LENGTH_MESSAGE,
+)
+
+phone_digits_validator = RegexValidator(regex=r"^[0-9]*$", message=PHONE_DIGITS_MESSAGE)
+phone_length_validator = RegexValidator(regex=r"^[0-9]{10}$", message=PHONE_LENGTH_MESSAGE)
+phone_validators = [phone_digits_validator, phone_length_validator]
 
 
 class UserSerializer(serializers.ModelSerializer):
-    phone = serializers.CharField(validators=[phone_validator], required=False, allow_blank=True)
+    phone = serializers.CharField(validators=phone_validators, required=False, allow_blank=True)
     role = serializers.SlugRelatedField(slug_field='code', queryset=Role.objects.all())
 
     class Meta:
@@ -137,6 +146,17 @@ class SaleItemWriteSerializer(serializers.Serializer):
 
 
 class SaleSerializer(serializers.ModelSerializer):
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=CustomerProfile.objects.all(),
+        required=True,
+        allow_null=False,
+        error_messages={
+            "required": CUSTOMER_REQUIRED_MESSAGE,
+            "null": CUSTOMER_REQUIRED_MESSAGE,
+            "does_not_exist": CUSTOMER_NOT_FOUND_MESSAGE,
+            "incorrect_type": CUSTOMER_NOT_FOUND_MESSAGE,
+        },
+    )
     customer_name = serializers.CharField(source="customer.user.username", read_only=True, default="Guest")
     sold_by_name = serializers.CharField(source="sold_by.username", read_only=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
