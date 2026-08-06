@@ -5,6 +5,7 @@ import {
   RotateCcw, Search, Smartphone, Trash2, User,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { PHONE_LENGTH, phoneError, sanitizePhone } from '../lib/phone';
 
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
@@ -130,14 +131,10 @@ export default function Sales() {
   }, [customerName, phone, selectedCustomerId]);
 
   // Phone must be digits only (0-9) and exactly 10 of them
-  const phoneError = phone.length > 0 && phone.length !== 10
-    ? 'Phone number must be exactly 10 digits.'
-    : '';
+  const phoneErrorMsg = phoneError(phone);
 
   function handlePhoneChange(raw: string) {
-    if (!/^[0-9]*$/.test(raw)) return;   // block letters, spaces, symbols
-    if (raw.length > 10) return;          // block more than 10 digits
-    setPhone(raw);
+    setPhone(sanitizePhone(raw));
     setSelectedCustomerId(null);
     setSelectedCustomer(null);
   }
@@ -246,7 +243,7 @@ export default function Sales() {
     setMessage(''); setError('');
     if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
     if (selectedCustomerId === null) { setError('No customer found. Please register the customer first.'); return; }
-    if (phoneError) { setError(phoneError); return; }
+    if (phoneErrorMsg) { setError(phoneErrorMsg); return; }
     if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
       setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
       return;
@@ -448,13 +445,13 @@ export default function Sales() {
                   value={phone}
                   onChange={(e) => handlePhoneChange(e.target.value)}
                   inputMode="numeric"
-                  maxLength={10}
+                  maxLength={PHONE_LENGTH}
                   placeholder="Search by 10-digit mobile number"
                   autoComplete="off"
                 />
-                {phoneError && (
+                {phoneErrorMsg && (
                   <span style={{ color: 'var(--danger)', fontSize: '0.78rem', marginTop: '4px', display: 'block' }}>
-                    {phoneError}
+                    {phoneErrorMsg}
                   </span>
                 )}
               </label>
@@ -815,7 +812,7 @@ export default function Sales() {
               {error && <p className="form-error">{error}</p>}
               {message && <p className="form-note">{message}</p>}
 
-              <button type="submit" className="btn btn-primary" disabled={selectedCustomerId === null || Boolean(phoneError)}>
+              <button type="submit" className="btn btn-primary" disabled={selectedCustomerId === null || Boolean(phoneErrorMsg)}>
                 <Plus size={20} /> Complete Sale
               </button>
             </form>
