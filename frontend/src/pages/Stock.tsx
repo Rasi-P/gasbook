@@ -108,7 +108,6 @@ export default function Stock() {
   const [fromLocation, setFromLocation] = useState(0);
   const [toLocation, setToLocation] = useState(0);
   const [moveItems, setMoveItems] = useState<RefuelItem[]>([{ cylinder_type: 0, quantity: '', status: 'filled' }]);
-  const [moveStatus, setMoveStatus] = useState('filled');
   const [moveMsg, setMoveMsg] = useState('');
   const [moveErr, setMoveErr] = useState('');
   const [moveSaving, setMoveSaving] = useState(false);
@@ -136,7 +135,7 @@ export default function Stock() {
   const [refuelRecvSaving, setRefuelRecvSaving] = useState(false);
 
   const [justSentItems, setJustSentItems] = useState<RefuelItem[] | null>(null);
-  const [supplierPending, setSupplierPending] = useState<{cylinder_type_id: number, cylinder_type_name: string, pending: number}[]>([]);
+  const [supplierPending, setSupplierPending] = useState<{ cylinder_type_id: number, cylinder_type_name: string, pending: number }[]>([]);
 
   // ── Stock data (for showing available empties) ──────────────────────────
   const [stockData, setStockData] = useState<StockRow[]>([]);
@@ -692,7 +691,7 @@ export default function Stock() {
       {/* ── Refuel ── */}
       {activeTab === 'refuel' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-          
+
           {/* Send Empties */}
           <div className="card form-card">
             <h2 style={{ marginBottom: '4px' }}>Send Empties</h2>
@@ -796,11 +795,11 @@ export default function Stock() {
 
               <div style={{ marginTop: '16px' }}>
                 <label>Reference Note (Optional)</label>
-                <input 
-                  type="text" 
-                  value={refuelSendNote} 
-                  onChange={e => setRefuelSendNote(e.target.value)} 
-                  placeholder="e.g. Sent via Driver John" 
+                <input
+                  type="text"
+                  value={refuelSendNote}
+                  onChange={e => setRefuelSendNote(e.target.value)}
+                  placeholder="e.g. Sent via Driver John"
                 />
               </div>
 
@@ -909,11 +908,11 @@ export default function Stock() {
 
               <div style={{ marginTop: '16px' }}>
                 <label>Reference Note (Optional)</label>
-                <input 
-                  type="text" 
-                  value={refuelRecvNote} 
-                  onChange={e => setRefuelRecvNote(e.target.value)} 
-                  placeholder="e.g. Received partial from Monday's batch" 
+                <input
+                  type="text"
+                  value={refuelRecvNote}
+                  onChange={e => setRefuelRecvNote(e.target.value)}
+                  placeholder="e.g. Received partial from Monday's batch"
                 />
               </div>
 
@@ -960,13 +959,13 @@ export default function Stock() {
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                     <strong>{m.quantity} × {m.cylinder_type_name}</strong>
-                    
+
                     {/* Beautiful Status Badge */}
-                    <span style={{ 
-                      padding: '2px 8px', 
-                      borderRadius: '12px', 
-                      fontSize: '0.7rem', 
-                      fontWeight: 600, 
+                    <span style={{
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      fontSize: '0.7rem',
+                      fontWeight: 600,
                       textTransform: 'uppercase',
                       letterSpacing: '0.5px',
                       background: m.status === 'filled' ? 'var(--success-soft)' : 'var(--surface)',
@@ -975,11 +974,11 @@ export default function Stock() {
                     }}>
                       {m.status}
                     </span>
-                    
+
                     {m.note === 'New supplier load' && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--success-soft)', color: 'var(--success)' }}>New Load</span>}
                     {m.note.startsWith('Sent for refilling') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--warning-soft, #fff7ed)', color: 'var(--warning, #c2410c)', border: '1px solid var(--warning)' }}>🔥 Refuel Sent</span>}
                     {m.note.startsWith('Received refilled cylinders') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--info-soft, #eff6ff)', color: 'var(--info, #1d4ed8)', border: '1px solid var(--info)' }}>🔥 Refuel Received</span>}
-                    
+
                     {m.supplier_pending_after !== undefined && m.supplier_pending_after !== null && (
                       <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
                         <strong style={{ marginRight: '4px', color: m.supplier_pending_after > 0 ? 'var(--warning, #d97706)' : 'var(--success)' }}>{m.supplier_pending_after}</strong>owed

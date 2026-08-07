@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
-  Banknote, Building2, CreditCard, Minus, Plus,
+  Banknote, Building2, CreditCard, Plus,
   RotateCcw, Search, Smartphone, Trash2, User,
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -533,7 +533,7 @@ export default function Sales() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 800 }}>
                       <span style={{ color: 'var(--text)', fontSize: '1.05rem' }}>Total Cylinders Returned</span>
                       <strong style={{ color: 'var(--success)', fontSize: '1.2rem' }}>
-                        {returnEmpties.reduce((s, r) => s + r.quantity, 0)} cylinder(s)
+                        {returnEmpties.reduce((s, r) => s + Number(r.quantity), 0)} cylinder(s)
                       </strong>
                     </div>
                   </>
