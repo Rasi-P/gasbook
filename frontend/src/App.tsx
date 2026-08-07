@@ -74,90 +74,96 @@ export default function App() {
 
   return (
     <Protected>
-      <header className="app-header">
-        <div className="brand">
-          <Package />
-          GasBook
-        </div>
-        <div className="topbar-tools">
-          <span className="topbar-date">
-            <CalendarDays size={14} />
-            {monthLabel}, {yearLabel}
-          </span>
-          <span className="role-pill">{role}</span>
-          <button className="icon-button" title="Notifications" type="button">
-            <Bell size={18} />
-          </button>
-          <div className="profile-avatar topbar-avatar">
-            {(userName || role).slice(0, 2).toUpperCase()}
-          </div>
-        </div>
-      </header>
-
-      <aside className="side-nav">
-        <div className="sidebar-brand">
-          <Package />
-          <span>GasBook</span>
-        </div>
-        <NavItems role={role} />
-        <div className="sidebar-profile">
-          <div className="profile-avatar">
-            {(userName || role).slice(0, 2).toUpperCase()}
-          </div>
-          <div className="profile-info">
-            <span className="profile-name" title={userName || 'User'}>
-              {userName || 'User'}
-            </span>
-            <span className="profile-role">{role}</span>
-          </div>
-          <button 
-            className="profile-logout" 
-            title="Logout" 
-            onClick={() => { logout(); window.location.href = '/login'; }}
-          >
-            <LogOut size={18} />
-          </button>
-        </div>
-      </aside>
-
-      <main className="page-container">
+      {role === 'customer' ? (
         <Routes>
           <Route path="/change-password" element={<ChangePassword />} />
-          <Route path="/" element={<Navigate to={getRoleHome(role)} replace />} />
-
-          <Route path="/admin-dashboard" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
-          } />
-          <Route path="/staff-dashboard" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
-          } />
-          <Route path="/stock" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Stock /></RoleGuard>
-          } />
-          <Route path="/sales" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Sales /></RoleGuard>
-          } />
-          <Route path="/customers" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Customers /></RoleGuard>
-          } />
-          <Route path="/reports" element={
-            <RoleGuard allowed={['admin']} role={role}><Reports /></RoleGuard>
-          } />
-          <Route path="/staff" element={
-            <RoleGuard allowed={['admin']} role={role}><Staff /></RoleGuard>
-          } />
-          <Route path="/customer-dashboard" element={
-            <RoleGuard allowed={['customer']} role={role}><CustomerDashboard /></RoleGuard>
-          } />
-
-          <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
+          <Route path="*" element={<CustomerDashboard />} />
         </Routes>
-      </main>
+      ) : (
+        <>
+          <header className="app-header">
+            <div className="brand">
+              <Package />
+              GasBook
+            </div>
+            <div className="topbar-tools">
+              <span className="topbar-date">
+                <CalendarDays size={14} />
+                {monthLabel}, {yearLabel}
+              </span>
+              <span className="role-pill">{role}</span>
+              <button className="icon-button" title="Notifications" type="button">
+                <Bell size={18} />
+              </button>
+              <div className="profile-avatar topbar-avatar">
+                {(userName || role).slice(0, 2).toUpperCase()}
+              </div>
+            </div>
+          </header>
 
-      <nav className="bottom-nav">
-        <NavItems role={role} />
-      </nav>
-      {role === 'admin' && <RatesPanel />}
+          <aside className="side-nav">
+            <div className="sidebar-brand">
+              <Package />
+              <span>GasBook</span>
+            </div>
+            <NavItems role={role} />
+            <div className="sidebar-profile">
+              <div className="profile-avatar">
+                {(userName || role).slice(0, 2).toUpperCase()}
+              </div>
+              <div className="profile-info">
+                <span className="profile-name" title={userName || 'User'}>
+                  {userName || 'User'}
+                </span>
+                <span className="profile-role">{role}</span>
+              </div>
+              <button 
+                className="profile-logout" 
+                title="Logout" 
+                onClick={() => { logout(); window.location.href = '/login'; }}
+              >
+                <LogOut size={18} />
+              </button>
+            </div>
+          </aside>
+
+          <main className="page-container">
+            <Routes>
+              <Route path="/change-password" element={<ChangePassword />} />
+              <Route path="/" element={<Navigate to={getRoleHome(role)} replace />} />
+
+              <Route path="/admin-dashboard" element={
+                <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
+              } />
+              <Route path="/staff-dashboard" element={
+                <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
+              } />
+              <Route path="/stock" element={
+                <RoleGuard allowed={['admin', 'staff']} role={role}><Stock /></RoleGuard>
+              } />
+              <Route path="/sales" element={
+                <RoleGuard allowed={['admin', 'staff']} role={role}><Sales /></RoleGuard>
+              } />
+              <Route path="/customers" element={
+                <RoleGuard allowed={['admin', 'staff']} role={role}><Customers /></RoleGuard>
+              } />
+              <Route path="/reports" element={
+                <RoleGuard allowed={['admin']} role={role}><Reports /></RoleGuard>
+              } />
+              <Route path="/staff" element={
+                <RoleGuard allowed={['admin']} role={role}><Staff /></RoleGuard>
+              } />
+
+              <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
+            </Routes>
+          </main>
+
+          <nav className="bottom-nav">
+            <NavItems role={role} />
+          </nav>
+          {role === 'admin' && <RatesPanel />}
+        </>
+      )}
     </Protected>
   );
 }
