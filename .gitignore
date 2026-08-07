@@ -18,3 +18,11 @@ frontend/dist/
 
 # Logs
 *.log
+
+# Virtual Environment
+.venv/
+**/venv/
+backend/.venv/
+**/node_modules/
+frontend/.npm-cache/
+

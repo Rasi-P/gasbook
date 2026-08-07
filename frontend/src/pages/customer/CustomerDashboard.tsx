@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import { 
   Bell, 
-  IndianRupee, 
   PackagePlus, 
   Flame,
   Home,
@@ -23,9 +22,15 @@ import {
   CheckCircle2,
   AlertTriangle,
   LogOut,
-  Check
+  Check,
+  Calendar,
+  MessageCircle,
+  Truck,
+  CreditCard,
+  Tag
 } from 'lucide-react';
 import { api, logout } from '../../lib/api';
+import heroIllustration from '../../assets/hero-illustration.png';
 
 type CylinderType = { id: number; name: string; selling_price: number; weight: number; refill_rate: number };
 type Rate = { cylinder_type: number; custom_price: string };
@@ -199,39 +204,7 @@ export default function CustomerDashboard() {
     }, 2000);
   }
 
-  // Render SVG Red Cylinder
-  const renderCylinderSVG = (className = "h-48 w-auto") => (
-    <svg className={className} viewBox="0 0 200 300" fill="none" xmlns="http://www.w3.org/2000/svg">
-      {/* Cylinder Shadow */}
-      <ellipse cx="100" cy="270" rx="60" ry="12" fill="#E2E8F0" opacity="0.8" />
-      {/* Main Cylinder Body */}
-      <path d="M50 90C50 70 65 50 100 50C135 50 150 70 150 90V230C150 255 128 265 100 265C72 265 50 255 50 230V90Z" fill="url(#cylinder_grad)" />
-      {/* Weld lines & highlights */}
-      <path d="M50 160C80 170 120 170 150 160" stroke="#DC2626" strokeWidth="2" opacity="0.4" />
-      {/* Shading/Glow effect */}
-      <path d="M50 90C55 160 55 200 50 230" stroke="#FFF" strokeWidth="4" opacity="0.15" strokeLinecap="round" />
-      {/* Cylinder Cap / Neck collar */}
-      <path d="M70 50C70 35 80 30 100 30C120 30 130 35 130 50" stroke="#94A3B8" strokeWidth="10" strokeLinecap="round" fill="none" />
-      <path d="M85 30H115V22H85V30Z" fill="#475569" />
-      {/* Inner Valve */}
-      <circle cx="100" cy="16" r="6" fill="#F97316" />
-      {/* Handles */}
-      <path d="M62 48C50 48 50 75 60 85" stroke="#94A3B8" strokeWidth="6" fill="none" strokeLinecap="round" />
-      <path d="M138 48C150 48 150 75 140 85" stroke="#94A3B8" strokeWidth="6" fill="none" strokeLinecap="round" />
-      {/* Flame Logo Graphic */}
-      <path d="M100 110C100 110 85 130 85 145C85 153.284 91.7157 160 100 160C108.284 160 115 153.284 115 145C115 130 100 110 100 110Z" fill="#FFF" opacity="0.9" />
-      <path d="M100 122C100 122 92 135 92 144C92 148.971 95.5817 153 100 153C104.418 153 108 148.971 108 144C108 135 100 122 100 122Z" fill="#F97316" />
-      {/* Gradients */}
-      <defs>
-        <linearGradient id="cylinder_grad" x1="50" y1="150" x2="150" y2="150" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#EA580C" />
-          <stop offset="45%" stopColor="#EF4444" />
-          <stop offset="70%" stopColor="#DC2626" />
-          <stop offset="100%" stopColor="#991B1B" />
-        </linearGradient>
-      </defs>
-    </svg>
-  );
+
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] flex text-[#1E293B] antialiased" style={{ fontFamily: '"Inter", sans-serif' }}>
@@ -325,7 +298,7 @@ export default function CustomerDashboard() {
             </button>
             <div className="hidden sm:block">
               <h2 className="text-lg font-bold text-[#1E293B]">
-                Good {new Date().getHours() < 12 ? 'Morning' : new Date().getHours() < 17 ? 'Afternoon' : 'Evening'}, {profile?.full_name || 'Guest'} 👋
+                Good {new Date().getHours() < 12 ? 'Morning' : new Date().getHours() < 17 ? 'Afternoon' : 'Evening'}, {profile?.full_name || localStorage.getItem('gasbook_name') || 'Guest'} 👋
               </h2>
               <p className="text-xs text-[#64748B]">Let's manage your LPG refills and connection accounts.</p>
             </div>
@@ -358,10 +331,10 @@ export default function CustomerDashboard() {
                 className="flex items-center gap-2 hover:bg-[#F1F5F9] p-1.5 pr-3 rounded-xl transition-colors"
               >
                 <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-orange-400 to-[#F97316] text-white flex items-center justify-center font-bold text-sm shadow-sm">
-                  {(profile?.full_name || 'U').slice(0, 2).toUpperCase()}
+                  {(profile?.full_name || localStorage.getItem('gasbook_name') || 'U').slice(0, 2).toUpperCase()}
                 </div>
                 <span className="hidden sm:block text-sm font-bold text-[#334155]">
-                  {profile?.full_name.split(' ')[0] || 'My Account'}
+                  {profile?.full_name?.split(' ')[0] || localStorage.getItem('gasbook_name')?.split(' ')[0] || 'My Account'}
                 </span>
               </button>
 
@@ -396,99 +369,178 @@ export default function CustomerDashboard() {
         <main className="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6 pb-20">
           
           {activeTab === 'home' && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div className="space-y-6">
               
-              {/* LEFT DASHBOARD COLUMN */}
-              <div className="lg:col-span-8 space-y-6">
-                
-                {/* HERO CARD */}
-                <div className="bg-gradient-to-br from-blue-550 to-blue-650 bg-[#2563EB] text-white rounded-3xl p-6 relative overflow-hidden shadow-lg shadow-blue-500/20">
-                  <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-400/20 via-transparent to-transparent opacity-60 pointer-events-none" />
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2">
-                        <span className="bg-blue-400/30 px-3 py-1 rounded-full text-xs font-bold tracking-wider uppercase text-blue-100 flex items-center gap-1.5">
-                          <span className="w-2 h-2 rounded-full bg-green-400 animate-ping" />
-                          My Connection Active
-                        </span>
-                      </div>
-                      <div>
-                        <h3 className="text-2xl font-extrabold tracking-tight">
-                          {profile?.custom_rates[0]?.cylinder_type 
-                            ? types.find(t => t.id === profile.custom_rates[0].cylinder_type)?.name 
-                            : types[0]?.name || 'Domestic 14.2 KG'}
-                        </h3>
-                        <p className="text-blue-100/90 text-sm mt-1">
-                          Last cylinder delivery: <span className="font-bold text-white">{profile?.last_delivery_date ? new Date(profile.last_delivery_date).toLocaleDateString('en-IN', { dateStyle: 'medium' }) : 'No records yet'}</span>
-                        </p>
-                      </div>
+              {/* 1. LPG CONNECTION CARD */}
+              <div 
+                className="border border-[#E5E7EB] rounded-[24px] p-8 shadow-sm h-[280px] relative overflow-hidden z-10 transition-all duration-300 hover:shadow-md"
+                style={{
+                  backgroundImage: `url(${heroIllustration})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center right',
+                  backgroundRepeat: 'no-repeat',
+                  backgroundColor: 'transparent'
+                }}
+              >
+                {/* Subtle dark overlay */}
+                <div className="absolute inset-0 bg-[#000000]/[0.03] pointer-events-none -z-10" />
 
-                      <div className="flex flex-wrap gap-3 pt-2">
-                        <button 
-                          onClick={() => {
-                            if (types.length > 0) {
-                              setSelectedCylinder(String(types[0].id));
-                            }
-                            setBookingStep(1);
-                            setIsBookingOpen(true);
-                          }}
-                          className="bg-white hover:bg-orange-50 text-[#2563EB] hover:text-[#F97316] font-bold px-6 py-3 rounded-2xl shadow-md transition-all duration-200 flex items-center gap-2 hover:scale-[1.02]"
-                        >
-                          <PackagePlus size={18} /> Book Cylinder
-                        </button>
-                        {activeBooking && (
-                          <button 
-                            onClick={() => setActiveTab('track')}
-                            className="bg-transparent hover:bg-white/10 border border-white/40 text-white font-bold px-5 py-3 rounded-2xl transition-all duration-200 flex items-center gap-2"
-                          >
-                            <MapPin size={18} /> Track Order
-                          </button>
-                        )}
-                      </div>
+                {/* Left Side Content Container (Max-Width 55% on mobile, 45% on desktop) */}
+                <div className="max-w-[55%] sm:max-w-[45%] flex flex-col justify-between h-full relative z-10">
+                  
+                  {/* Connection Information */}
+                  <div className="space-y-2.5">
+                    <h3 className="text-[28px] font-bold text-[#1E293B] leading-tight">
+                      🔥 My LPG Connection
+                    </h3>
+                    <div className="text-[#2563EB] font-bold text-lg">
+                      {profile?.custom_rates[0]?.cylinder_type 
+                        ? types.find(t => t.id === profile.custom_rates[0].cylinder_type)?.name 
+                        : types[0]?.name || 'Domestic 14.2 KG'}
                     </div>
-
-                    <div className="hidden md:flex justify-center flex-1 max-w-[200px]">
-                      {renderCylinderSVG("h-48 w-auto filter drop-shadow-xl hover:rotate-3 transition-transform duration-300")}
+                    <div className="text-sm md:text-base text-[#64748B] font-medium">
+                      Last Delivery : <span className="text-[#1E293B] font-semibold">{profile?.last_delivery_date ? new Date(profile.last_delivery_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' }) : '10 Jul'}</span>
+                    </div>
+                    <div className="text-sm md:text-base text-[#64748B] font-medium">
+                      Status : <span className="text-[#16A34A] font-bold">Ready to Book</span>
                     </div>
                   </div>
-                </div>
 
-                {/* QUICK ACTIONS GRID */}
-                <div>
-                  <h3 className="text-base font-bold text-[#334155] mb-4 flex items-center gap-2">
-                    Quick Actions
-                  </h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                  {/* Action Buttons (Bottom Left) */}
+                  <div className="flex gap-2 sm:gap-4 flex-wrap sm:flex-nowrap">
+                    <button 
+                      onClick={() => {
+                        if (types.length > 0) {
+                          setSelectedCylinder(String(types[0].id));
+                        }
+                        setBookingStep(1);
+                        setIsBookingOpen(true);
+                      }}
+                      className="bg-[#2563EB] hover:bg-blue-700 text-white font-semibold h-10 sm:h-12 px-3 sm:px-6 text-xs sm:text-sm rounded-[12px] sm:rounded-[14px] transition-all duration-200 flex items-center justify-center gap-1.5 hover:scale-[1.02] shadow-sm flex-1 sm:flex-none"
+                    >
+                      <Calendar size={16} /> Book Cylinder
+                    </button>
+                    {activeBooking && (
+                      <button 
+                        onClick={() => setActiveTab('track')}
+                        className="bg-white hover:bg-blue-50 border border-[#2563EB] text-[#2563EB] font-semibold h-10 sm:h-12 px-3 sm:px-6 text-xs sm:text-sm rounded-[12px] sm:rounded-[14px] transition-all duration-200 flex items-center justify-center gap-1.5 hover:scale-[1.02] flex-1 sm:flex-none"
+                      >
+                        <MapPin size={16} /> Track Order
+                      </button>
+                    )}
+                  </div>
+
+                </div>
+              </div>
+
+              {/* 2. QUICK ACTIONS GRID */}
+              <div>
+                <h3 className="text-base font-bold text-[#334155] mb-4 flex items-center gap-2">
+                  Quick Actions
+                </h3>
+                <div className="grid grid-cols-4 gap-3 sm:gap-4">
+                  {[
+                    { label: 'Book', icon: PackagePlus, color: 'bg-[#EFF6FF] text-[#2563EB]', action: () => setIsBookingOpen(true) },
+                    { label: 'Track', icon: MapPin, color: 'bg-[#E8F5E9] text-[#2E7D32]', action: () => setActiveTab('track') },
+                    { label: 'Help', icon: HelpCircle, color: 'bg-[#F3E5F5] text-[#7B1FA2]', action: () => setActiveTab('help') },
+                    { label: 'History', icon: History, color: 'bg-[#FFF3E0] text-[#E65100]', action: () => setActiveTab('history') },
+                    { label: 'Pay', icon: CreditCard, color: 'bg-[#EFF6FF] text-[#2563EB]', action: () => {} },
+                    { label: 'SOS', icon: ShieldAlert, color: 'bg-[#FFEBEE] text-[#C62828]', action: () => setIsEmergencyOpen(true) },
+                    { label: 'Transfer', icon: Home, color: 'bg-[#E0F2F1] text-[#00695C]', action: () => {} },
+                    { label: 'Offers', icon: Gift, color: 'bg-[#FCE4EC] text-[#C2185B]', action: () => setActiveTab('offers') },
+                  ].map((act, i) => {
+                    const Icon = act.icon;
+                    return (
+                      <button
+                        key={i}
+                        onClick={act.action}
+                        className="bg-white border border-[#E2E8F0] hover:border-orange-200 rounded-2xl p-3 sm:p-4 flex flex-col items-center justify-center text-center gap-2 sm:gap-3 transition-all duration-200 hover:shadow-md hover:scale-[1.02] group"
+                      >
+                        <div className={`p-2.5 sm:p-3 rounded-full ${act.color} group-hover:scale-110 transition-transform w-11 h-11 sm:w-13 sm:h-13 flex items-center justify-center`}>
+                          <Icon size={18} className="sm:w-[22px] sm:h-[22px]" />
+                        </div>
+                        <span className="text-[10px] sm:text-xs font-bold text-[#475569] group-hover:text-black mt-0.5">
+                          {act.label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 3. CURRENT BOOKING TIMELINE (HORIZONTAL TRACKER) */}
+              {activeBooking && (
+                <div className="bg-white border border-[#E2E8F0] rounded-3xl p-5 sm:p-6 shadow-sm">
+                  <div className="flex justify-between items-center mb-6">
+                    <h4 className="text-sm font-extrabold text-[#334155] uppercase tracking-wider">Current Booking</h4>
+                    <span className="bg-amber-50 text-amber-700 text-xs font-bold px-3 py-1 rounded-full border border-amber-100 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                      {activeBooking.status.replaceAll('_', ' ').toUpperCase()}
+                    </span>
+                  </div>
+                  
+                  <div className="flex items-center justify-between relative mt-2">
+                    {/* Dotted Connection Lines */}
+                    <div className="absolute left-[8%] right-[8%] top-[18px] h-[2px] border-t-2 border-dashed border-[#E2E8F0] -z-10" />
+                    
                     {[
-                      { label: 'Book Cylinder', icon: PackagePlus, color: 'bg-orange-50 text-orange-600', action: () => setIsBookingOpen(true) },
-                      { label: 'Track Order', icon: MapPin, color: 'bg-blue-50 text-blue-600', action: () => setActiveTab('track') },
-                      { label: 'Booking History', icon: History, color: 'bg-purple-50 text-purple-600', action: () => setActiveTab('history') },
-                      { label: 'Help & Support', icon: HelpCircle, color: 'bg-cyan-50 text-cyan-600', action: () => setActiveTab('help') },
-                      { label: 'Request Mechanic', icon: Wrench, color: 'bg-amber-50 text-amber-600', action: () => setIsMechanicOpen(true) },
-                      { label: 'Offers & Rewards', icon: Gift, color: 'bg-pink-50 text-pink-600', action: () => setActiveTab('offers') },
-                      { label: 'Emergency (SOS)', icon: ShieldAlert, color: 'bg-red-50 text-red-600', action: () => setIsEmergencyOpen(true) },
-                      { label: 'My Profile', icon: User, color: 'bg-emerald-50 text-emerald-600', action: () => setActiveTab('profile') },
-                    ].map((act, i) => {
-                      const Icon = act.icon;
+                      { label: 'Booking Filed', step: 1, icon: Calendar },
+                      { label: 'Approved', step: 2, icon: CheckCircle2 },
+                      { label: 'Packed', step: 3, icon: PackagePlus },
+                      { label: 'Out For Delivery', step: 4, icon: Truck },
+                      { label: 'Delivered', step: 5, icon: Home },
+                    ].map((step, idx) => {
+                      const isDone = statusStepIndex >= step.step;
+                      const isCurrent = statusStepIndex === step.step;
+                      const Icon = step.icon;
                       return (
-                        <button
-                          key={i}
-                          onClick={act.action}
-                          className="bg-white border border-[#E2E8F0] hover:border-orange-200 rounded-2xl p-4 flex flex-col items-center justify-center text-center gap-3 transition-all duration-200 hover:shadow-md hover:scale-[1.02] group"
-                        >
-                          <div className={`p-3 rounded-xl ${act.color} group-hover:scale-110 transition-transform`}>
-                            <Icon size={20} />
+                        <div key={idx} className="flex flex-col items-center flex-1 text-center">
+                          <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center border-2 transition-all duration-300 ${
+                            isDone 
+                              ? 'bg-[#EFF6FF] border-[#2563EB] text-[#2563EB]' 
+                              : 'bg-white border-[#E2E8F0] text-[#94A3B8]'
+                          }`}>
+                            <Icon size={16} className="sm:w-[18px] sm:h-[18px]" />
                           </div>
-                          <span className="text-xs font-bold text-[#475569] group-hover:text-black">
-                            {act.label}
+                          <span className={`text-[9px] sm:text-xs font-bold mt-2 leading-tight max-w-[65px] sm:max-w-none ${
+                            isCurrent ? 'text-[#2563EB]' : isDone ? 'text-[#1E293B]' : 'text-[#94A3B8]'
+                          }`}>
+                            {step.label}
                           </span>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
                 </div>
+              )}
 
-                {/* RECENT BOOKINGS TIMELINE LIST */}
+              {/* 4. REFILL PRICING CARD */}
+              <div className="bg-white border border-[#E2E8F0] rounded-3xl p-5 shadow-sm flex items-center justify-between relative overflow-hidden">
+                <div className="flex-grow grid grid-cols-3 gap-2 divide-x divide-[#F1F5F9]">
+                  <div className="pr-2 sm:pr-4">
+                    <span className="text-[10px] sm:text-xs font-bold text-[#64748B] uppercase block">Today's Price</span>
+                    <span className="text-base sm:text-2xl font-black text-[#334155]">{money(pricingContext.standard)}</span>
+                  </div>
+                  <div className="px-3 sm:px-6">
+                    <span className="text-[10px] sm:text-xs font-bold text-[#2563EB] uppercase block">Special Price</span>
+                    <span className="text-base sm:text-2xl font-black text-[#16A34A]">{money(pricingContext.special)}</span>
+                  </div>
+                  <div className="pl-3 sm:pl-6">
+                    <span className="text-[10px] sm:text-xs font-bold text-green-750 uppercase block">You Save</span>
+                    <span className="text-base sm:text-2xl font-black text-green-650 flex items-center gap-1">
+                      {money(pricingContext.savings)} 🎉
+                    </span>
+                  </div>
+                </div>
+                <div className="w-12 h-12 rounded-full bg-emerald-500 text-white flex items-center justify-center font-extrabold text-xl shrink-0 shadow-sm shadow-emerald-500/20 ml-2">
+                  ₹
+                </div>
+              </div>
+
+              {/* 5. RECENT BOOKINGS & NOTIFICATIONS (SIDE-BY-SIDE / STACKED) */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* Recent Bookings */}
                 <div className="bg-white border border-[#E2E8F0] rounded-3xl p-6 shadow-sm">
                   <div className="flex justify-between items-center mb-4">
                     <h3 className="text-base font-bold text-[#334155]">Recent Bookings</h3>
@@ -504,16 +556,16 @@ export default function CustomerDashboard() {
                     {bookings.slice(0, 3).map((b) => (
                       <div key={b.id} className="flex items-center justify-between p-4 border border-[#F1F5F9] rounded-2xl hover:bg-[#F8FAFC] transition-colors">
                         <div className="flex items-center gap-3">
-                          <div className="bg-orange-50 p-2.5 rounded-xl text-[#F97316]">
+                          <div className="bg-orange-50 p-2.5 rounded-xl text-[#F97316] shrink-0">
                             <Flame size={18} />
                           </div>
                           <div>
-                            <span className="text-xs font-bold text-[#64748B]">Booking #{b.id}</span>
+                            <span className="text-[10px] font-bold text-[#64748B] block">Booking #{b.id}</span>
                             <h4 className="text-sm font-bold text-[#1E293B]">{b.quantity} x {b.cylinder_type_name}</h4>
                             <p className="text-xs text-[#94A3B8]">{new Date(b.created_at).toLocaleDateString('en-IN', { dateStyle: 'medium' })}</p>
                           </div>
                         </div>
-                        <div className="text-right">
+                        <div className="text-right shrink-0">
                           <span className="text-sm font-extrabold text-[#1E293B] block">{money(b.rate)}</span>
                           <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase mt-1 ${
                             b.status.toLowerCase() === 'delivered' 
@@ -533,109 +585,24 @@ export default function CustomerDashboard() {
                   </div>
                 </div>
 
-              </div>
-
-              {/* RIGHT DASHBOARD COLUMN */}
-              <div className="lg:col-span-4 space-y-6">
-                
-                {/* ACTIVE ORDER CARD & TIMELINE */}
-                {activeBooking && (
-                  <div className="bg-white border border-[#E2E8F0] rounded-3xl p-6 shadow-sm">
-                    <div className="flex justify-between items-center mb-4">
-                      <h4 className="text-sm font-extrabold text-[#334155] uppercase tracking-wider">Active Booking</h4>
-                      <span className="bg-orange-100 text-orange-700 text-xs font-bold px-2 py-0.5 rounded-full">
-                        #{activeBooking.id}
-                      </span>
-                    </div>
-
-                    <div className="bg-gradient-to-r from-orange-50 to-orange-100/50 border border-orange-100 rounded-2xl p-4 mb-4">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <span className="text-[10px] font-bold text-orange-600 uppercase tracking-wide">Status Update</span>
-                          <h5 className="text-base font-extrabold text-orange-950 capitalize">{activeBooking.status.replaceAll('_', ' ')}</h5>
-                        </div>
-                        <button 
-                          onClick={() => setActiveTab('track')}
-                          className="bg-[#F97316] text-white p-2 rounded-xl text-xs font-bold hover:bg-orange-600 transition-colors"
-                        >
-                          Live Track
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Timeline stepper */}
-                    <div className="relative pl-6 space-y-5 border-l-2 border-[#E2E8F0] ml-3">
-                      {[
-                        { label: 'Booking Filed', desc: 'Refill request submitted by you', step: 1 },
-                        { label: 'Approved by Dealer', desc: 'Request validated', step: 2 },
-                        { label: 'Cylinder Packed', desc: 'Cylinder assigned & sealed', step: 3 },
-                        { label: 'Out for Delivery', desc: 'Dispatched with delivery vehicle', step: 4 },
-                        { label: 'Delivered', desc: 'Handed over & payment synced', step: 5 }
-                      ].map((step, idx) => {
-                        const isDone = statusStepIndex >= step.step;
-                        const isCurrent = statusStepIndex === step.step;
-                        return (
-                          <div key={idx} className="relative">
-                            {/* Bullet dot */}
-                            <span className={`absolute -left-[31px] top-1 w-4.5 h-4.5 rounded-full border-2 flex items-center justify-center transition-all duration-300 ${
-                              isDone 
-                                ? 'bg-orange-500 border-orange-500 text-white' 
-                                : 'bg-white border-[#CBD5E1] text-transparent'
-                            }`}>
-                              {isDone && <Check size={10} strokeWidth={3} />}
-                            </span>
-                            <div>
-                              <h6 className={`text-xs font-bold ${isCurrent ? 'text-orange-600' : isDone ? 'text-[#1E293B]' : 'text-[#94A3B8]'}`}>
-                                {step.label}
-                              </h6>
-                              <p className="text-[10px] text-[#64748B] mt-0.5">{step.desc}</p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* PRICE CARD */}
-                <div className="bg-white border border-[#E2E8F0] rounded-3xl p-6 shadow-sm relative overflow-hidden">
-                  <div className="absolute right-[-20px] top-[-20px] w-24 h-24 bg-green-500/10 rounded-full flex items-center justify-center">
-                    <IndianRupee className="text-green-600 opacity-20" size={48} />
-                  </div>
-                  <h4 className="text-sm font-extrabold text-[#334155] mb-4">LPG Refill Pricing</h4>
-                  
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center text-sm border-b border-[#F1F5F9] pb-2">
-                      <span className="text-[#64748B]">Today's Standard Price</span>
-                      <span className="font-semibold text-[#475569]">{money(pricingContext.standard)}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm font-bold text-[#1E293B]">Your Special Account Price</span>
-                      <span className="text-base font-extrabold text-[#22C55E]">
-                        {money(pricingContext.special)}
-                      </span>
-                    </div>
-                    
-                    {pricingContext.savings > 0 && (
-                      <div className="bg-green-50 border border-green-100 rounded-xl p-3 flex items-center justify-between text-xs font-bold text-green-700">
-                        <span>Direct Savings Badge</span>
-                        <span className="bg-green-500 text-white px-2 py-0.5 rounded-full text-[10px] animate-bounce">
-                          Save {money(pricingContext.savings)} 🎉
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* LIVE DISPATCH UPDATES / NOTIFICATIONS */}
+                {/* Notifications / Dispatch Updates */}
                 <div className="bg-white border border-[#E2E8F0] rounded-3xl p-6 shadow-sm">
-                  <h4 className="text-sm font-extrabold text-[#334155] mb-4 flex items-center gap-1.5">
-                    <Bell size={16} className="text-[#2563EB]" /> Live Dispatch Updates
-                  </h4>
-                  <div className="space-y-4 max-h-[220px] overflow-y-auto pr-1">
-                    {notifications.slice(0, 4).map((n) => (
-                      <div key={n.id} className="relative flex gap-3 pb-2 border-b border-[#F8FAFC]">
-                        <span className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${n.is_read ? 'bg-[#94A3B8]' : 'bg-[#2563EB]'}`} />
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-base font-bold text-[#334155]">Notifications</h3>
+                    <button 
+                      onClick={() => setActiveTab('home')}
+                      className="text-xs font-bold text-[#2563EB] hover:underline"
+                    >
+                      View All
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    {notifications.slice(0, 3).map((n) => (
+                      <div key={n.id} className="relative flex gap-3 pb-3 border-b border-[#F8FAFC] last:border-0 last:pb-0">
+                        <div className="w-9 h-9 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                          <Truck size={16} />
+                        </div>
                         <div>
                           <h6 className="text-xs font-bold text-[#334155]">{n.title}</h6>
                           <p className="text-[11px] text-[#64748B] mt-0.5">{n.body}</p>
@@ -643,46 +610,59 @@ export default function CustomerDashboard() {
                       </div>
                     ))}
                     {notifications.length === 0 && (
-                      <p className="text-center text-xs text-[#94A3B8] py-4">No new delivery updates.</p>
+                      <p className="text-center text-xs text-[#94A3B8] py-6">No new notifications.</p>
                     )}
                   </div>
                 </div>
 
-                {/* NEED HELP & SUPPORT CARD */}
-                <div className="bg-white border border-[#E2E8F0] rounded-3xl p-6 shadow-sm">
-                  <h4 className="text-sm font-extrabold text-[#334155] mb-3">Need Assistance?</h4>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button 
-                      onClick={() => setIsMechanicOpen(true)}
-                      className="p-3 bg-slate-50 hover:bg-[#F1F5F9] border border-slate-100 rounded-xl text-center flex flex-col items-center gap-1.5 transition-colors"
-                    >
-                      <Wrench size={16} className="text-[#F97316]" />
-                      <span className="text-[11px] font-bold text-[#475569]">Mechanic</span>
-                    </button>
-                    <button 
-                      onClick={() => setIsEmergencyOpen(true)}
-                      className="p-3 bg-red-50 hover:bg-red-100/75 border border-red-100 rounded-xl text-center flex flex-col items-center gap-1.5 transition-colors"
-                    >
-                      <ShieldAlert size={16} className="text-red-500" />
-                      <span className="text-[11px] font-bold text-red-600">Emergency</span>
-                    </button>
-                    <a 
-                      href={`tel:${profile?.phone || '1906'}`}
-                      className="p-3 bg-slate-50 hover:bg-[#F1F5F9] border border-slate-100 rounded-xl text-center flex flex-col items-center gap-1.5 transition-colors"
-                    >
-                      <PhoneCall size={16} className="text-[#2563EB]" />
-                      <span className="text-[11px] font-bold text-[#475569]">Dealer Help</span>
-                    </a>
-                    <button 
-                      onClick={() => setActiveTab('help')}
-                      className="p-3 bg-slate-50 hover:bg-[#F1F5F9] border border-slate-100 rounded-xl text-center flex flex-col items-center gap-1.5 transition-colors"
-                    >
-                      <HelpCircle size={16} className="text-purple-500" />
-                      <span className="text-[11px] font-bold text-[#475569]">Chat Support</span>
-                    </button>
-                  </div>
-                </div>
+              </div>
 
+              {/* 6. NEED HELP SECTION */}
+              <div>
+                <h3 className="text-base font-bold text-[#334155] mb-4">
+                  Need Help?
+                </h3>
+                <div className="grid grid-cols-4 gap-3">
+                  <button 
+                    onClick={() => setIsMechanicOpen(true)}
+                    className="bg-blue-50 border border-blue-100 rounded-2xl p-4 flex flex-col items-center justify-center text-center gap-2 hover:scale-[1.02] transition-transform"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-white text-blue-600 flex items-center justify-center shadow-sm shrink-0">
+                      <Wrench size={18} />
+                    </div>
+                    <span className="text-[10px] font-bold text-[#475569]">Mechanic</span>
+                  </button>
+                  
+                  <button 
+                    onClick={() => setIsEmergencyOpen(true)}
+                    className="bg-red-50 border border-red-100 rounded-2xl p-4 flex flex-col items-center justify-center text-center gap-2 hover:scale-[1.02] transition-transform"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-white text-red-650 flex items-center justify-center shadow-sm shrink-0">
+                      <ShieldAlert size={18} />
+                    </div>
+                    <span className="text-[10px] font-bold text-red-600">Emergency</span>
+                  </button>
+
+                  <a 
+                    href={`tel:${profile?.phone || '1906'}`}
+                    className="bg-green-50 border border-green-100 rounded-2xl p-4 flex flex-col items-center justify-center text-center gap-2 hover:scale-[1.02] transition-transform"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-white text-emerald-600 flex items-center justify-center shadow-sm shrink-0">
+                      <MapPin size={18} />
+                    </div>
+                    <span className="text-[10px] font-bold text-[#475569]">Distributor</span>
+                  </a>
+
+                  <button 
+                    onClick={() => setActiveTab('help')}
+                    className="bg-purple-50 border border-purple-100 rounded-2xl p-4 flex flex-col items-center justify-center text-center gap-2 hover:scale-[1.02] transition-transform"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-white text-purple-600 flex items-center justify-center shadow-sm shrink-0">
+                      <MessageCircle size={18} />
+                    </div>
+                    <span className="text-[10px] font-bold text-[#475569]">Chat Support</span>
+                  </button>
+                </div>
               </div>
 
             </div>
@@ -1568,13 +1548,13 @@ export default function CustomerDashboard() {
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-[#E2E8F0] py-2.5 px-4 flex justify-around items-center lg:hidden z-25">
         {[
           { id: 'home', label: 'Home', icon: Home },
-          { id: 'track', label: 'Track', icon: MapPin },
-          { id: 'book_quick', label: 'Book', icon: PackagePlus, action: () => setIsBookingOpen(true) },
-          { id: 'history', label: 'History', icon: History },
+          { id: 'history', label: 'Bookings', icon: Calendar },
+          { id: 'payments', label: 'Payments', icon: CreditCard, action: () => {} },
+          { id: 'offers', label: 'Offers', icon: Tag },
           { id: 'profile', label: 'Profile', icon: User },
         ].map((item) => {
           const Icon = item.icon;
-          const isActive = activeTab === (item.id as any) && item.id !== 'book_quick';
+          const isActive = activeTab === (item.id as any);
           return (
             <button
               key={item.id}
