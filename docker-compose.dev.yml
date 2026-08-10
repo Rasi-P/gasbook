@@ -4,13 +4,19 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      # 5432 on the host is taken by another project's postgres
+      - "5434:5432"
     environment:
       POSTGRES_DB: gasbook
       POSTGRES_USER: gasbook
       POSTGRES_PASSWORD: gasbook123
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gasbook"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -19,9 +25,15 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   backend:
     build: ./backend
+    restart: unless-stopped
     develop:
       watch:
         - action: rebuild
@@ -33,10 +45,16 @@ services:
       SECRET_KEY: dev-only-secret
       DATABASE_URL: postgres://gasbook:gasbook123@db:5432/gasbook
       REDIS_URL: redis://redis:6379/0
-      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174,http://localhost
       ALLOWED_HOSTS: "*"
     ports:
-      - "8000:8000"
+      # 8000 on the host is taken by another project's Django app
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     command: >
       sh -c "python manage.py makemigrations core &&
              python manage.py migrate --noinput &&
@@ -45,6 +63,7 @@ services:
 
   frontend:
     image: node:20-alpine
+    restart: unless-stopped
     working_dir: /app
     develop:
       watch:
@@ -53,14 +72,17 @@ services:
           target: /app/package.json
     volumes:
       - ./frontend:/app
+      # keep the container's linux node_modules out of the macOS bind mount
+      - frontend_node_modules:/app/node_modules
     ports:
       - "5173:5173"
     environment:
-      VITE_API_BASE_URL: http://localhost:8000/api
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+      VITE_API_BASE_URL: http://localhost:8001/api
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
     depends_on:
       - backend
 
 volumes:
   postgres_data:
   redis_data:
+  frontend_node_modules:
