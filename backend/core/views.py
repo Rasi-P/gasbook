@@ -430,14 +430,14 @@ class BookingViewSet(viewsets.ModelViewSet):
         Notification.objects.create(
             recipient=booking.customer.user,
             booking=booking,
-            title="Booking Approved",
-            body=f"Your {booking.cylinder_type.name} booking was approved.",
+            title="Order Assigned for Delivery",
+            body=f"Your GasBook order #{booking.id} has been assigned for delivery.",
         )
         Notification.objects.create(
             recipient=staff,
             booking=booking,
-            title="Delivery Assigned",
-            body=f"{booking.customer} needs {booking.quantity} x {booking.cylinder_type.name}.",
+            title="New Delivery Assigned",
+            body=f"New delivery assigned: Order #{booking.id} ({booking.quantity}x {booking.cylinder_type.name}).",
         )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
