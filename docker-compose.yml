@@ -12,7 +12,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gasbook"]
+      test: [ "CMD-SHELL", "pg_isready -U gasbook" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,7 +23,7 @@ services:
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -39,8 +39,8 @@ services:
         condition: service_healthy
     volumes:
       - static_files:/app/staticfiles
-    expose:
-      - "8000"
+    ports:
+      - "8001:8000"
     command: >
       sh -c "python manage.py makemigrations core &&
              python manage.py migrate --noinput &&
