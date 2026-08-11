@@ -11,6 +11,7 @@ import Customers from './pages/Customers';
 import Staff from './pages/admin/Staff';
 import CustomerDashboard from './pages/customer/CustomerDashboard';
 import ChangePassword from './pages/ChangePassword';
+import AdminBookings from './pages/admin/AdminBookings';
 import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
 import RatesPanel from './components/RatesPanel';
 
@@ -131,6 +132,9 @@ export default function App() {
           <Route path="/staff-dashboard" element={
             <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
           } />
+          <Route path="/bookings" element={
+            <RoleGuard allowed={['admin', 'staff']} role={role}><AdminBookings /></RoleGuard>
+          } />
           <Route path="/stock" element={
             <RoleGuard allowed={['admin', 'staff']} role={role}><Stock /></RoleGuard>
           } />
@@ -177,6 +181,9 @@ function NavItems({ role }: { role: string }) {
         <NavLink to="/staff-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           <Home /><span>Home</span>
         </NavLink>
+        <NavLink to="/bookings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <CalendarDays /><span>Bookings</span>
+        </NavLink>
         <NavLink to="/stock" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           <Package /><span>Stock</span>
         </NavLink>
@@ -195,6 +202,9 @@ function NavItems({ role }: { role: string }) {
     <>
       <NavLink to="/admin-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
         <Home /><span>Home</span>
+      </NavLink>
+      <NavLink to="/bookings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+        <CalendarDays /><span>Bookings</span>
       </NavLink>
       <NavLink to="/stock" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
         <Package /><span>Stock</span>
