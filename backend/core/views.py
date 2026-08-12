@@ -627,18 +627,18 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             location = StockLocation.objects.filter(code="shop").first() or StockLocation.objects.first()
         if location is None:
             return Response({"detail": "No stock location configured."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        # Temporary: staff delivery completion should not be blocked by stock/load sync
+        # until the warehouse/vehicle stock workflow is finalized.
+        # stock = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
+        # if stock.quantity < booking.quantity:
+        #     return Response({"detail": f"Not enough filled stock at {location.name}."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        # stock.quantity -= booking.quantity
+        # stock.save(update_fields=["quantity", "updated_at"])
 
-        stock = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
-        if stock.quantity < booking.quantity:
-            return Response({"detail": f"Not enough filled stock at {location.name}."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        stock.quantity -= booking.quantity
-        stock.save(update_fields=["quantity", "updated_at"])
-
-        if empty_collected > 0:
-            empty_stock = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
-            empty_stock.quantity += empty_collected
-            empty_stock.save(update_fields=["quantity", "updated_at"])
-
+        # if empty_collected > 0:
+        #     empty_stock = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
+        #     empty_stock.quantity += empty_collected
+        #     empty_stock.save(update_fields=["quantity", "updated_at"])
         if split_payments:
             sale_payment_mode = Sale.PaymentMode.SPLIT
         else:
