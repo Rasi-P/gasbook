@@ -1,10 +1,11 @@
+from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
@@ -118,10 +119,15 @@ class StockMovementViewSet(viewsets.ModelViewSet):
                 cylinder_type_id=cylinder_type_id
             ).order_by("created_at")
             
+            try:
+                sup_id_int = int(supplier_id)
+            except (ValueError, TypeError):
+                sup_id_int = 0
+
             pending = 0
             for m in supplier_movements:
-                is_to = (m.to_location_id == int(supplier_id))
-                is_from = (m.from_location_id == int(supplier_id))
+                is_to = (m.to_location_id == sup_id_int)
+                is_from = (m.from_location_id == sup_id_int)
                 if is_to and m.status == "empty":
                     pending += m.quantity
                 elif is_from and m.status == "filled" and m.note != "New supplier load":
@@ -219,6 +225,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         if User.objects.filter(username=username_str).exists():
             username_str = f"{username_str}_{get_random_string(4)}"
 
+        customer_role = Role.objects.filter(code="customer").first()
         user = User.objects.create_user(
             username=username_str,
             first_name=parts[0] if parts else "",
@@ -226,7 +233,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             email=email,
             phone=phone,
             address=address,
-            role__code="customer",
+            role=customer_role,
             must_change_password=True,
             is_active=True
         )
@@ -361,7 +368,7 @@ class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
 class StaffProfileViewSet(viewsets.ModelViewSet):
     queryset = StaffProfile.objects.select_related("user", "vehicle_location")
     serializer_class = StaffProfileSerializer
-    permission_classes = [IsAdminUserRole]
+    permission_classes = [IsStaffOrAdmin]
 
 
 class CustomerCylinderRateViewSet(viewsets.ModelViewSet):
@@ -426,19 +433,24 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.approved_by = request.user
         booking.approved_at = timezone.now()
         booking.save(update_fields=["status", "assigned_staff", "approved_by", "approved_at", "updated_at"])
-        Delivery.objects.get_or_create(booking=booking, defaults={"staff": staff})
-        Notification.objects.create(
-            recipient=booking.customer.user,
-            booking=booking,
-            title="Order Assigned for Delivery",
-            body=f"Your GasBook order #{booking.id} has been assigned for delivery.",
-        )
-        Notification.objects.create(
-            recipient=staff,
-            booking=booking,
-            title="New Delivery Assigned",
-            body=f"New delivery assigned: Order #{booking.id} ({booking.quantity}x {booking.cylinder_type.name}).",
-        )
+        
+        delivery, created = Delivery.objects.get_or_create(booking=booking, defaults={"staff": staff, "status": Delivery.Status.ASSIGNED})
+        if not created and (delivery.staff_id != staff.id or delivery.status == Delivery.Status.REJECTED):
+            delivery.staff = staff
+            delivery.status = Delivery.Status.ASSIGNED
+            delivery.rejection_reason = ""
+            delivery.save(update_fields=["staff", "status", "rejection_reason", "updated_at"])
+
+        # Staff notification
+        if not Notification.objects.filter(recipient=staff, booking=booking, notification_type="STAFF_ASSIGNED").exists():
+            Notification.objects.create(
+                recipient=staff,
+                booking=booking,
+                notification_type="STAFF_ASSIGNED",
+                title="New Delivery Assigned",
+                body=f"New delivery assigned — Order #{booking.id}.",
+            )
+
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
@@ -446,12 +458,14 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = self.get_object()
         booking.status = Booking.Status.REJECTED
         booking.save(update_fields=["status", "updated_at"])
-        Notification.objects.create(
-            recipient=booking.customer.user,
-            booking=booking,
-            title="Booking Rejected",
-            body=request.data.get("reason") or "Your booking was rejected.",
-        )
+        if not Notification.objects.filter(recipient=booking.customer.user, booking=booking, notification_type="ORDER_REJECTED").exists():
+            Notification.objects.create(
+                recipient=booking.customer.user,
+                booking=booking,
+                notification_type="ORDER_REJECTED",
+                title="Booking Rejected",
+                body=request.data.get("reason") or f"Your GasBook order #{booking.id} was rejected.",
+            )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
 
@@ -470,28 +484,115 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         return queryset
 
     @action(detail=True, methods=["post"])
+    def accept(self, request, pk=None):
+        delivery = self.get_object()
+        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
+            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
+        
+        if delivery.status not in [Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED]:
+            return Response({"detail": f"Cannot accept delivery from current status ({delivery.status})."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        delivery.status = Delivery.Status.ACCEPTED
+        delivery.save(update_fields=["status", "updated_at"])
+        delivery.booking.status = Booking.Status.OUT_FOR_DELIVERY
+        delivery.booking.save(update_fields=["status", "updated_at"])
+
+        staff_name = delivery.staff.get_full_name() or delivery.staff.username
+
+        if not Notification.objects.filter(recipient=delivery.booking.customer.user, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
+            Notification.objects.create(
+                recipient=delivery.booking.customer.user,
+                booking=delivery.booking,
+                notification_type="ORDER_OUT_FOR_DELIVERY",
+                title="Out for Delivery",
+                body=f"Your GasBook order #{delivery.booking_id} is out for delivery.",
+            )
+
+        for admin in User.objects.filter(role__code="admin"):
+            if not Notification.objects.filter(recipient=admin, booking=delivery.booking, notification_type="STAFF_ACCEPTED").exists():
+                Notification.objects.create(
+                    recipient=admin,
+                    booking=delivery.booking,
+                    notification_type="STAFF_ACCEPTED",
+                    title="Delivery Accepted by Staff",
+                    body=f"Staff {staff_name} accepted order #{delivery.booking_id}.",
+                )
+
+        return Response(DeliverySerializer(delivery).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        delivery = self.get_object()
+        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
+            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
+        
+        reason = request.data.get("reason", "").strip() or "Other"
+        delivery.status = Delivery.Status.REJECTED
+        delivery.rejection_reason = reason
+        delivery.save(update_fields=["status", "rejection_reason", "updated_at"])
+
+        # Reset booking status to pending & clear assigned staff so admin can reassign
+        booking = delivery.booking
+        booking.status = Booking.Status.PENDING
+        booking.assigned_staff = None
+        booking.save(update_fields=["status", "assigned_staff", "updated_at"])
+
+        staff_name = delivery.staff.get_full_name() or delivery.staff.username
+
+        # Admin notification
+        for admin in User.objects.filter(role__code="admin"):
+            Notification.objects.create(
+                recipient=admin,
+                booking=booking,
+                notification_type="STAFF_REJECTED",
+                title="Staff Delivery Rejected",
+                body=f"Staff {staff_name} rejected order #{booking.id}. Reason: {reason}",
+            )
+
+        # Reassignment customer notification (graceful, no internal staff rejection details)
+        Notification.objects.create(
+            recipient=booking.customer.user,
+            booking=booking,
+            notification_type="STAFF_REJECTED",
+            title="Order Status Update",
+            body=f"Your order #{booking.id} is being reassigned for delivery.",
+        )
+
+        return Response(DeliverySerializer(delivery).data)
+
+    @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
         delivery = self.get_object()
         if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
             return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
+        
+        if delivery.status in [Delivery.Status.DELIVERED, Delivery.Status.CANCELLED, Delivery.Status.REJECTED]:
+            return Response({"detail": f"Cannot start delivery from current status ({delivery.status})."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
         delivery.status = Delivery.Status.OUT_FOR_DELIVERY
         delivery.started_at = timezone.now()
         delivery.booking.status = Booking.Status.OUT_FOR_DELIVERY
         delivery.booking.save(update_fields=["status", "updated_at"])
         delivery.save(update_fields=["status", "started_at", "updated_at"])
-        Notification.objects.create(
-            recipient=delivery.booking.customer.user,
-            booking=delivery.booking,
-            title="Delivery Started",
-            body=f"{delivery.staff.get_full_name() or delivery.staff.username} started your delivery.",
-        )
-        for admin in User.objects.filter(role__code="admin"):
+
+        if not Notification.objects.filter(recipient=delivery.booking.customer.user, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
             Notification.objects.create(
-                recipient=admin,
+                recipient=delivery.booking.customer.user,
                 booking=delivery.booking,
-                title="Delivery Started",
-                body=f"{delivery.staff.username} started booking #{delivery.booking_id}.",
+                notification_type="ORDER_OUT_FOR_DELIVERY",
+                title="Out for Delivery",
+                body=f"Your GasBook order #{delivery.booking_id} is out for delivery.",
             )
+
+        for admin in User.objects.filter(role__code="admin"):
+            if not Notification.objects.filter(recipient=admin, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
+                Notification.objects.create(
+                    recipient=admin,
+                    booking=delivery.booking,
+                    notification_type="ORDER_OUT_FOR_DELIVERY",
+                    title="Order Out for Delivery",
+                    body=f"Order #{delivery.booking_id} is out for delivery by {delivery.staff.username}.",
+                )
         return Response(DeliverySerializer(delivery).data)
 
     @action(detail=True, methods=["post"])
@@ -509,6 +610,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         rate_obj = profile.custom_rates.filter(cylinder_type=booking.cylinder_type).first()
         rate = rate_obj.custom_price if rate_obj else booking.cylinder_type.selling_price
         total = Decimal(booking.quantity) * rate
+        
         payment_collected = Decimal(str(request.data.get("payment_collected", "0") or "0"))
         split_payments = request.data.get("split_payments", [])
         if split_payments:
@@ -517,7 +619,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         if payment_collected < 0 or payment_collected > total:
             return Response({"detail": "Collected amount must be between 0 and sale total."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
-        payment_method = request.data.get("payment_method") or Sale.PaymentMode.CREDIT
+        payment_method = request.data.get("payment_method") or booking.payment_method or Sale.PaymentMode.COD
         paid_payment_mode = request.data.get("paid_payment_mode", "cash")
         empty_collected = int(request.data.get("empty_collected", 0) or 0)
         location = getattr(delivery.staff, "staff_profile", None).vehicle_location if hasattr(delivery.staff, "staff_profile") else None
@@ -592,22 +694,47 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         delivery.completed_at = timezone.now()
         delivery.note = request.data.get("note", "")
         delivery.save()
+
         booking.status = Booking.Status.DELIVERED
+        booking.payment_status = "PAID" if payment_collected >= total or booking.payment_method.upper() == "ONLINE" else "COLLECTED"
         booking.delivered_at = delivery.completed_at
         booking.sale = sale
-        booking.save(update_fields=["status", "delivered_at", "sale", "updated_at"])
+        booking.save(update_fields=["status", "payment_status", "delivered_at", "sale", "updated_at"])
+
         ActivityLog.objects.create(
             action="delivery_completed",
             description=f"Delivered booking #{booking.id} for Rs. {total}",
             user=request.user,
             metadata={"booking_id": booking.id, "sale_id": sale.id, "delivery_id": delivery.id},
         )
-        Notification.objects.create(
-            recipient=profile.user,
-            booking=booking,
-            title="Cylinder Delivered",
-            body=f"Delivery completed. Pending amount: Rs. {sale.balance_due}.",
-        )
+
+        staff_name = delivery.staff.get_full_name() or delivery.staff.username
+
+        # Customer Notification
+        customer_msg = f"Your GasBook order #{booking.id} has been delivered successfully."
+        if booking.payment_method.upper() == "COD" and payment_collected > 0:
+            customer_msg += f" Payment of ₹{payment_collected} was collected successfully."
+
+        if not Notification.objects.filter(recipient=profile.user, booking=booking, notification_type="ORDER_DELIVERED").exists():
+            Notification.objects.create(
+                recipient=profile.user,
+                booking=booking,
+                notification_type="ORDER_DELIVERED",
+                title="Order Delivered",
+                body=customer_msg,
+            )
+
+        # Admin Notification
+        for admin in User.objects.filter(role__code="admin"):
+            if not Notification.objects.filter(recipient=admin, booking=booking, notification_type="ORDER_DELIVERED").exists():
+                Notification.objects.create(
+                    recipient=admin,
+                    booking=booking,
+                    notification_type="ORDER_DELIVERED",
+                    title="Order Delivered",
+                    body=f"Order #{booking.id} was delivered by {staff_name}.",
+                )
+
         return Response(DeliverySerializer(delivery).data)
 
 
@@ -735,7 +862,7 @@ def user_detail(request, pk):
 
     user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
-    if user.role == "staff":
+    if getattr(getattr(user, "role", None), "code", "") == "staff":
         # Just ensure the profile exists, no phone/address fields on StaffProfile
         StaffProfile.objects.get_or_create(user=user)
 
@@ -855,7 +982,8 @@ def register(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard(request):
-    if request.user.role not in ["admin", "staff"] and not request.user.is_superuser:
+    user_role_code = getattr(getattr(request.user, "role", None), "code", "")
+    if user_role_code not in ["admin", "staff"] and not request.user.is_superuser:
         return Response({"detail": "Admin or staff only."}, status=drf_status.HTTP_403_FORBIDDEN)
     today = timezone.localdate()
     stocks = Stock.objects.select_related("cylinder_type", "location")
@@ -893,8 +1021,6 @@ def dashboard(request):
         and stock.quantity <= stock.cylinder_type.low_stock_threshold
     ]
 
-    from .models import SaleItem
-    
     # Calculate with_customers correctly by summing physical possession per customer per cylinder type
     # Using a chronological running balance where returned empties pay off existing debt first,
     # and excess returns (banked credits) do NOT artificially lower the debt below 0.
@@ -971,12 +1097,10 @@ def dashboard(request):
 def reports(request):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
-    from django.db.models import Count
     today = timezone.localdate()
     start_str = request.query_params.get("start") or today.isoformat()
     end_str = request.query_params.get("end") or today.isoformat()
     try:
-        from datetime import date
         start = date.fromisoformat(start_str)
         end = date.fromisoformat(end_str)
     except ValueError:
@@ -987,8 +1111,6 @@ def reports(request):
     range_payments = Payment.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
     range_expenses = Expense.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
     range_movements = StockMovement.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
-
-    from .models import SaleItem
     cylinder_sales = (
         SaleItem.objects.filter(sale__created_at__date__gte=start, sale__created_at__date__lte=end)
         .values("cylinder_type__name", "sale__location__name", "sale__sold_by__role")
