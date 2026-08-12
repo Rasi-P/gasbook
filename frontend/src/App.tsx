@@ -74,6 +74,19 @@ export default function App() {
     return <p style={{ textAlign: 'center', padding: '40px' }}>Loading…</p>;
   }
 
+  if (role === 'staff' || role === 'customer') {
+    return (
+      <Protected>
+        <Routes>
+          <Route path="/change-password" element={<ChangePassword />} />
+          <Route path="/staff-dashboard" element={<StaffDashboard />} />
+          <Route path="/customer-dashboard" element={<CustomerDashboard />} />
+          <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
+        </Routes>
+      </Protected>
+    );
+  }
+
   return (
     <Protected>
       <header className="app-header">
@@ -128,22 +141,19 @@ export default function App() {
           <Route path="/" element={<Navigate to={getRoleHome(role)} replace />} />
 
           <Route path="/admin-dashboard" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Dashboard /></RoleGuard>
-          } />
-          <Route path="/staff-dashboard" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><StaffDashboard /></RoleGuard>
+            <RoleGuard allowed={['admin']} role={role}><Dashboard /></RoleGuard>
           } />
           <Route path="/bookings" element={
             <RoleGuard allowed={['admin']} role={role}><AdminBookings /></RoleGuard>
           } />
           <Route path="/stock" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Stock /></RoleGuard>
+            <RoleGuard allowed={['admin']} role={role}><Stock /></RoleGuard>
           } />
           <Route path="/sales" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Sales /></RoleGuard>
+            <RoleGuard allowed={['admin']} role={role}><Sales /></RoleGuard>
           } />
           <Route path="/customers" element={
-            <RoleGuard allowed={['admin', 'staff']} role={role}><Customers /></RoleGuard>
+            <RoleGuard allowed={['admin']} role={role}><Customers /></RoleGuard>
           } />
           <Route path="/reports" element={
             <RoleGuard allowed={['admin']} role={role}><Reports /></RoleGuard>
@@ -151,10 +161,6 @@ export default function App() {
           <Route path="/staff" element={
             <RoleGuard allowed={['admin']} role={role}><Staff /></RoleGuard>
           } />
-          <Route path="/customer-dashboard" element={
-            <RoleGuard allowed={['customer']} role={role}><CustomerDashboard /></RoleGuard>
-          } />
-
           <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
         </Routes>
       </main>
