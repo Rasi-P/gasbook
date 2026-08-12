@@ -2,7 +2,6 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Q
-from django.utils import timezone
 from django.core.validators import RegexValidator
 from rest_framework import serializers
 
@@ -453,14 +452,40 @@ class BookingSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         user = self.context["request"].user
-        profile = user.customer_profile
+        profile = getattr(user, "customer_profile", None)
+        if not profile:
+            raise serializers.ValidationError({"detail": "Customer profile is required to place an order."})
+        if not validated_data.get("delivery_address"):
+            validated_data["delivery_address"] = user.address
+        if not validated_data.get("delivery_phone"):
+            validated_data["delivery_phone"] = user.phone
+        
         booking = Booking.objects.create(customer=profile, **validated_data)
-        # Notify all admins
-        for admin in User.objects.filter(role=User.Role.ADMIN):
+        
+        rate = float(booking.cylinder_type.selling_price)
+        custom = profile.custom_rates.filter(cylinder_type=booking.cylinder_type).first()
+        if custom:
+            rate = float(custom.custom_price)
+        total = rate * booking.quantity
+
+        admin_role_users = User.objects.filter(role__code="admin")
+        customer_name = profile.user.get_full_name() or profile.user.username
+        
+        Notification.objects.create(
+            recipient=profile.user,
+            booking=booking,
+            notification_type="ORDER_PLACED",
+            title="Order Placed",
+            body=f"Your GasBook order #{booking.id} has been placed successfully.",
+        )
+
+        for admin in admin_role_users:
             Notification.objects.create(
-                recipient=admin, booking=booking,
-                title="New Booking",
-                body=f"{profile} requested {booking.quantity}× {booking.cylinder_type.name}",
+                recipient=admin,
+                booking=booking,
+                notification_type="ORDER_PLACED",
+                title="New GasBook Order Received",
+                body=f"Order #{booking.id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nTotal: ₹{total:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
             )
         return booking
 
@@ -473,6 +498,8 @@ class DeliverySerializer(serializers.ModelSerializer):
     cylinder_type_name = serializers.CharField(source="booking.cylinder_type.name", read_only=True)
     quantity = serializers.IntegerField(source="booking.quantity", read_only=True)
     booking_status = serializers.CharField(source="booking.status", read_only=True)
+    booking_payment_method = serializers.CharField(source="booking.payment_method", read_only=True)
+    booking_payment_status = serializers.CharField(source="booking.payment_status", read_only=True)
     staff_name = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
     pending_amount = serializers.SerializerMethodField()

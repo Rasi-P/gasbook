@@ -31,11 +31,12 @@ export default function AdminBookings() {
   const [message, setMessage] = useState('');
 
   function load() {
-    Promise.all([api.get('/bookings/'), api.get('/staff-profiles/')])
-      .then(([bookingRes, staffRes]) => {
-        const rows = bookingRes.data.results ?? bookingRes.data;
+    const p1 = api.get('/bookings/').then((r) => r.data.results ?? r.data).catch(() => []);
+    const p2 = api.get('/staff-profiles/').then((r) => r.data.results ?? r.data).catch(() => []);
+    Promise.all([p1, p2])
+      .then(([rows, staffRows]) => {
         setBookings(rows);
-        setStaff(staffRes.data.results ?? staffRes.data);
+        setStaff(staffRows);
         setStaffByBooking(Object.fromEntries(rows.map((b: Booking) => [b.id, String(b.assigned_staff || '')])));
       })
       .catch(() => undefined);
@@ -96,7 +97,17 @@ export default function AdminBookings() {
                     <p>{money(booking.rate)} each</p>
                     {booking.note && <p>{booking.note}</p>}
                   </td>
-                  <td><span className="badge badge-warning">{booking.status.replaceAll('_', ' ')}</span></td>
+                  <td>
+                    <span className={`badge ${
+                      booking.status === 'pending' ? 'badge-warning' :
+                      booking.status === 'approved' ? 'badge-info' :
+                      booking.status === 'accepted' ? 'badge-info' :
+                      booking.status === 'out_for_delivery' ? 'badge-warning' :
+                      booking.status === 'delivered' ? 'badge-success' : 'badge'
+                    }`}>
+                      {booking.status.replaceAll('_', ' ')}
+                    </span>
+                  </td>
                   <td>
                     {booking.status === 'pending' ? (
                       <select
@@ -113,10 +124,10 @@ export default function AdminBookings() {
                   <td style={{ textAlign: 'right' }}>
                     {booking.status === 'pending' ? (
                       <div style={{ display: 'inline-flex', gap: 8 }}>
-                        <button className="icon-button" title="Approve" onClick={() => approve(booking.id)}>
+                        <button className="icon-button" title="Approve & Assign" onClick={() => approve(booking.id)}>
                           <Check size={18} />
                         </button>
-                        <button className="icon-button" title="Reject" onClick={() => reject(booking.id)}>
+                        <button className="icon-button" title="Reject Booking" onClick={() => reject(booking.id)}>
                           <X size={18} />
                         </button>
                       </div>

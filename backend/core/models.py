@@ -211,6 +211,7 @@ class Booking(TimeStampedModel):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending Approval"
         APPROVED = "approved", "Approved"
+        ACCEPTED = "accepted", "Accepted"
         REJECTED = "rejected", "Rejected"
         OUT_FOR_DELIVERY = "out_for_delivery", "Out for Delivery"
         DELIVERED = "delivered", "Delivered"
@@ -221,6 +222,10 @@ class Booking(TimeStampedModel):
     quantity = models.PositiveIntegerField(default=1)
     note = models.CharField(max_length=300, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    payment_method = models.CharField(max_length=10, default="COD")
+    payment_status = models.CharField(max_length=15, default="PENDING")
+    delivery_address = models.TextField(blank=True)
+    delivery_phone = models.CharField(max_length=20, blank=True)
     assigned_staff = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_bookings")
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_bookings")
     sale = models.OneToOneField(Sale, null=True, blank=True, on_delete=models.CASCADE, related_name="booking")
@@ -237,6 +242,8 @@ class Booking(TimeStampedModel):
 class Delivery(TimeStampedModel):
     class Status(models.TextChoices):
         ASSIGNED = "assigned", "Assigned"
+        ACCEPTED = "accepted", "Accepted"
+        REJECTED = "rejected", "Rejected"
         OUT_FOR_DELIVERY = "out_for_delivery", "Out for Delivery"
         DELIVERED = "delivered", "Delivered"
         CANCELLED = "cancelled", "Cancelled"
@@ -244,6 +251,7 @@ class Delivery(TimeStampedModel):
     booking = models.OneToOneField(Booking, on_delete=models.CASCADE, related_name="delivery")
     staff = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="deliveries")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ASSIGNED)
+    rejection_reason = models.CharField(max_length=200, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     payment_collected = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -261,6 +269,7 @@ class Delivery(TimeStampedModel):
 class Notification(TimeStampedModel):
     recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
     booking = models.ForeignKey(Booking, null=True, blank=True, on_delete=models.CASCADE, related_name="notifications")
+    notification_type = models.CharField(max_length=50, blank=True, default="GENERAL")
     title = models.CharField(max_length=120)
     body = models.CharField(max_length=300)
     is_read = models.BooleanField(default=False)
