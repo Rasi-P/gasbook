@@ -45,7 +45,7 @@ services:
       SECRET_KEY: dev-only-secret
       DATABASE_URL: postgres://gasbook:gasbook123@db:5432/gasbook
       REDIS_URL: redis://redis:6379/0
-      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174,http://localhost
+      CORS_ALLOWED_ORIGINS: http://localhost:5173,http://localhost:5174,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:8080,http://localhost
       ALLOWED_HOSTS: "*"
     ports:
       # 8000 on the host is taken by another project's Django app
@@ -75,10 +75,10 @@ services:
       # keep the container's linux node_modules out of the macOS bind mount
       - frontend_node_modules:/app/node_modules
     ports:
-      - "5173:5173"
+      - "8080:8080"
     environment:
       VITE_API_BASE_URL: http://localhost:8001/api
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 8080"
     depends_on:
       - backend
 

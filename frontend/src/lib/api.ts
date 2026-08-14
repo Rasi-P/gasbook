@@ -79,7 +79,7 @@ export function getRole() {
 
 export function getRoleHome(role = getRole()) {
   if (role === 'staff') return '/staff-dashboard';
-  if (role === 'customer') return '/customer-dashboard';
+  if (role === 'customer') return '/login';
   return '/admin-dashboard';
 }
 

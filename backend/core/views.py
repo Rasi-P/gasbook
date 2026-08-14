@@ -245,7 +245,8 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         customer_profile = self.get_object()
         sales = SaleSerializer(customer_profile.sales.prefetch_related("items__cylinder_type").all(), many=True).data
         payments = PaymentSerializer(customer_profile.payments.all(), many=True).data
-        return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments})
+        bookings = BookingSerializer(customer_profile.bookings.select_related("assigned_staff", "cylinder_type").order_by("-created_at"), many=True, context={'request': request}).data
+        return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments, "bookings": bookings})
 
     def perform_update(self, serializer):
         profile = serializer.save()
