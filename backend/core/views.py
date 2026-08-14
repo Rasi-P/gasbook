@@ -174,7 +174,7 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if getattr(getattr(self.request.user, "role", None), "code", "") == "customer":
-            if self.request.method not in permissions.SAFE_METHODS:
+            if self.request.method in ["POST", "DELETE"]:
                 return [IsAdminUserRole()]
             return [permissions.IsAuthenticated()]
         return [IsStaffOrAdmin()]
@@ -388,7 +388,7 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationSerializer
 
     def get_queryset(self):
-        return Notification.objects.filter(recipient=self.request.user).select_related("booking")
+        return Notification.objects.filter(recipient=self.request.user).select_related("booking").order_by("-created_at")
 
     @action(detail=True, methods=["post"])
     def mark_read(self, request, pk=None):

@@ -608,10 +608,6 @@ export default function StaffMobileLayout() {
             </div>
 
             <div style={{ background: '#FFFFFF', borderRadius: '18px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-              <button onClick={() => window.location.href = '/change-password'} style={{ width: '100%', padding: '16px', background: 'none', border: 'none', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
-                <span style={{ fontSize: '14px', fontWeight: 600, color: '#2D3748' }}>Change Password</span>
-                <ChevronRight size={18} color="#94A3B8" />
-              </button>
               <button onClick={() => { logout(); window.location.href = '/login'; }} style={{ width: '100%', padding: '16px', background: 'none', border: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
                 <span style={{ fontSize: '14px', fontWeight: 600, color: '#E11D48' }}>Logout</span>
                 <ChevronRight size={18} color="#94A3B8" />
@@ -659,8 +655,8 @@ export default function StaffMobileLayout() {
 
         {/* NOTIFICATIONS MODAL */}
         {showNotifications && (
-          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', justifyContent: 'flex-end' }}>
-            <div style={{ background: '#FFF', width: '100%', maxWidth: '360px', height: '100%', padding: '20px', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}>
+            <div style={{ background: '#FFF', width: '100%', maxWidth: '360px', maxHeight: '80vh', borderRadius: '16px', padding: '20px', display: 'flex', flexDirection: 'column' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid #F1F5F9', paddingBottom: '12px' }}>
                 <h3 style={{ fontSize: '16px', fontWeight: 700, margin: 0 }}>Staff Notifications</h3>
                 <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer' }}>✕</button>
