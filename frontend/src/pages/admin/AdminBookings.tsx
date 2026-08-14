@@ -15,6 +15,7 @@ type Booking = {
   note: string;
   assigned_staff: number | null;
   assigned_staff_name: string | null;
+  rejection_reason?: string | null;
   created_at: string;
 };
 
@@ -29,6 +30,10 @@ export default function AdminBookings() {
   const [staff, setStaff] = useState<Staff[]>([]);
   const [staffByBooking, setStaffByBooking] = useState<Record<number, string>>({});
   const [message, setMessage] = useState('');
+  
+  const [rejectBookingId, setRejectBookingId] = useState<number | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectError, setRejectError] = useState('');
 
   function load() {
     const p1 = api.get('/bookings/').then((r) => r.data.results ?? r.data).catch(() => []);
@@ -52,8 +57,15 @@ export default function AdminBookings() {
   }
 
   async function reject(id: number) {
-    await api.post(`/bookings/${id}/reject/`);
+    if (!rejectReason.trim()) {
+      setRejectError('Please provide a reason for rejection.');
+      return;
+    }
+    await api.post(`/bookings/${id}/reject/`, { reason: rejectReason.trim() });
     setMessage('Booking rejected.');
+    setRejectBookingId(null);
+    setRejectReason('');
+    setRejectError('');
     load();
   }
 
@@ -107,6 +119,9 @@ export default function AdminBookings() {
                     }`}>
                       {booking.status.replaceAll('_', ' ')}
                     </span>
+                    {booking.status === 'rejected' && booking.rejection_reason && (
+                      <p style={{ fontSize: '12px', color: '#dc2626', marginTop: 4 }}>Reason: {booking.rejection_reason}</p>
+                    )}
                   </td>
                   <td>
                     {booking.status === 'pending' ? (
@@ -127,7 +142,11 @@ export default function AdminBookings() {
                         <button className="icon-button" title="Approve & Assign" onClick={() => approve(booking.id)}>
                           <Check size={18} />
                         </button>
-                        <button className="icon-button" title="Reject Booking" onClick={() => reject(booking.id)}>
+                        <button className="icon-button" title="Reject Booking" onClick={() => {
+                          setRejectBookingId(booking.id);
+                          setRejectReason('');
+                          setRejectError('');
+                        }}>
                           <X size={18} />
                         </button>
                       </div>
@@ -144,6 +163,28 @@ export default function AdminBookings() {
           </table>
         </div>
       </div>
+
+      {rejectBookingId !== null && (
+        <div className="modal" style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)', position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000 }}>
+          <div className="modal-content" style={{ backgroundColor: '#fff', margin: '15% auto', padding: '24px', borderRadius: '8px', maxWidth: '400px' }}>
+            <h3>Reject Booking</h3>
+            <p style={{ marginBottom: '16px' }}>Please provide a reason for rejecting this order.</p>
+            <input
+              type="text"
+              placeholder="e.g. Out of stock, outside delivery zone"
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              style={{ width: '100%', padding: '8px', marginBottom: '8px' }}
+              maxLength={250}
+            />
+            {rejectError && <p style={{ color: '#dc2626', fontSize: '12px', marginBottom: '16px' }}>{rejectError}</p>}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+              <button className="btn" style={{ background: '#f3f4f6', color: '#374151' }} onClick={() => setRejectBookingId(null)}>Cancel</button>
+              <button className="btn btn-primary" style={{ background: '#dc2626' }} onClick={() => reject(rejectBookingId)}>Reject Order</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
