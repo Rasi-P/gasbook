@@ -1,9 +1,9 @@
 services:
   - type: web
     name: gasbook-api
-    env: python
+    runtime: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt && python manage.py migrate
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
     startCommand: gunicorn gasbook.wsgi:application
     envVars:
       - key: DEBUG
