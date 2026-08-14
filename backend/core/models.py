@@ -22,6 +22,8 @@ class TimeStampedModel(models.Model):
 class Role(TimeStampedModel):
     name = models.CharField(max_length=50, unique=True)
     code = models.SlugField(max_length=50, unique=True)
+    
+    objects = models.Manager()
 
     def __str__(self):
         return self.name
@@ -35,6 +37,8 @@ class CylinderType(TimeStampedModel):
     refill_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     low_stock_threshold = models.PositiveIntegerField(default=5)
     is_active = models.BooleanField(default=True)
+
+    objects = models.Manager()
 
     class Meta:
         ordering = ["weight", "name"]
@@ -65,6 +69,8 @@ class Stock(TimeStampedModel):
     location = models.ForeignKey(StockLocation, on_delete=models.CASCADE, related_name="stocks")
     status = models.CharField(max_length=10, choices=Status.choices)
     quantity = models.PositiveIntegerField(default=0)
+    
+    objects = models.Manager()
 
     class Meta:
         unique_together = ("cylinder_type", "location", "status")
@@ -82,6 +88,8 @@ class StockMovement(TimeStampedModel):
     quantity = models.PositiveIntegerField()
     moved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     note = models.CharField(max_length=200, blank=True)
+
+    objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]
@@ -139,6 +147,8 @@ class Sale(TimeStampedModel):
     delivery_staff = models.CharField(max_length=80, blank=True)
     note = models.CharField(max_length=300, blank=True)
     sold_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    
+    objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]
@@ -152,6 +162,8 @@ class SaleItem(TimeStampedModel):
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     empty_returned = models.PositiveIntegerField(default=0)
 
+    objects = models.Manager()
+
     class Meta:
         ordering = ["id"]
 
@@ -164,6 +176,8 @@ class Payment(TimeStampedModel):
     received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
     note = models.CharField(max_length=200, blank=True)
     empty_collected = models.PositiveIntegerField(default=0)
+    
+    objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]
@@ -181,6 +195,8 @@ class Expense(TimeStampedModel):
     note = models.CharField(max_length=200, blank=True)
     spent_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
 
+    objects = models.Manager()
+
     class Meta:
         ordering = ["-created_at"]
 
@@ -190,6 +206,8 @@ class ActivityLog(TimeStampedModel):
     description = models.CharField(max_length=255)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    
+    objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]
@@ -217,6 +235,8 @@ class Booking(TimeStampedModel):
         DELIVERED = "delivered", "Delivered"
         CANCELLED = "cancelled", "Cancelled"
 
+    objects = models.Manager()
+
     customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="bookings")
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
@@ -236,7 +256,7 @@ class Booking(TimeStampedModel):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"Booking #{self.id} - {self.customer} - {self.status}"
+        return f"Booking #{self.pk} - {self.customer} - {self.status}"
 
 
 class Delivery(TimeStampedModel):
@@ -263,7 +283,7 @@ class Delivery(TimeStampedModel):
         ordering = ["-created_at"]
 
     def __str__(self):
-        return f"Delivery #{self.id} - {self.booking}"
+        return f"Delivery #{self.pk} - {self.booking}"
 
 
 class Notification(TimeStampedModel):
@@ -273,6 +293,8 @@ class Notification(TimeStampedModel):
     title = models.CharField(max_length=120)
     body = models.CharField(max_length=300)
     is_read = models.BooleanField(default=False)
+    
+    objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]

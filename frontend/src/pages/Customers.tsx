@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag } from 'lucide-react';
+import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag, ClipboardList, Truck } from 'lucide-react';
 import { api } from '../lib/api';
 
 type Customer = {
@@ -57,6 +57,25 @@ type Ledger = {
   payments: Payment[];
 };
 
+type Booking = {
+  id: number;
+  customer: number;
+  customer_name: string;
+  customer_phone: string;
+  customer_address: string;
+  customer_area: string;
+  cylinder_type_name: string;
+  quantity: number;
+  status: string;
+  rate: string;
+  note: string;
+  assigned_staff: number | null;
+  assigned_staff_name: string | null;
+  created_at: string;
+};
+
+type Staff = { id: number; username: string; full_name: string; assigned_area: string; user: number };
+
 function money(v: number | string) {
   return `Rs. ${Number(v || 0).toLocaleString('en-IN')}`;
 }
@@ -70,6 +89,12 @@ export default function Customers() {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Ledger | null>(null);
   const [loading, setLoading] = useState(false);
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [staff, setStaff] = useState<Staff[]>([]);
+  const [staffByBooking, setStaffByBooking] = useState<Record<number, string>>({});
+  const [requestsId, setRequestsId] = useState<number | null>(null);
+  const [requestsBusyId, setRequestsBusyId] = useState<number | null>(null);
+  const [requestsMessage, setRequestsMessage] = useState('');
 
   // Per-row action state — track which customer's panel is open
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -280,10 +305,59 @@ export default function Customers() {
       .catch(() => undefined);
   }, [search]);
 
+  const loadBookingData = useCallback(() => {
+    const bookingsRequest = api.get('/bookings/').then((r) => r.data.results ?? r.data).catch(() => []);
+    const staffRequest = api.get('/staff-profiles/').then((r) => r.data.results ?? r.data).catch(() => []);
+
+    Promise.all([bookingsRequest, staffRequest])
+      .then(([bookingRows, staffRows]) => {
+        setBookings(bookingRows);
+        setStaff(staffRows);
+        setStaffByBooking((prev) => ({
+          ...Object.fromEntries(bookingRows.map((b: Booking) => [b.id, String(b.assigned_staff || '')])),
+          ...prev,
+        }));
+      })
+      .catch(() => undefined);
+  }, []);
+
   useEffect(() => {
     const t = setTimeout(fetchCustomers, 300);
     return () => clearTimeout(t);
   }, [fetchCustomers]);
+
+  useEffect(() => {
+    loadBookingData();
+  }, [loadBookingData]);
+
+  async function approveBooking(id: number) {
+    const assigned_staff = staffByBooking[id];
+    setRequestsBusyId(id);
+    setRequestsMessage('');
+    try {
+      await api.post(`/bookings/${id}/approve/`, { assigned_staff });
+      setRequestsMessage('Booking approved and assigned.');
+      loadBookingData();
+    } catch {
+      setRequestsMessage('Failed to approve booking.');
+    } finally {
+      setRequestsBusyId(null);
+    }
+  }
+
+  async function rejectBooking(id: number) {
+    setRequestsBusyId(id);
+    setRequestsMessage('');
+    try {
+      await api.post(`/bookings/${id}/reject/`);
+      setRequestsMessage('Booking rejected.');
+      loadBookingData();
+    } catch {
+      setRequestsMessage('Failed to reject booking.');
+    } finally {
+      setRequestsBusyId(null);
+    }
+  }
 
   function openLedger(id: number) {
     setLoading(true);
@@ -753,7 +827,14 @@ export default function Customers() {
           <p style={{ textAlign: 'center', padding: '24px' }}>No customers found.</p>
         )}
 
-        {customers.map((c) => (
+        {customers.map((c) => {
+          const customerBookings = bookings
+            .filter((b) => b.customer === c.id && b.status === 'pending')
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+          const pendingCount = customerBookings.length;
+          const hasRequests = pendingCount > 0;
+
+          return (
           <div key={c.id}>
             {/* ── Row ── */}
             <div style={{
@@ -774,6 +855,43 @@ export default function Customers() {
 
               {/* Right: badges + action buttons + ledger arrow */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                {hasRequests && (
+                  <button
+                    className="icon-button"
+                    title={`${pendingCount} new booking request${pendingCount > 1 ? 's' : ''}`}
+                    onClick={() => {
+                      setRequestsMessage('');
+                      setRequestsId((current) => current === c.id ? null : c.id);
+                    }}
+                    style={{
+                      color: 'var(--success)',
+                      borderColor: 'rgba(16, 185, 129, 0.18)',
+                      background: requestsId === c.id ? 'rgba(16, 185, 129, 0.12)' : 'rgba(16, 185, 129, 0.06)',
+                      position: 'relative',
+                    }}
+                  >
+                    <ClipboardList size={16} />
+                    {pendingCount > 0 && (
+                      <span style={{
+                        position: 'absolute',
+                        top: '-6px',
+                        right: '-6px',
+                        minWidth: '18px',
+                        height: '18px',
+                        borderRadius: '999px',
+                        background: 'var(--success)',
+                        color: 'white',
+                        fontSize: '0.7rem',
+                        fontWeight: 700,
+                        display: 'grid',
+                        placeItems: 'center',
+                        padding: '0 4px',
+                      }}>
+                        {pendingCount}
+                      </span>
+                    )}
+                  </button>
+                )}
                 {Number(c.pending_balance) > 0 && (
                   <span className="badge badge-warning">{money(c.pending_balance)}</span>
                 )}
@@ -836,6 +954,110 @@ export default function Customers() {
                 </button>
               </div>
             </div>
+
+            {/* ── Inline Booking Requests panel ── */}
+            {requestsId === c.id && hasRequests && (
+              <div
+                style={{
+                  padding: '16px 18px',
+                  borderBottom: '1px solid var(--border)',
+                  background: 'var(--surface-muted)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '12px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+                  <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <ClipboardList size={16} style={{ color: 'var(--success)' }} />
+                    New Booking Requests
+                  </h3>
+                  <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.08)', color: 'var(--success)' }}>
+                    {customerBookings.length} pending
+                  </span>
+                </div>
+
+                {requestsMessage && <p className="form-note" style={{ margin: 0 }}>{requestsMessage}</p>}
+
+                {customerBookings.map((booking) => (
+                  <div
+                    key={booking.id}
+                    style={{
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border)',
+                      borderRadius: '12px',
+                      padding: '14px 16px',
+                      display: 'grid',
+                      gap: '12px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'grid', gap: '4px' }}>
+                        <strong>Booking #{booking.id}</strong>
+                        <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                          {booking.quantity} x {booking.cylinder_type_name} · {money(booking.rate)} each
+                        </span>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                          {fmtDate(booking.created_at)}
+                        </span>
+                        {booking.note && (
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{booking.note}</span>
+                        )}
+                      </div>
+                      <span className={`badge ${
+                        booking.status === 'pending' ? 'badge-warning' :
+                        booking.status === 'approved' ? 'badge-info' :
+                        booking.status === 'accepted' ? 'badge-info' :
+                        booking.status === 'out_for_delivery' ? 'badge-warning' :
+                        booking.status === 'delivered' ? 'badge-success' : 'badge'
+                      }`}>
+                        {booking.status.replaceAll('_', ' ')}
+                      </span>
+                    </div>
+
+                    {booking.status === 'pending' ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <select
+                          value={staffByBooking[booking.id] || ''}
+                          onChange={(e) => setStaffByBooking((prev) => ({ ...prev, [booking.id]: e.target.value }))}
+                          style={{ minWidth: '220px' }}
+                        >
+                          <option value="">Select staff</option>
+                          {staff.map((s) => (
+                            <option key={s.id} value={s.user}>
+                              {s.full_name || s.username}
+                            </option>
+                          ))}
+                        </select>
+                        <div style={{ display: 'inline-flex', gap: '8px' }}>
+                          <button
+                            className="icon-button"
+                            title="Approve & Assign"
+                            disabled={requestsBusyId === booking.id}
+                            onClick={() => approveBooking(booking.id)}
+                          >
+                            <Check size={18} />
+                          </button>
+                          <button
+                            className="icon-button"
+                            title="Reject Booking"
+                            disabled={requestsBusyId === booking.id}
+                            onClick={() => rejectBooking(booking.id)}
+                          >
+                            <X size={18} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                        <Truck size={14} />
+                        <span>{booking.assigned_staff_name || 'Staff not assigned yet'}</span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* ── Inline Custom Rates panel ── */}
             {ratesId === c.id && (
@@ -1195,7 +1417,8 @@ export default function Customers() {
               </div>
             )}
           </div>
-        ))}
+        );
+        })}
       </div>
     </div>
   );
