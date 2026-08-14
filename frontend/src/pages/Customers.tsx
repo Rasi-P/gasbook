@@ -55,6 +55,7 @@ type Ledger = {
   customer: Customer;
   sales: Sale[];
   payments: Payment[];
+  bookings: Booking[];
 };
 
 type Booking = {
@@ -71,6 +72,8 @@ type Booking = {
   note: string;
   assigned_staff: number | null;
   assigned_staff_name: string | null;
+  payment_method?: string;
+  payment_status?: string;
   created_at: string;
 };
 
@@ -411,7 +414,7 @@ export default function Customers() {
   // ── Detail / ledger view ─────────────────────────────────────────────────
 
   if (selected) {
-    const { customer, sales, payments } = selected;
+    const { customer, sales, payments, bookings = [] } = selected;
 
     type PaymentGroup = { payments: Payment[]; total: number; date: string; note: string; empties: number };
     type Entry =
@@ -622,6 +625,81 @@ export default function Customers() {
             </div>
           </div>
         )}
+
+        {/* Booking History */}
+        <div className="card" style={{ marginBottom: '16px' }}>
+          <h2 style={{ marginBottom: '14px' }}>Booking History</h2>
+          
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px', marginBottom: '20px' }}>
+            <div className="metric-card" style={{ padding: '12px' }}>
+              <span style={{ fontSize: '0.85rem' }}>Total Bookings</span>
+              <strong>{bookings.length}</strong>
+            </div>
+            <div className="metric-card" style={{ padding: '12px' }}>
+              <span style={{ fontSize: '0.85rem' }}>Active Bookings</span>
+              <strong>{bookings.filter(b => ['pending', 'approved', 'accepted', 'out_for_delivery'].includes(b.status)).length}</strong>
+            </div>
+            <div className="metric-card" style={{ padding: '12px' }}>
+              <span style={{ fontSize: '0.85rem' }}>Delivered</span>
+              <strong>{bookings.filter(b => b.status === 'delivered').length}</strong>
+            </div>
+            <div className="metric-card" style={{ padding: '12px' }}>
+              <span style={{ fontSize: '0.85rem' }}>Pending</span>
+              <strong>{bookings.filter(b => b.status === 'pending').length}</strong>
+            </div>
+          </div>
+
+          {bookings.length === 0 && <p style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No bookings found for this customer.</p>}
+          <div className="ledger-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {bookings.map((booking) => (
+              <div key={`history-${booking.id}`} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
+                  <div>
+                    <strong style={{ fontSize: '1.05rem' }}>#{booking.id}</strong>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '4px' }}>
+                      {booking.quantity} × {booking.cylinder_type_name}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '4px' }}>{money(booking.rate)}</div>
+                    <span className={`badge ${
+                        booking.status === 'pending' ? 'badge-warning' :
+                        booking.status === 'approved' ? 'badge-info' :
+                        booking.status === 'accepted' ? 'badge-info' :
+                        booking.status === 'out_for_delivery' ? 'badge-warning' :
+                        booking.status === 'delivered' ? 'badge-success' : 'badge'
+                      }`}>
+                        {booking.status.replaceAll('_', ' ')}
+                    </span>
+                  </div>
+                </div>
+                
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  <div>
+                    <strong>Payment: </strong>
+                    <span style={{ color: 'var(--text)' }}>
+                      {(booking.payment_method?.toUpperCase() === 'ONLINE' && booking.payment_status?.toUpperCase() === 'PAID') ? 'Paid Online' :
+                       (booking.payment_method?.toUpperCase() === 'COD' && booking.payment_status?.toUpperCase() === 'COLLECTED') ? 'COD — Collected' :
+                       booking.payment_method?.toUpperCase() === 'COD' ? 'COD' :
+                       (booking.payment_method || 'COD')}
+                    </span>
+                  </div>
+                  <div>
+                    <strong>Staff: </strong>
+                    <span style={{ color: 'var(--text)' }}>{booking.assigned_staff_name || 'Unassigned'}</span>
+                  </div>
+                  <div>
+                    <strong>Date: </strong>
+                    <span style={{ color: 'var(--text)' }}>{fmtDate(booking.created_at)}</span>
+                  </div>
+                  <div style={{ marginLeft: 'auto' }}>
+                    <button className="btn btn-outline" style={{ padding: '4px 12px', fontSize: '0.8rem' }} onClick={() => alert('View booking detail component not implemented in existing codebase')}>View</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
 
         {/* Timeline */}
         <div className="card">
