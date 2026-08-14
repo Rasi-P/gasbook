@@ -37,14 +37,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - static_files:/app/staticfiles
     ports:
       - "8001:8000"
     command: >
-      sh -c "python manage.py makemigrations core &&
-             python manage.py migrate --noinput &&
-             python manage.py seed_demo &&
+      sh -c "python manage.py migrate --noinput &&
              gunicorn gasbook.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"
 
   frontend:
@@ -58,4 +54,3 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  static_files:

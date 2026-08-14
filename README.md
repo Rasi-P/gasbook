@@ -7,12 +7,13 @@ GasBook is a full-stack digital notebook for small gas delivery and cylinder dis
 - **Frontend:** React 19, React Router 7, Axios, Tailwind CSS, Vite, TypeScript
 - **Backend:** Django 5, Django REST Framework, SimpleJWT
 - **Database:** PostgreSQL (production), SQLite (local fallback)
+- **Cache:** Redis (optional — enabled when `REDIS_URL` is set)
 - **Package Manager:** npm
 
 ## Folder Structure
 
 ```text
-gas/
+gasbook/
   backend/
     gasbook/          Django project settings and URLs
     core/             Models, serializers, API views, migrations, seed command
@@ -23,10 +24,15 @@ gas/
     src/
       components/     RatesPanel (floating gas rates widget)
       lib/            Axios API client (api.ts)
-      pages/          Login, Dashboard, Stock, Sales, Customers, Staff, Reports
+      pages/          Login, Stock, Sales, Customers, ChangePassword
+        admin/        Dashboard, Staff, Reports, AdminBookings
+        staff/        Staff-facing pages
+        customer/     Customer-facing pages
+    nginx.conf
     tailwind.config.js
     vite.config.ts
-  docker-compose.yml
+  docker-compose.yml      Production-style stack (frontend on 8080)
+  docker-compose.dev.yml  Dev stack with hot reload (frontend on 5173)
   render.yaml
 ```
 
@@ -169,8 +175,29 @@ GET  /api/reports/?start=YYYY-MM-DD&end=YYYY-MM-DD
 - Set `VITE_API_BASE_URL` to your Render backend URL ending in `/api`
 
 ### Docker
+
+The backend service reads `backend/.env`, which is gitignored — create it first:
+
 ```bash
+cp backend/.env.example backend/.env
+# then edit it: use the Docker hostnames
+#   DATABASE_URL=postgres://gasbook:gasbook123@db:5432/gasbook
+#   REDIS_URL=redis://redis:6379/0
 docker-compose up --build
+```
+
+Frontend: http://localhost:8080 — Backend API: http://localhost:8001/api
+
+Seed demo data (one-off, optional):
+
+```bash
+docker compose run --rm backend python manage.py seed_demo
+```
+
+For development with hot reload (frontend on http://localhost:5173):
+
+```bash
+docker compose -f docker-compose.dev.yml up --build
 ```
 
 > For production: change the seed admin password, set a strong `SECRET_KEY`, and disable `DEBUG`.

@@ -27,3 +27,11 @@ frontend/dist/
 # Logs
 *.log
 
+# macOS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Databases
+*.sqlite3
+
