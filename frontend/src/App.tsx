@@ -9,7 +9,6 @@ import Reports from './pages/admin/Reports';
 import Login from './pages/Login';
 import Customers from './pages/Customers';
 import Staff from './pages/admin/Staff';
-import CustomerDashboard from './pages/customer/CustomerDashboard';
 import StaffDashboard from './pages/staff/StaffDashboard';
 import ChangePassword from './pages/ChangePassword';
 import AdminBookings from './pages/admin/AdminBookings';
@@ -74,13 +73,12 @@ export default function App() {
     return <p style={{ textAlign: 'center', padding: '40px' }}>Loading…</p>;
   }
 
-  if (role === 'staff' || role === 'customer') {
+  if (role === 'staff') {
     return (
       <Protected>
         <Routes>
           <Route path="/change-password" element={<ChangePassword />} />
           <Route path="/staff-dashboard" element={<StaffDashboard />} />
-          <Route path="/customer-dashboard" element={<CustomerDashboard />} />
           <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
         </Routes>
       </Protected>
@@ -174,13 +172,6 @@ export default function App() {
 }
 
 function NavItems({ role }: { role: string }) {
-  if (role === 'customer') {
-    return (
-      <NavLink to="/customer-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <Home /><span>Home</span>
-      </NavLink>
-    );
-  }
 
   if (role === 'staff') {
     return (

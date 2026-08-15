@@ -245,7 +245,8 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         customer_profile = self.get_object()
         sales = SaleSerializer(customer_profile.sales.prefetch_related("items__cylinder_type").all(), many=True).data
         payments = PaymentSerializer(customer_profile.payments.all(), many=True).data
-        return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments})
+        bookings = BookingSerializer(customer_profile.bookings.select_related("assigned_staff", "cylinder_type").order_by("-created_at"), many=True, context={'request': request}).data
+        return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments, "bookings": bookings})
 
     def perform_update(self, serializer):
         profile = serializer.save()
@@ -456,15 +457,26 @@ class BookingViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
     def reject(self, request, pk=None):
         booking = self.get_object()
+        
+        # Don't allow rejecting if already rejected or delivered/out for delivery
+        if booking.status in [Booking.Status.REJECTED, Booking.Status.OUT_FOR_DELIVERY, Booking.Status.DELIVERED]:
+            return Response({"detail": f"Cannot reject booking in {booking.status} status."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        reason = request.data.get("reason", "").strip()
+        if not reason:
+            return Response({"detail": "Rejection reason is required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
         booking.status = Booking.Status.REJECTED
-        booking.save(update_fields=["status", "updated_at"])
+        booking.rejection_reason = reason
+        booking.save(update_fields=["status", "rejection_reason", "updated_at"])
+        
         if not Notification.objects.filter(recipient=booking.customer.user, booking=booking, notification_type="ORDER_REJECTED").exists():
             Notification.objects.create(
                 recipient=booking.customer.user,
                 booking=booking,
                 notification_type="ORDER_REJECTED",
                 title="Booking Rejected",
-                body=request.data.get("reason") or f"Your GasBook order #{booking.id} was rejected.",
+                body=f"Your GasBook order #{booking.id} was rejected. Reason: {reason}",
             )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
