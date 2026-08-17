@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
 import {
   Bell,
+  CalendarDays,
   CheckCircle2,
   MapPin,
+  Mail,
   Navigation,
   Phone,
   Truck,
   User,
   ChevronRight,
   History,
-  Check
+  Check,
+  Pencil
 } from 'lucide-react';
 import { api, logout } from '../../lib/api';
 import cylinderImg from '../../assets/splash_cylinder.png';
@@ -42,8 +45,30 @@ type NotificationItem = {
   created_at: string;
 };
 
+type StaffProfileData = {
+  id: number;
+  username: string;
+  name: string;
+  role: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  date_joined?: string;
+  vehicle_location_name?: string | null;
+  assigned_area?: string | null;
+  vehicle_number?: string | null;
+  staff_image_url?: string | null;
+};
+
 function money(v: number | string) {
   return `₹${Number(v || 0).toLocaleString('en-IN')}`;
+}
+
+function formatJoinDate(value?: string) {
+  if (!value) return 'Not available';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not available';
+  return date.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
 }
 
 export default function StaffMobileLayout() {
@@ -64,6 +89,11 @@ export default function StaffMobileLayout() {
   const [message, setMessage] = useState('');
   const [userName, setUserName] = useState('');
   const [vehicleLocation, setVehicleLocation] = useState('');
+  const [staffProfile, setStaffProfile] = useState<StaffProfileData | null>(null);
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [editProfileValues, setEditProfileValues] = useState({ full_name: '', phone: '', email: '', address: '' });
+  const [editProfileError, setEditProfileError] = useState('');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('Too far');
@@ -83,11 +113,15 @@ export default function StaffMobileLayout() {
     setVehicleLocation(localStorage.getItem('gasbook_vehicle_location') || '');
 
     Promise.all([
+      api.get('/auth/me/'),
       api.get('/deliveries/'),
       api.get('/stock/'),
       api.get('/notifications/').catch(() => ({ data: [] }))
     ])
-      .then(([deliveryRes, , notifRes]) => {
+      .then(([meRes, deliveryRes, , notifRes]) => {
+        setStaffProfile(meRes.data);
+        setUserName(meRes.data.name || localStorage.getItem('gasbook_name') || 'Staff Partner');
+        setVehicleLocation(meRes.data.vehicle_location_name || '');
         const rows = deliveryRes.data.results ?? deliveryRes.data;
         setDeliveries(rows);
         const notifData = notifRes.data.results ?? notifRes.data;
@@ -191,6 +225,62 @@ export default function StaffMobileLayout() {
   const assignedCount = pendingAssignments.length;
   const activeCount = deliveries.filter((d) => d.status === 'accepted' || d.status === 'out_for_delivery').length;
   const completedCount = completedDeliveries.length;
+  const profileInitials = (staffProfile?.name || userName || 'SP')
+    .split(' ')
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+  const profileRows = [
+    { icon: <User size={17} />, label: 'Full Name', value: staffProfile?.name || userName || 'Not available' },
+    { icon: <Phone size={17} />, label: 'Phone Number', value: staffProfile?.phone || 'Not available' },
+    { icon: <Mail size={17} />, label: 'Email Address', value: staffProfile?.email || 'Not available' },
+    { icon: <MapPin size={17} />, label: 'Address', value: staffProfile?.address || 'Not available' },
+    { icon: <CalendarDays size={17} />, label: 'Member Since', value: formatJoinDate(staffProfile?.date_joined) },
+  ];
+
+  function openEditProfile() {
+    setEditProfileValues({
+      full_name: staffProfile?.name || userName || '',
+      phone: staffProfile?.phone || '',
+      email: staffProfile?.email || '',
+      address: staffProfile?.address || '',
+    });
+    setEditProfileError('');
+    setShowEditProfile(true);
+  }
+
+  async function saveProfileChanges(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editProfileValues.full_name.trim()) {
+      setEditProfileError('Full name is required.');
+      return;
+    }
+    if (editProfileValues.phone.trim() && !/^\d+$/.test(editProfileValues.phone.trim())) {
+      setEditProfileError('Phone number must contain only digits.');
+      return;
+    }
+
+    setIsSavingProfile(true);
+    setEditProfileError('');
+    try {
+      const { data } = await api.patch('/auth/me/', {
+        full_name: editProfileValues.full_name.trim(),
+        phone: editProfileValues.phone.trim(),
+        email: editProfileValues.email.trim(),
+        address: editProfileValues.address.trim(),
+      });
+      setStaffProfile(data);
+      setUserName(data.name || userName);
+      localStorage.setItem('gasbook_name', data.name || userName);
+      setShowEditProfile(false);
+      setMessage('Profile updated successfully.');
+    } catch (err: any) {
+      setEditProfileError(err.response?.data?.detail || 'Failed to update profile.');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  }
 
   const activeDeliveriesList = deliveries.filter((d) => {
     if (d.status === 'rejected') return false;
@@ -599,19 +689,90 @@ export default function StaffMobileLayout() {
         {/* TAB 4: PROFILE */}
         {activeTab === 'profile' && !isLoading && (
           <div style={{ padding: '0 20px' }}>
-            <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '24px', textAlign: 'center', border: '1px solid #E2E8F0', marginBottom: '16px' }}>
-              <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: '#EFF6FF', color: '#1457B8', margin: '0 auto 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', fontWeight: 800 }}>
-                {userName.slice(0, 2).toUpperCase()}
+            <div
+              style={{
+                background: 'linear-gradient(135deg, rgba(165, 221, 247, 0.95) 0%, rgba(223, 241, 255, 0.94) 56%, rgba(255, 255, 255, 0.98) 100%)',
+                borderRadius: '28px',
+                padding: '26px 22px',
+                marginBottom: '18px',
+                position: 'relative',
+                overflow: 'hidden',
+                border: '1px solid rgba(191, 219, 254, 0.8)',
+                boxShadow: '0 18px 40px rgba(15, 23, 42, 0.08)',
+              }}
+            >
+              <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at top right, rgba(255,255,255,0.55), transparent 42%)' }} />
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '16px' }}>
+                {staffProfile?.staff_image_url ? (
+                  <img
+                    src={staffProfile.staff_image_url}
+                    alt={staffProfile.name || userName}
+                    style={{ width: '86px', height: '86px', borderRadius: '50%', objectFit: 'cover', border: '4px solid #1F3B73', boxShadow: '0 12px 28px rgba(31, 59, 115, 0.12)' }}
+                  />
+                ) : (
+                  <div style={{ width: '86px', height: '86px', borderRadius: '50%', background: 'rgba(255,255,255,0.32)', border: '4px solid #1F3B73', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: 900, color: '#1F3B73' }}>
+                    {profileInitials}
+                  </div>
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{ fontSize: '22px', fontWeight: 900, color: '#243B67', margin: '0 0 6px', lineHeight: 1.1 }}>
+                    {staffProfile?.name || userName}
+                  </h3>
+                  <p style={{ fontSize: '15px', color: '#3E5E95', margin: 0, lineHeight: 1.5 }}>
+                    Manage your account and saved details.
+                  </p>
+                </div>
               </div>
-              <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#132B4F', margin: 0 }}>{userName}</h3>
-              <div style={{ fontSize: '13px', color: '#718096', marginTop: '4px' }}>Staff Partner</div>
             </div>
 
-            <div style={{ background: '#FFFFFF', borderRadius: '18px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-              <button onClick={() => { logout(); window.location.href = '/login'; }} style={{ width: '100%', padding: '16px', background: 'none', border: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}>
-                <span style={{ fontSize: '14px', fontWeight: 600, color: '#E11D48' }}>Logout</span>
-                <ChevronRight size={18} color="#94A3B8" />
-              </button>
+            <div style={{ marginBottom: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#132B4F', margin: 0 }}>Account Details</h4>
+                <button
+                  type="button"
+                  onClick={openEditProfile}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '16px', border: '1px solid #BCD6FF', background: '#F7FBFF', color: '#315FB7', fontSize: '13px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 8px 16px rgba(49, 95, 183, 0.08)' }}
+                >
+                  <Pencil size={16} />
+                  Edit
+                </button>
+              </div>
+              <div style={{ background: '#FFFFFF', borderRadius: '26px', border: '1px solid #EDF2F7', overflow: 'hidden', boxShadow: '0 18px 38px rgba(15, 23, 42, 0.06)' }}>
+                {profileRows.map((row, index) => (
+                  <div key={row.label}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '22px 22px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
+                        <div style={{ width: '46px', height: '46px', borderRadius: '16px', background: '#EEF4FF', color: '#365FC4', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                          {row.icon}
+                        </div>
+                        <span style={{ fontSize: '13px', color: '#233B69', fontWeight: 800 }}>{row.label}</span>
+                      </div>
+                      <div style={{ fontSize: '14px', color: '#6F7F9C', fontWeight: 700, textAlign: 'right', lineHeight: 1.45, maxWidth: '46%', wordBreak: 'break-word' }}>{row.value}</div>
+                    </div>
+                    {index < profileRows.length - 1 ? <div style={{ height: '1px', background: '#EEF2F7', margin: '0 22px' }} /> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '18px' }}>
+              <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#132B4F', margin: '0 0 10px' }}>Account</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <button
+                  onClick={() => { logout(); window.location.href = '/login'; }}
+                  style={{ width: '100%', padding: '20px 22px', background: '#FFFFFF', border: '1px solid #F2E7E7', borderRadius: '26px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', boxShadow: '0 18px 38px rgba(15, 23, 42, 0.06)' }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ width: '46px', height: '46px', borderRadius: '16px', background: '#FFF1F1', color: '#E24C40', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <ChevronRight size={18} style={{ transform: 'rotate(180deg)' }} />
+                    </div>
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontSize: '14px', fontWeight: 900, color: '#D13E34' }}>Logout</div>
+                    </div>
+                  </div>
+                  <ChevronRight size={20} color="#D13E34" />
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -678,6 +839,91 @@ export default function StaffMobileLayout() {
                 ))}
                 {notifications.length === 0 && <p style={{ textAlign: 'center', color: '#94A3B8', marginTop: '40px', fontSize: '13px' }}>No alerts received yet.</p>}
               </div>
+            </div>
+          </div>
+        )}
+
+        {showEditProfile && (
+          <div
+            onClick={() => { if (!isSavingProfile) setShowEditProfile(false); }}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)', backdropFilter: 'blur(4px)', zIndex: 2500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{ width: '100%', maxWidth: '430px', background: '#FFFFFF', borderRadius: '24px', boxShadow: '0 24px 48px rgba(15, 23, 42, 0.18)', overflow: 'hidden' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 20px 14px', borderBottom: '1px solid #F1F5F9' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: '42px', height: '42px', borderRadius: '14px', background: '#EFF6FF', color: '#1457B8', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Pencil size={18} />
+                  </div>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: '#132B4F' }}>Edit Profile</h3>
+                    <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#718096' }}>Update your personal details</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { if (!isSavingProfile) setShowEditProfile(false); }}
+                  style={{ width: '32px', height: '32px', borderRadius: '50%', border: 'none', background: '#F1F5F9', color: '#64748B', cursor: 'pointer', fontSize: '18px' }}
+                >
+                  ×
+                </button>
+              </div>
+
+              <form onSubmit={saveProfileChanges} style={{ padding: '18px 20px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {editProfileError ? (
+                  <div style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#B91C1C', fontSize: '12.5px', fontWeight: 700 }}>
+                    {editProfileError}
+                  </div>
+                ) : null}
+
+                {[
+                  { key: 'full_name', label: 'Full Name *', type: 'text', placeholder: 'Enter your full name' },
+                  { key: 'phone', label: 'Phone Number', type: 'tel', placeholder: 'Enter mobile number' },
+                  { key: 'email', label: 'Email Address', type: 'email', placeholder: 'Enter email address' },
+                ].map((field) => (
+                  <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#334155' }}>{field.label}</span>
+                    <input
+                      type={field.type}
+                      value={editProfileValues[field.key as keyof typeof editProfileValues]}
+                      onChange={(e) => setEditProfileValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                      placeholder={field.placeholder}
+                      style={{ width: '100%', padding: '12px 14px', borderRadius: '14px', border: '1px solid #D7E0EA', fontSize: '14px', color: '#132B4F', outline: 'none', background: '#FFFFFF' }}
+                    />
+                  </label>
+                ))}
+
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#334155' }}>Address</span>
+                  <textarea
+                    rows={3}
+                    value={editProfileValues.address}
+                    onChange={(e) => setEditProfileValues((prev) => ({ ...prev, address: e.target.value }))}
+                    placeholder="Enter full address"
+                    style={{ width: '100%', padding: '12px 14px', borderRadius: '14px', border: '1px solid #D7E0EA', fontSize: '14px', color: '#132B4F', outline: 'none', resize: 'vertical', background: '#FFFFFF' }}
+                  />
+                </label>
+
+                <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowEditProfile(false)}
+                    disabled={isSavingProfile}
+                    style={{ flex: 1, padding: '12px 14px', borderRadius: '14px', border: '1px solid #CBD5E1', background: '#FFFFFF', color: '#475569', fontWeight: 800, cursor: isSavingProfile ? 'not-allowed' : 'pointer' }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingProfile}
+                    style={{ flex: 1, padding: '12px 14px', borderRadius: '14px', border: 'none', background: '#1457B8', color: '#FFFFFF', fontWeight: 800, cursor: isSavingProfile ? 'not-allowed' : 'pointer' }}
+                  >
+                    {isSavingProfile ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </form>
             </div>
           </div>
         )}

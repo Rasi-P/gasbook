@@ -12,6 +12,7 @@ type StaffUser = {
   phone: string;
   email: string;
   address: string;
+  staff_image_url?: string | null;
 };
 
 const ROLE_COLORS: Record<string, string> = {
@@ -38,6 +39,7 @@ export default function Staff() {
   const [email, setEmail] = useState('');
   const [address, setAddress] = useState('');
   const [role, setRole] = useState('staff');
+  const [staffImage, setStaffImage] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -46,6 +48,10 @@ export default function Staff() {
   const [editPhone, setEditPhone] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editAddress, setEditAddress] = useState('');
+  const [editIsStaff, setEditIsStaff] = useState(false);
+  const [editStaffImageUrl, setEditStaffImageUrl] = useState<string | null>(null);
+  const [editStaffImage, setEditStaffImage] = useState<File | null>(null);
+  const [editRemoveStaffImage, setEditRemoveStaffImage] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
   const [credUserId, setCredUserId] = useState<number | null>(null);
@@ -69,17 +75,21 @@ export default function Staff() {
     setSaving(true);
     try {
       const createdUsername = username.trim();
-      const { data } = await api.post('/auth/register/', {
-        username: createdUsername,
-        full_name: fullNameValue,
-        phone,
-        email,
-        address,
-        role,
-      });
+      const payload = new FormData();
+      payload.append('username', createdUsername);
+      payload.append('full_name', fullNameValue);
+      payload.append('phone', phone);
+      payload.append('email', email);
+      payload.append('address', address);
+      payload.append('role', role);
+      if (role === 'staff' && staffImage) {
+        payload.append('image', staffImage);
+      }
+
+      const { data } = await api.post('/auth/register/', payload);
       const tempPassword = (data as { temporary_password?: string }).temporary_password;
 
-      setFullNameValue(''); setUsername(''); setPhone(''); setEmail(''); setAddress(''); setRole('staff');
+      setFullNameValue(''); setUsername(''); setPhone(''); setEmail(''); setAddress(''); setRole('staff'); setStaffImage(null);
       setShowAdd(false);
       await load();
 
@@ -103,6 +113,10 @@ export default function Staff() {
     setEditPhone(user.phone || '');
     setEditEmail(user.email || '');
     setEditAddress(user.address || '');
+    setEditIsStaff(user.role === 'staff');
+    setEditStaffImageUrl(user.staff_image_url || null);
+    setEditStaffImage(null);
+    setEditRemoveStaffImage(false);
     setEditError('');
   }
 
@@ -111,13 +125,21 @@ export default function Staff() {
     if (!editingId) return;
     setEditSaving(true); setEditError('');
     try {
-      const { data } = await api.patch(`/auth/users/${editingId}/`, {
-        full_name: editName.trim(),
-        phone: editPhone.trim(),
-        email: editEmail.trim(),
-        address: editAddress.trim(),
-      });
-      setUsers((prev) => prev.map((u) => (u.id === editingId ? data : u)));
+      const payload = new FormData();
+      payload.append('full_name', editName.trim());
+      payload.append('phone', editPhone.trim());
+      payload.append('email', editEmail.trim());
+      payload.append('address', editAddress.trim());
+      if (editIsStaff) {
+        if (editStaffImage) {
+          payload.append('image', editStaffImage);
+        }
+        if (editRemoveStaffImage) {
+          payload.append('remove_staff_image', 'true');
+        }
+      }
+      await api.patch(`/auth/users/${editingId}/`, payload);
+      await load();
       setEditingId(null);
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -186,7 +208,13 @@ export default function Staff() {
             </label>
             <label>
               <span>Role</span>
-              <select value={role} onChange={(e) => setRole(e.target.value)}>
+              <select value={role} onChange={(e) => {
+                const nextRole = e.target.value;
+                setRole(nextRole);
+                if (nextRole !== 'staff') {
+                  setStaffImage(null);
+                }
+              }}>
                 {availableRoles.map(r => (
                   <option key={r.code} value={r.code}>{r.name}</option>
                 ))}
@@ -207,6 +235,16 @@ export default function Staff() {
             <span>Address</span>
             <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
           </label>
+          {role === 'staff' && (
+            <label>
+              <span>Staff Image</span>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setStaffImage(e.target.files?.[0] || null)}
+              />
+            </label>
+          )}
           {error && <p className="form-error">{error}</p>}
           <button className="btn btn-primary" type="submit" disabled={saving}>
             <Check size={18} /> {saving ? 'Creating...' : 'Create User'}
@@ -228,22 +266,52 @@ export default function Staff() {
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 padding: '14px 18px', borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)', gap: '12px',
               }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                    <strong style={{ fontSize: '1rem' }}>{fullName(u)}</strong>
-                    <span style={{
-                      fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px',
-                      borderRadius: '999px', background: (ROLE_COLORS[u.role] || 'var(--text-muted)') + '22',
-                      color: ROLE_COLORS[u.role] || 'var(--text-muted)',
-                    }}>
-                      {u.role.toUpperCase()}
-                    </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
+                  <div style={{ flexShrink: 0 }}>
+                    {u.staff_image_url ? (
+                      <img
+                        src={u.staff_image_url}
+                        alt={fullName(u)}
+                        style={{ width: '44px', height: '44px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border)' }}
+                      />
+                    ) : (
+                      <div
+                        style={{
+                          width: '44px',
+                          height: '44px',
+                          borderRadius: '50%',
+                          border: '1px solid var(--border)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          background: 'var(--surface-muted)',
+                          fontWeight: 700,
+                          color: 'var(--text-muted)',
+                        }}
+                      >
+                        {fullName(u).charAt(0).toUpperCase()}
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap', wordBreak: 'break-word' }}>
-                    <span>{u.username}</span>
-                    {u.phone && <span>{u.phone}</span>}
-                    {u.email && <span>{u.email}</span>}
-                    {u.address && <span>{u.address}</span>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                        <strong style={{ fontSize: '1rem' }}>{fullName(u)}</strong>
+                        <span style={{
+                          fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px',
+                          borderRadius: '999px', background: (ROLE_COLORS[u.role] || 'var(--text-muted)') + '22',
+                          color: ROLE_COLORS[u.role] || 'var(--text-muted)',
+                        }}>
+                          {u.role.toUpperCase()}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap', wordBreak: 'break-word' }}>
+                        <span>{u.username}</span>
+                        {u.phone && <span>{u.phone}</span>}
+                        {u.email && <span>{u.email}</span>}
+                        {u.address && <span>{u.address}</span>}
+                      </div>
+                    </div>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
@@ -431,6 +499,71 @@ export default function Staff() {
                       <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
                     </label>
                   </div>
+                  {editIsStaff && (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <div>
+                          {editStaffImageUrl && !editRemoveStaffImage ? (
+                            <img
+                              src={editStaffImageUrl}
+                              alt={editName || 'Staff image'}
+                              style={{ width: '56px', height: '56px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border)' }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: '56px',
+                                height: '56px',
+                                borderRadius: '50%',
+                                border: '1px solid var(--border)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                background: 'var(--surface-muted)',
+                                color: 'var(--text-muted)',
+                                fontWeight: 700,
+                              }}
+                            >
+                              {(editName.trim().charAt(0) || 'S').toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.86rem' }}>
+                          {editStaffImage ? `Selected: ${editStaffImage.name}` : editStaffImageUrl && !editRemoveStaffImage ? 'Current staff image' : 'No staff image'}
+                        </div>
+                      </div>
+                      <label>
+                        <span>Staff Image</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] || null;
+                            setEditStaffImage(file);
+                            if (file) {
+                              setEditRemoveStaffImage(false);
+                            }
+                          }}
+                        />
+                      </label>
+                      {(editStaffImageUrl || editStaffImage) && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <input
+                            type="checkbox"
+                            checked={editRemoveStaffImage}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setEditRemoveStaffImage(checked);
+                              if (checked) {
+                                setEditStaffImage(null);
+                              }
+                            }}
+                          />
+                          <span>Remove current image</span>
+                        </label>
+                      )}
+                    </>
+                  )}
                   {editError && <p className="form-error">{editError}</p>}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="btn btn-primary" type="submit" disabled={editSaving}>

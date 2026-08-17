@@ -39,6 +39,13 @@ from .serializers import (
 )
 
 
+def get_staff_image_url(request, user):
+    profile = getattr(user, "staff_profile", None)
+    if not profile or not profile.image:
+        return None
+    return request.build_absolute_uri(profile.image.url)
+
+
 class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
@@ -791,31 +798,68 @@ def money_sum(queryset, field):
     return queryset.aggregate(total=Sum(field))["total"] or 0
 
 
-@api_view(["GET"])
-@permission_classes([permissions.IsAuthenticated])
-def me(request):
+def serialize_me(request):
     redirects = {
         "admin": "/admin-dashboard",
         "staff": "/staff-dashboard",
         "customer": "/customer-dashboard",
     }
     location_name = None
+    assigned_area = None
+    vehicle_number = None
+    staff_image_url = None
     if (getattr(request.user.role, "code", "") == "staff") and hasattr(request.user, "staff_profile"):
         loc = request.user.staff_profile.vehicle_location
         if loc:
             location_name = loc.name
+        assigned_area = request.user.staff_profile.assigned_area or None
+        vehicle_number = request.user.staff_profile.vehicle_number or None
+        if request.user.staff_profile.image:
+            staff_image_url = request.build_absolute_uri(request.user.staff_profile.image.url)
             
-    return Response(
-        {
-            "id": request.user.id,
-            "username": request.user.username,
-            "name": request.user.get_full_name() or request.user.username,
-            "role": getattr(request.user.role, "code", ""),
-            "redirect": redirects.get(getattr(request.user.role, "code", ""), "/"),
-            "must_change_password": bool(getattr(request.user, "must_change_password", False)),
-            "vehicle_location_name": location_name,
-        }
-    )
+    return {
+        "id": request.user.id,
+        "username": request.user.username,
+        "name": request.user.get_full_name() or request.user.username,
+        "role": getattr(request.user.role, "code", ""),
+        "phone": request.user.phone,
+        "email": request.user.email,
+        "address": request.user.address,
+        "date_joined": request.user.date_joined,
+        "redirect": redirects.get(getattr(request.user.role, "code", ""), "/"),
+        "must_change_password": bool(getattr(request.user, "must_change_password", False)),
+        "vehicle_location_name": location_name,
+        "assigned_area": assigned_area,
+        "vehicle_number": vehicle_number,
+        "staff_image_url": staff_image_url,
+    }
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([permissions.IsAuthenticated])
+def me(request):
+    if request.method == "PATCH":
+        full_name = request.data.get("full_name")
+        phone = request.data.get("phone")
+        email = request.data.get("email")
+        address = request.data.get("address")
+
+        if full_name is not None:
+            parts = full_name.strip().split(" ", 1)
+            request.user.first_name = parts[0] if parts else ""
+            request.user.last_name = parts[1] if len(parts) > 1 else ""
+        if phone is not None:
+            request.user.phone = phone.strip()
+            if request.user.phone and not request.user.phone.isdigit():
+                return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if email is not None:
+            request.user.email = email.strip()
+        if address is not None:
+            request.user.address = address.strip()
+
+        request.user.save(update_fields=["first_name", "last_name", "phone", "email", "address"])
+
+    return Response(serialize_me(request))
 
 
 @api_view(["GET"])
@@ -823,7 +867,7 @@ def me(request):
 def users_list(request):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
-    users = User.objects.exclude(role__code="customer").order_by("username")
+    users = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").order_by("username")
     data = []
     for u in users:
         data.append({
@@ -835,6 +879,7 @@ def users_list(request):
             "phone": u.phone,
             "email": u.email,
             "address": u.address,
+            "staff_image_url": get_staff_image_url(request, u),
         })
     return Response(data)
 
@@ -853,7 +898,7 @@ def user_detail(request, pk):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
-        user = User.objects.exclude(role__code="customer").get(pk=pk)
+        user = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").get(pk=pk)
     except User.DoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
@@ -873,6 +918,8 @@ def user_detail(request, pk):
         user.phone = phone.strip()
         if not user.phone:
             return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if not user.phone.isdigit():
+            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if address is not None:
         user.address = address.strip()
     if email is not None:
@@ -881,10 +928,24 @@ def user_detail(request, pk):
     user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
     if getattr(getattr(user, "role", None), "code", "") == "staff":
-        # Just ensure the profile exists, no phone/address fields on StaffProfile
-        StaffProfile.objects.get_or_create(user=user)
+        profile, _ = StaffProfile.objects.get_or_create(user=user)
+        new_image = request.FILES.get("image")
+        remove_image = str(request.data.get("remove_staff_image", "")).lower() in {"1", "true", "yes", "on"}
 
-    return Response(UserSerializer(user).data)
+        if remove_image and profile.image:
+            profile.image.delete(save=False)
+            profile.image = None
+        if new_image:
+            if profile.image:
+                profile.image.delete(save=False)
+            profile.image = new_image
+        if remove_image or new_image:
+            profile.save(update_fields=["image", "updated_at"])
+
+    return Response({
+        **UserSerializer(user).data,
+        "staff_image_url": get_staff_image_url(request, user),
+    })
 
 
 @api_view(["GET", "POST"])
@@ -952,6 +1013,7 @@ def register(request):
     email = request.data.get("email", "").strip()
     address = request.data.get("address", "").strip()
     area = request.data.get("area", "").strip()
+    staff_image = request.FILES.get("image")
     if not username:
         return Response({"detail": "Username required."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if not phone:
@@ -990,6 +1052,7 @@ def register(request):
             assigned_area=area,
             vehicle_number=request.data.get("vehicle_number", "").strip(),
             vehicle_location_id=request.data.get("vehicle_location") or None,
+            image=staff_image,
         )
     response_data = UserSerializer(user).data
     if request.data.get("password", "").strip() == "":
