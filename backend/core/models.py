@@ -116,6 +116,7 @@ class StaffProfile(TimeStampedModel):
     assigned_area = models.CharField(max_length=100, blank=True)
     vehicle_number = models.CharField(max_length=30, blank=True)
     vehicle_location = models.ForeignKey(StockLocation, null=True, blank=True, on_delete=models.SET_NULL)
+    image = models.ImageField(upload_to="staff-images/", blank=True, null=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:

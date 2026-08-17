@@ -39,6 +39,13 @@ from .serializers import (
 )
 
 
+def get_staff_image_url(request, user):
+    profile = getattr(user, "staff_profile", None)
+    if not profile or not profile.image:
+        return None
+    return request.build_absolute_uri(profile.image.url)
+
+
 class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
@@ -823,7 +830,7 @@ def me(request):
 def users_list(request):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
-    users = User.objects.exclude(role__code="customer").order_by("username")
+    users = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").order_by("username")
     data = []
     for u in users:
         data.append({
@@ -835,6 +842,7 @@ def users_list(request):
             "phone": u.phone,
             "email": u.email,
             "address": u.address,
+            "staff_image_url": get_staff_image_url(request, u),
         })
     return Response(data)
 
@@ -952,6 +960,7 @@ def register(request):
     email = request.data.get("email", "").strip()
     address = request.data.get("address", "").strip()
     area = request.data.get("area", "").strip()
+    staff_image = request.FILES.get("image")
     if not username:
         return Response({"detail": "Username required."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if not phone:
@@ -990,6 +999,7 @@ def register(request):
             assigned_area=area,
             vehicle_number=request.data.get("vehicle_number", "").strip(),
             vehicle_location_id=request.data.get("vehicle_location") or None,
+            image=staff_image,
         )
     response_data = UserSerializer(user).data
     if request.data.get("password", "").strip() == "":
