@@ -798,31 +798,68 @@ def money_sum(queryset, field):
     return queryset.aggregate(total=Sum(field))["total"] or 0
 
 
-@api_view(["GET"])
-@permission_classes([permissions.IsAuthenticated])
-def me(request):
+def serialize_me(request):
     redirects = {
         "admin": "/admin-dashboard",
         "staff": "/staff-dashboard",
         "customer": "/customer-dashboard",
     }
     location_name = None
+    assigned_area = None
+    vehicle_number = None
+    staff_image_url = None
     if (getattr(request.user.role, "code", "") == "staff") and hasattr(request.user, "staff_profile"):
         loc = request.user.staff_profile.vehicle_location
         if loc:
             location_name = loc.name
+        assigned_area = request.user.staff_profile.assigned_area or None
+        vehicle_number = request.user.staff_profile.vehicle_number or None
+        if request.user.staff_profile.image:
+            staff_image_url = request.build_absolute_uri(request.user.staff_profile.image.url)
             
-    return Response(
-        {
-            "id": request.user.id,
-            "username": request.user.username,
-            "name": request.user.get_full_name() or request.user.username,
-            "role": getattr(request.user.role, "code", ""),
-            "redirect": redirects.get(getattr(request.user.role, "code", ""), "/"),
-            "must_change_password": bool(getattr(request.user, "must_change_password", False)),
-            "vehicle_location_name": location_name,
-        }
-    )
+    return {
+        "id": request.user.id,
+        "username": request.user.username,
+        "name": request.user.get_full_name() or request.user.username,
+        "role": getattr(request.user.role, "code", ""),
+        "phone": request.user.phone,
+        "email": request.user.email,
+        "address": request.user.address,
+        "date_joined": request.user.date_joined,
+        "redirect": redirects.get(getattr(request.user.role, "code", ""), "/"),
+        "must_change_password": bool(getattr(request.user, "must_change_password", False)),
+        "vehicle_location_name": location_name,
+        "assigned_area": assigned_area,
+        "vehicle_number": vehicle_number,
+        "staff_image_url": staff_image_url,
+    }
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([permissions.IsAuthenticated])
+def me(request):
+    if request.method == "PATCH":
+        full_name = request.data.get("full_name")
+        phone = request.data.get("phone")
+        email = request.data.get("email")
+        address = request.data.get("address")
+
+        if full_name is not None:
+            parts = full_name.strip().split(" ", 1)
+            request.user.first_name = parts[0] if parts else ""
+            request.user.last_name = parts[1] if len(parts) > 1 else ""
+        if phone is not None:
+            request.user.phone = phone.strip()
+            if request.user.phone and not request.user.phone.isdigit():
+                return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if email is not None:
+            request.user.email = email.strip()
+        if address is not None:
+            request.user.address = address.strip()
+
+        request.user.save(update_fields=["first_name", "last_name", "phone", "email", "address"])
+
+    return Response(serialize_me(request))
 
 
 @api_view(["GET"])
