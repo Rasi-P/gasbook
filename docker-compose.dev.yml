@@ -56,8 +56,7 @@ services:
       redis:
         condition: service_healthy
     command: >
-      sh -c "python manage.py makemigrations core &&
-             python manage.py migrate --noinput &&
+      sh -c "python manage.py migrate --noinput &&
              python manage.py seed_demo &&
              python manage.py runserver 0.0.0.0:8000"
 
