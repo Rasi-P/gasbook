@@ -48,6 +48,10 @@ export default function Staff() {
   const [editPhone, setEditPhone] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editAddress, setEditAddress] = useState('');
+  const [editIsStaff, setEditIsStaff] = useState(false);
+  const [editStaffImageUrl, setEditStaffImageUrl] = useState<string | null>(null);
+  const [editStaffImage, setEditStaffImage] = useState<File | null>(null);
+  const [editRemoveStaffImage, setEditRemoveStaffImage] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
   const [credUserId, setCredUserId] = useState<number | null>(null);
@@ -109,6 +113,10 @@ export default function Staff() {
     setEditPhone(user.phone || '');
     setEditEmail(user.email || '');
     setEditAddress(user.address || '');
+    setEditIsStaff(user.role === 'staff');
+    setEditStaffImageUrl(user.staff_image_url || null);
+    setEditStaffImage(null);
+    setEditRemoveStaffImage(false);
     setEditError('');
   }
 
@@ -117,12 +125,20 @@ export default function Staff() {
     if (!editingId) return;
     setEditSaving(true); setEditError('');
     try {
-      await api.patch(`/auth/users/${editingId}/`, {
-        full_name: editName.trim(),
-        phone: editPhone.trim(),
-        email: editEmail.trim(),
-        address: editAddress.trim(),
-      });
+      const payload = new FormData();
+      payload.append('full_name', editName.trim());
+      payload.append('phone', editPhone.trim());
+      payload.append('email', editEmail.trim());
+      payload.append('address', editAddress.trim());
+      if (editIsStaff) {
+        if (editStaffImage) {
+          payload.append('image', editStaffImage);
+        }
+        if (editRemoveStaffImage) {
+          payload.append('remove_staff_image', 'true');
+        }
+      }
+      await api.patch(`/auth/users/${editingId}/`, payload);
       await load();
       setEditingId(null);
     } catch (err: unknown) {
@@ -483,6 +499,71 @@ export default function Staff() {
                       <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
                     </label>
                   </div>
+                  {editIsStaff && (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <div>
+                          {editStaffImageUrl && !editRemoveStaffImage ? (
+                            <img
+                              src={editStaffImageUrl}
+                              alt={editName || 'Staff image'}
+                              style={{ width: '56px', height: '56px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border)' }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: '56px',
+                                height: '56px',
+                                borderRadius: '50%',
+                                border: '1px solid var(--border)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                background: 'var(--surface-muted)',
+                                color: 'var(--text-muted)',
+                                fontWeight: 700,
+                              }}
+                            >
+                              {(editName.trim().charAt(0) || 'S').toUpperCase()}
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.86rem' }}>
+                          {editStaffImage ? `Selected: ${editStaffImage.name}` : editStaffImageUrl && !editRemoveStaffImage ? 'Current staff image' : 'No staff image'}
+                        </div>
+                      </div>
+                      <label>
+                        <span>Staff Image</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0] || null;
+                            setEditStaffImage(file);
+                            if (file) {
+                              setEditRemoveStaffImage(false);
+                            }
+                          }}
+                        />
+                      </label>
+                      {(editStaffImageUrl || editStaffImage) && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <input
+                            type="checkbox"
+                            checked={editRemoveStaffImage}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setEditRemoveStaffImage(checked);
+                              if (checked) {
+                                setEditStaffImage(null);
+                              }
+                            }}
+                          />
+                          <span>Remove current image</span>
+                        </label>
+                      )}
+                    </>
+                  )}
                   {editError && <p className="form-error">{editError}</p>}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="btn btn-primary" type="submit" disabled={editSaving}>

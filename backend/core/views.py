@@ -861,7 +861,7 @@ def user_detail(request, pk):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
-        user = User.objects.exclude(role__code="customer").get(pk=pk)
+        user = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").get(pk=pk)
     except User.DoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
@@ -881,6 +881,8 @@ def user_detail(request, pk):
         user.phone = phone.strip()
         if not user.phone:
             return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if not user.phone.isdigit():
+            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if address is not None:
         user.address = address.strip()
     if email is not None:
@@ -889,10 +891,24 @@ def user_detail(request, pk):
     user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
     if getattr(getattr(user, "role", None), "code", "") == "staff":
-        # Just ensure the profile exists, no phone/address fields on StaffProfile
-        StaffProfile.objects.get_or_create(user=user)
+        profile, _ = StaffProfile.objects.get_or_create(user=user)
+        new_image = request.FILES.get("image")
+        remove_image = str(request.data.get("remove_staff_image", "")).lower() in {"1", "true", "yes", "on"}
 
-    return Response(UserSerializer(user).data)
+        if remove_image and profile.image:
+            profile.image.delete(save=False)
+            profile.image = None
+        if new_image:
+            if profile.image:
+                profile.image.delete(save=False)
+            profile.image = new_image
+        if remove_image or new_image:
+            profile.save(update_fields=["image", "updated_at"])
+
+    return Response({
+        **UserSerializer(user).data,
+        "staff_image_url": get_staff_image_url(request, user),
+    })
 
 
 @api_view(["GET", "POST"])
