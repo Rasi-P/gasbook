@@ -7,7 +7,7 @@ from django.utils.crypto import get_random_string
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, viewsets, filters
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
@@ -402,6 +402,8 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.select_related("customer__user", "cylinder_type", "assigned_staff", "sale")
     serializer_class = BookingSerializer
+    filter_backends = [filters.SearchFilter]
+    search_fields = ["id", "cylinder_type__name", "status"]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -412,7 +414,11 @@ class BookingViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(assigned_staff=self.request.user)
         status_param = self.request.query_params.get("status")
         if status_param:
-            queryset = queryset.filter(status=status_param)
+            statuses = [s.strip() for s in status_param.split(",") if s.strip()]
+            if len(statuses) > 1:
+                queryset = queryset.filter(status__in=statuses)
+            elif len(statuses) == 1:
+                queryset = queryset.filter(status=statuses[0])
         return queryset
 
     def perform_create(self, serializer):
