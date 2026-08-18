@@ -35,6 +35,8 @@ from .serializers import (
     StockSerializer,
     StaffProfileSerializer,
     UserSerializer,
+    get_booking_pricing_snapshot,
+    get_customer_pricing_snapshot,
     get_stock_row,
 )
 
@@ -407,7 +409,7 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class BookingViewSet(viewsets.ModelViewSet):
-    queryset = Booking.objects.select_related("customer__user", "cylinder_type", "assigned_staff", "sale")
+    queryset = Booking.objects.select_related("customer__user", "cylinder_type", "assigned_staff", "sale").prefetch_related("customer__custom_rates")
     serializer_class = BookingSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ["id", "cylinder_type__name", "status"]
@@ -432,6 +434,71 @@ class BookingViewSet(viewsets.ModelViewSet):
         if getattr(getattr(self.request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can create booking requests.")
         serializer.save()
+
+    @action(detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated])
+    def preview(self, request):
+        if getattr(getattr(request.user, "role", None), "code", "") != "customer":
+            raise PermissionDenied("Only customers can preview booking totals.")
+
+        profile = getattr(request.user, "customer_profile", None)
+        if not profile:
+            return Response({"detail": "Customer profile is required to preview booking totals."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        items = request.data.get("items") or []
+        if not isinstance(items, list):
+            return Response({"detail": "Items must be a list."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        cylinder_ids = []
+        for item in items:
+            try:
+                cylinder_ids.append(int(item.get("cylinder_type")))
+            except (TypeError, ValueError):
+                return Response({"detail": "Each item requires a valid cylinder_type."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+        cylinders = CylinderType.objects.filter(id__in=cylinder_ids, is_active=True).in_bulk()
+        response_items = []
+        original_total = Decimal("0.00")
+        discount_total = Decimal("0.00")
+        final_total = Decimal("0.00")
+
+        for item in items:
+            cylinder_id = int(item.get("cylinder_type"))
+            quantity = int(item.get("quantity") or 0)
+            if quantity <= 0:
+                return Response({"detail": "Quantity must be greater than zero."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+            cylinder = cylinders.get(cylinder_id)
+            if cylinder is None:
+                return Response({"detail": f"Cylinder type {cylinder_id} is invalid or inactive."}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+            pricing = get_customer_pricing_snapshot(profile, cylinder, quantity)
+            original_total += pricing["original_amount"]
+            discount_total += pricing["discount_amount"]
+            final_total += pricing["final_amount"]
+            response_items.append({
+                "client_item_id": item.get("client_item_id"),
+                "cylinder_type": cylinder.id,
+                "cylinder_type_name": cylinder.name,
+                "cylinder_type_weight": str(cylinder.weight),
+                "quantity": quantity,
+                "rate": str(pricing["rate"]),
+                "original_amount": str(pricing["original_amount"]),
+                "discount_amount": str(pricing["discount_amount"]),
+                "final_amount": str(pricing["final_amount"]),
+                "has_discount": pricing["has_discount"],
+                "applied_discount_type": pricing["applied_discount_type"],
+                "applied_discount_value": str(pricing["applied_discount_value"]),
+            })
+
+        return Response({
+            "items": response_items,
+            "summary": {
+                "original_amount": str(original_total),
+                "discount_amount": str(discount_total),
+                "final_amount": str(final_total),
+                "has_discount": discount_total > 0,
+            },
+        })
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
     def approve(self, request, pk=None):
@@ -495,7 +562,7 @@ class BookingViewSet(viewsets.ModelViewSet):
 
 
 class DeliveryViewSet(viewsets.ModelViewSet):
-    queryset = Delivery.objects.select_related("booking__customer__user", "booking__cylinder_type", "staff")
+    queryset = Delivery.objects.select_related("booking__customer__user", "booking__cylinder_type", "staff").prefetch_related("booking__customer__custom_rates")
     serializer_class = DeliverySerializer
     permission_classes = [IsStaffOrAdmin]
 
@@ -631,11 +698,9 @@ class DeliveryViewSet(viewsets.ModelViewSet):
 
         booking = delivery.booking
         profile = booking.customer
-        
-        rate_obj = profile.custom_rates.filter(cylinder_type=booking.cylinder_type).first()
-        rate = rate_obj.custom_price if rate_obj else booking.cylinder_type.selling_price
-        total = Decimal(booking.quantity) * rate
-        
+        pricing = get_booking_pricing_snapshot(booking)
+        total = pricing["final_amount"]
+
         payment_collected = Decimal(str(request.data.get("payment_collected", "0") or "0"))
         split_payments = request.data.get("split_payments", [])
         if split_payments:
@@ -644,7 +709,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         if payment_collected < 0 or payment_collected > total:
             return Response({"detail": "Collected amount must be between 0 and sale total."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
-        payment_method = request.data.get("payment_method") or booking.payment_method or Sale.PaymentMode.COD
+        payment_method = request.data.get("payment_method") or booking.payment_method or "COD"
         paid_payment_mode = request.data.get("paid_payment_mode", "cash")
         empty_collected = int(request.data.get("empty_collected", 0) or 0)
         location = getattr(delivery.staff, "staff_profile", None).vehicle_location if hasattr(delivery.staff, "staff_profile") else None
@@ -672,7 +737,11 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         sale = Sale.objects.create(
             customer=profile,
             location=location,
+            original_amount=pricing["original_amount"],
+            discount_amount=pricing["discount_amount"],
             total_amount=total,
+            applied_discount_type=pricing["applied_discount_type"],
+            applied_discount_value=pricing["applied_discount_value"],
             paid_amount=payment_collected,
             balance_due=total - payment_collected,
             payment_mode=sale_payment_mode,
@@ -685,7 +754,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             sale=sale,
             cylinder_type=booking.cylinder_type,
             quantity=booking.quantity,
-            rate=rate,
+            rate=pricing["effective_rate"],
             total_amount=total,
             empty_returned=empty_collected,
         )

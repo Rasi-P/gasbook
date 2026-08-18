@@ -8,10 +8,81 @@ from rest_framework import serializers
 from .models import (
     ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Role, Sale, SaleItem,
-    StaffProfile, Stock, StockLocation, StockMovement, User,
+    StaffProfile, Stock, StockLocation, StockMovement, User, quantize_money,
 )
 
 phone_validator = RegexValidator(regex=r"^\d+$", message="Phone number must contain only digits.")
+
+
+def serialize_decimal(value):
+    return str(quantize_money(value))
+
+
+def get_customer_pricing_snapshot(customer, cylinder_type, quantity):
+    if not customer:
+        quantity = int(quantity or 0)
+        rate = quantize_money(cylinder_type.selling_price)
+        original_amount = quantize_money(rate * Decimal(quantity))
+        return {
+            "rate": rate,
+            "quantity": quantity,
+            "original_amount": original_amount,
+            "discount_amount": Decimal("0.00"),
+            "final_amount": original_amount,
+            "has_discount": False,
+            "effective_rate": rate,
+            "applied_discount_type": None,
+            "applied_discount_value": Decimal("0.00"),
+        }
+    return customer.calculate_booking_pricing(cylinder_type, quantity)
+
+
+def get_booking_pricing_snapshot(booking):
+    if (
+        booking.original_amount > 0
+        or booking.final_amount > 0
+        or booking.discount_amount > 0
+        or booking.applied_discount_type
+    ):
+        quantity = Decimal(booking.quantity or 0)
+        effective_rate = (
+            quantize_money(Decimal(booking.final_amount) / quantity)
+            if quantity > 0
+            else Decimal("0.00")
+        )
+        return {
+            "rate": quantize_money(booking.customer.get_rate_for_cylinder(booking.cylinder_type)),
+            "quantity": booking.quantity,
+            "original_amount": quantize_money(booking.original_amount),
+            "discount_amount": quantize_money(booking.discount_amount),
+            "final_amount": quantize_money(booking.final_amount),
+            "has_discount": booking.discount_amount > 0,
+            "effective_rate": effective_rate,
+            "applied_discount_type": booking.applied_discount_type,
+            "applied_discount_value": quantize_money(booking.applied_discount_value),
+        }
+    return get_customer_pricing_snapshot(booking.customer, booking.cylinder_type, booking.quantity)
+
+
+def get_sale_pricing_snapshot(sale):
+    if sale.original_amount > 0 or sale.discount_amount > 0 or sale.applied_discount_type:
+        return {
+            "original_amount": quantize_money(sale.original_amount),
+            "discount_amount": quantize_money(sale.discount_amount),
+            "final_amount": quantize_money(sale.total_amount),
+            "has_discount": sale.discount_amount > 0,
+            "applied_discount_type": sale.applied_discount_type,
+            "applied_discount_value": quantize_money(sale.applied_discount_value),
+        }
+    original_amount = quantize_money(sale.total_amount)
+    return {
+        "original_amount": original_amount,
+        "discount_amount": Decimal("0.00"),
+        "final_amount": original_amount,
+        "has_discount": False,
+        "applied_discount_type": None,
+        "applied_discount_value": Decimal("0.00"),
+    }
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -24,9 +95,32 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class CylinderTypeSerializer(serializers.ModelSerializer):
+    customer_rate = serializers.SerializerMethodField()
+    discount_amount = serializers.SerializerMethodField()
+    final_price = serializers.SerializerMethodField()
+    has_discount = serializers.SerializerMethodField()
+
     class Meta:
         model = CylinderType
         fields = "__all__"
+
+    def _get_pricing(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        profile = getattr(user, "customer_profile", None) if user and user.is_authenticated else None
+        return get_customer_pricing_snapshot(profile, obj, 1)
+
+    def get_customer_rate(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["rate"])
+
+    def get_discount_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["discount_amount"])
+
+    def get_final_price(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["final_amount"])
+
+    def get_has_discount(self, obj):
+        return self._get_pricing(obj)["has_discount"]
 
 
 class StockLocationSerializer(serializers.ModelSerializer):
@@ -144,15 +238,24 @@ class SaleSerializer(serializers.ModelSerializer):
     paid_payment_mode = serializers.CharField(max_length=10, required=False, write_only=True)
     split_payments = serializers.ListField(child=serializers.DictField(), required=False, write_only=True)
     payments = serializers.SerializerMethodField()
+    final_amount = serializers.SerializerMethodField()
+    has_discount = serializers.SerializerMethodField()
 
     def get_payments(self, obj):
         return [{"amount": p.amount, "mode": p.payment_mode, "date": p.created_at} for p in obj.payments.order_by("created_at")]
+
+    def get_final_amount(self, obj):
+        return serialize_decimal(get_sale_pricing_snapshot(obj)["final_amount"])
+
+    def get_has_discount(self, obj):
+        return get_sale_pricing_snapshot(obj)["has_discount"]
 
     class Meta:
         model = Sale
         fields = [
             "id", "customer", "customer_name", "location", "location_name",
-            "total_amount", "paid_amount", "balance_due",
+            "original_amount", "discount_amount", "total_amount", "final_amount", "has_discount",
+            "applied_discount_type", "applied_discount_value", "paid_amount", "balance_due",
             "payment_mode", "paid_payment_mode", "split_payments", "delivery_type", "delivery_staff", "note",
             "sold_by", "sold_by_name", "created_at", "items", "sale_items", "payments",
         ]
@@ -314,6 +417,19 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         model = CustomerProfile
         fields = "__all__"
 
+    def validate(self, attrs):
+        discount_type = attrs.get("global_discount_type", getattr(self.instance, "global_discount_type", None))
+        discount_value = attrs.get("global_discount_value", getattr(self.instance, "global_discount_value", Decimal("0")))
+        discount_active = attrs.get("global_discount_is_active", getattr(self.instance, "global_discount_is_active", False))
+
+        if discount_value < 0:
+            raise serializers.ValidationError({"global_discount_value": "Discount value cannot be negative."})
+        if discount_active and not discount_type:
+            raise serializers.ValidationError({"global_discount_type": "Select a discount type before enabling the discount."})
+        if discount_type == CustomerProfile.DiscountType.PERCENTAGE and discount_value > 100:
+            raise serializers.ValidationError({"global_discount_value": "Percentage discount cannot exceed 100%."})
+        return attrs
+
     def get_full_name(self, obj):
         return obj.user.get_full_name() or obj.user.username
 
@@ -423,16 +539,42 @@ class BookingSerializer(serializers.ModelSerializer):
     assigned_staff_name = serializers.SerializerMethodField()
     assigned_staff_phone = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
+    original_amount = serializers.SerializerMethodField()
+    discount_amount = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
+    final_amount = serializers.SerializerMethodField()
+    has_discount = serializers.SerializerMethodField()
+    applied_discount_type = serializers.SerializerMethodField()
+    applied_discount_value = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
         fields = "__all__"
         read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale"]
 
+    def _get_pricing(self, obj):
+        return get_booking_pricing_snapshot(obj)
+
+    def get_original_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["original_amount"])
+
+    def get_discount_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["discount_amount"])
+
     def get_total_amount(self, obj):
-        rate = Decimal(self.get_rate(obj))
-        return str(rate * obj.quantity)
+        return serialize_decimal(self._get_pricing(obj)["final_amount"])
+
+    def get_final_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["final_amount"])
+
+    def get_has_discount(self, obj):
+        return self._get_pricing(obj)["has_discount"]
+
+    def get_applied_discount_type(self, obj):
+        return self._get_pricing(obj)["applied_discount_type"]
+
+    def get_applied_discount_value(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["applied_discount_value"])
 
     def get_customer_name(self, obj):
         return obj.customer.user.get_full_name() or obj.customer.user.username
@@ -457,10 +599,7 @@ class BookingSerializer(serializers.ModelSerializer):
         return None
 
     def get_rate(self, obj):
-        custom = obj.customer.custom_rates.filter(cylinder_type=obj.cylinder_type).first()
-        if custom:
-            return str(custom.custom_price)
-        return str(obj.cylinder_type.selling_price)
+        return serialize_decimal(self._get_pricing(obj)["rate"])
 
     def create(self, validated_data):
         user = self.context["request"].user
@@ -471,14 +610,20 @@ class BookingSerializer(serializers.ModelSerializer):
             validated_data["delivery_address"] = user.address
         if not validated_data.get("delivery_phone"):
             validated_data["delivery_phone"] = user.phone
-        
-        booking = Booking.objects.create(customer=profile, **validated_data)
-        
-        rate = float(booking.cylinder_type.selling_price)
-        custom = profile.custom_rates.filter(cylinder_type=booking.cylinder_type).first()
-        if custom:
-            rate = float(custom.custom_price)
-        total = rate * booking.quantity
+
+        cylinder_type = validated_data["cylinder_type"]
+        quantity = validated_data["quantity"]
+        pricing = get_customer_pricing_snapshot(profile, cylinder_type, quantity)
+
+        booking = Booking.objects.create(
+            customer=profile,
+            original_amount=pricing["original_amount"],
+            discount_amount=pricing["discount_amount"],
+            final_amount=pricing["final_amount"],
+            applied_discount_type=pricing["applied_discount_type"],
+            applied_discount_value=pricing["applied_discount_value"],
+            **validated_data,
+        )
 
         admin_role_users = User.objects.filter(role__code="admin")
         customer_name = profile.user.get_full_name() or profile.user.username
@@ -492,12 +637,15 @@ class BookingSerializer(serializers.ModelSerializer):
         )
 
         for admin in admin_role_users:
+            discount_line = ""
+            if pricing["has_discount"]:
+                discount_line = f"\nDiscount: -₹{pricing['discount_amount']:,.2f}"
             Notification.objects.create(
                 recipient=admin,
                 booking=booking,
                 notification_type="ORDER_PLACED",
                 title="New GasBook Order Received",
-                body=f"Order #{booking.id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nTotal: ₹{total:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
+                body=f"Order #{booking.id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nOriginal: ₹{pricing['original_amount']:,.2f}{discount_line}\nFinal: ₹{pricing['final_amount']:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
             )
         return booking
 
@@ -514,6 +662,10 @@ class DeliverySerializer(serializers.ModelSerializer):
     booking_payment_status = serializers.CharField(source="booking.payment_status", read_only=True)
     staff_name = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
+    original_amount = serializers.SerializerMethodField()
+    discount_amount = serializers.SerializerMethodField()
+    final_amount = serializers.SerializerMethodField()
+    has_discount = serializers.SerializerMethodField()
     pending_amount = serializers.SerializerMethodField()
     deposit_cylinders = serializers.IntegerField(source="booking.customer.deposit_cylinders", read_only=True)
 
@@ -521,6 +673,9 @@ class DeliverySerializer(serializers.ModelSerializer):
         model = Delivery
         fields = "__all__"
         read_only_fields = ["started_at", "completed_at"]
+
+    def _get_pricing(self, obj):
+        return get_booking_pricing_snapshot(obj.booking)
 
     def get_customer_name(self, obj):
         user = obj.booking.customer.user
@@ -530,10 +685,19 @@ class DeliverySerializer(serializers.ModelSerializer):
         return obj.staff.get_full_name() or obj.staff.username
 
     def get_rate(self, obj):
-        custom = obj.booking.customer.custom_rates.filter(cylinder_type=obj.booking.cylinder_type).first()
-        if custom:
-            return str(custom.custom_price)
-        return str(obj.booking.cylinder_type.selling_price)
+        return serialize_decimal(self._get_pricing(obj)["rate"])
+
+    def get_original_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["original_amount"])
+
+    def get_discount_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["discount_amount"])
+
+    def get_final_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["final_amount"])
+
+    def get_has_discount(self, obj):
+        return self._get_pricing(obj)["has_discount"]
 
     def get_pending_amount(self, obj):
         customer = obj.booking.customer

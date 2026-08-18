@@ -1,6 +1,12 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+
+
+def quantize_money(value):
+    return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 class User(AbstractUser):
@@ -96,12 +102,19 @@ class StockMovement(TimeStampedModel):
 
 
 class CustomerProfile(TimeStampedModel):
+    class DiscountType(models.TextChoices):
+        PERCENTAGE = "percentage", "Percentage"
+        FIXED = "fixed", "Fixed Amount"
+
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="customer_profile")
     opening_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     area = models.CharField(max_length=100, blank=True)
     default_staff = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="assigned_customers")
     credit_limit = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     deposit_cylinders = models.PositiveIntegerField(default=0)
+    global_discount_type = models.CharField(max_length=20, choices=DiscountType.choices, null=True, blank=True)
+    global_discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    global_discount_is_active = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -109,6 +122,57 @@ class CustomerProfile(TimeStampedModel):
 
     def __str__(self):
         return self.user.get_full_name() or self.user.username
+
+    def get_rate_for_cylinder(self, cylinder_type):
+        prefetched_rates = getattr(self, "_prefetched_objects_cache", {}).get("custom_rates")
+        if prefetched_rates is not None:
+            custom = next((rate for rate in prefetched_rates if rate.cylinder_type_id == cylinder_type.id), None)
+        else:
+            custom = self.custom_rates.filter(cylinder_type=cylinder_type).first()
+        return custom.custom_price if custom else cylinder_type.selling_price
+
+    def calculate_discount_for_amount(self, amount):
+        original_amount = quantize_money(amount or Decimal("0"))
+        discount_amount = Decimal("0.00")
+
+        if (
+            self.global_discount_is_active
+            and self.global_discount_type
+            and self.global_discount_value > 0
+            and original_amount > 0
+        ):
+            if self.global_discount_type == self.DiscountType.PERCENTAGE:
+                discount_amount = quantize_money(
+                    original_amount * self.global_discount_value / Decimal("100")
+                )
+            elif self.global_discount_type == self.DiscountType.FIXED:
+                discount_amount = quantize_money(min(original_amount, self.global_discount_value))
+
+        final_amount = quantize_money(max(Decimal("0"), original_amount - discount_amount))
+        has_discount = discount_amount > 0
+
+        return {
+            "original_amount": original_amount,
+            "discount_amount": discount_amount,
+            "final_amount": final_amount,
+            "has_discount": has_discount,
+            "applied_discount_type": self.global_discount_type if has_discount else None,
+            "applied_discount_value": quantize_money(self.global_discount_value if has_discount else Decimal("0")),
+        }
+
+    def calculate_booking_pricing(self, cylinder_type, quantity):
+        quantity_decimal = Decimal(quantity or 0)
+        base_rate = quantize_money(self.get_rate_for_cylinder(cylinder_type))
+        original_amount = quantize_money(base_rate * quantity_decimal)
+        pricing = self.calculate_discount_for_amount(original_amount)
+        pricing["rate"] = base_rate
+        pricing["quantity"] = int(quantity or 0)
+        pricing["effective_rate"] = (
+            quantize_money(pricing["final_amount"] / quantity_decimal)
+            if quantity_decimal > 0
+            else Decimal("0.00")
+        )
+        return pricing
 
 
 class StaffProfile(TimeStampedModel):
@@ -140,7 +204,11 @@ class Sale(TimeStampedModel):
 
     customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="sales", null=True, blank=True)
     location = models.ForeignKey(StockLocation, on_delete=models.PROTECT)
+    original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    applied_discount_type = models.CharField(max_length=20, choices=CustomerProfile.DiscountType.choices, null=True, blank=True)
+    applied_discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     balance_due = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     payment_mode = models.CharField(max_length=10, choices=PaymentMode.choices)
@@ -241,6 +309,11 @@ class Booking(TimeStampedModel):
     customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="bookings")
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
+    original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    final_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    applied_discount_type = models.CharField(max_length=20, choices=CustomerProfile.DiscountType.choices, null=True, blank=True)
+    applied_discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     note = models.CharField(max_length=300, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     payment_method = models.CharField(max_length=10, default="COD")

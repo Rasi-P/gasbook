@@ -27,6 +27,10 @@ type Delivery = {
   cylinder_type_name: string;
   quantity: number;
   rate: string;
+  original_amount?: string;
+  discount_amount?: string;
+  final_amount?: string;
+  has_discount?: boolean;
   pending_amount: string;
   deposit_cylinders: number;
   booking_payment_method?: string;
@@ -62,6 +66,18 @@ type StaffProfileData = {
 
 function money(v: number | string) {
   return `₹${Number(v || 0).toLocaleString('en-IN')}`;
+}
+
+function originalAmount(delivery: Delivery) {
+  return Number(delivery.original_amount || Number(delivery.rate || 0) * delivery.quantity || 0);
+}
+
+function discountAmount(delivery: Delivery) {
+  return Number(delivery.discount_amount || 0);
+}
+
+function finalAmount(delivery: Delivery) {
+  return Number(delivery.final_amount || originalAmount(delivery));
 }
 
 function formatJoinDate(value?: string) {
@@ -131,7 +147,7 @@ export default function StaffMobileLayout() {
             rows.map((d: Delivery) => [
               d.id,
               {
-                amount: String(Number(d.rate || 0) * d.quantity),
+                amount: String(finalAmount(d)),
                 method: 'cash',
                 paid_method: 'cash',
                 empty: String(d.quantity)
@@ -438,7 +454,7 @@ export default function StaffMobileLayout() {
 
                 {pendingAssignments.slice(0, 1).map((order) => {
                   const isOnline = order.booking_payment_method === 'ONLINE' || order.booking_payment_status === 'PAID';
-                  const totalAmt = Number(order.rate || 0) * order.quantity;
+                  const totalAmt = finalAmount(order);
 
                   return (
                     <div key={order.id} style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 6px 18px rgba(19, 43, 79, 0.06)' }}>
@@ -460,7 +476,12 @@ export default function StaffMobileLayout() {
 
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
                         <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>Amount to Collect:</span>
-                        <span style={{ fontSize: '15px', fontWeight: 800, color: '#1457B8' }}>{money(totalAmt)}</span>
+                        <div style={{ textAlign: 'right' }}>
+                          {discountAmount(order) > 0 && (
+                            <div style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through' }}>{money(originalAmount(order))}</div>
+                          )}
+                          <span style={{ fontSize: '15px', fontWeight: 800, color: '#1457B8' }}>{money(totalAmt)}</span>
+                        </div>
                       </div>
 
                       {rejectingId === order.id ? (
@@ -507,7 +528,7 @@ export default function StaffMobileLayout() {
 
                 {(() => {
                   const isOnline = activeDelivery.booking_payment_method === 'ONLINE' || activeDelivery.booking_payment_status === 'PAID';
-                  const totalAmt = Number(activeDelivery.rate || 0) * activeDelivery.quantity;
+                  const totalAmt = finalAmount(activeDelivery);
 
                   return (
                     <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 8px 24px rgba(19, 43, 79, 0.08)' }}>
@@ -550,6 +571,11 @@ export default function StaffMobileLayout() {
                             <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '2px' }}>
                               {isOnline ? 'Payment verified by system' : 'Collect cash upon delivery'}
                             </div>
+                            {discountAmount(activeDelivery) > 0 && (
+                              <div style={{ fontSize: '12px', color: '#16a34a', marginTop: '4px' }}>
+                                Original {money(originalAmount(activeDelivery))} · Discount {money(discountAmount(activeDelivery))}
+                              </div>
+                            )}
                           </div>
                           <div style={{ fontSize: '16px', fontWeight: 800, color: isOnline ? '#15803D' : '#C2410C' }}>
                             {money(totalAmt)}
