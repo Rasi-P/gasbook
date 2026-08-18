@@ -421,11 +421,16 @@ class BookingSerializer(serializers.ModelSerializer):
     cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
     assigned_staff_name = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
+    total_amount = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
         fields = "__all__"
         read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale"]
+
+    def get_total_amount(self, obj):
+        rate = Decimal(self.get_rate(obj))
+        return str(rate * obj.quantity)
 
     def get_customer_name(self, obj):
         return obj.customer.user.get_full_name() or obj.customer.user.username
