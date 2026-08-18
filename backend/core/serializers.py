@@ -421,6 +421,7 @@ class BookingSerializer(serializers.ModelSerializer):
     cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
     cylinder_type_weight = serializers.DecimalField(source="cylinder_type.weight", max_digits=5, decimal_places=2, read_only=True)
     assigned_staff_name = serializers.SerializerMethodField()
+    assigned_staff_phone = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
 
@@ -448,6 +449,11 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_assigned_staff_name(self, obj):
         if obj.assigned_staff:
             return obj.assigned_staff.get_full_name() or obj.assigned_staff.username
+        return None
+
+    def get_assigned_staff_phone(self, obj):
+        if obj.assigned_staff:
+            return obj.assigned_staff.phone
         return None
 
     def get_rate(self, obj):
