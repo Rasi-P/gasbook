@@ -419,6 +419,7 @@ class BookingSerializer(serializers.ModelSerializer):
     customer_address = serializers.SerializerMethodField()
     customer_area = serializers.SerializerMethodField()
     cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
+    cylinder_type_weight = serializers.DecimalField(source="cylinder_type.weight", max_digits=5, decimal_places=2, read_only=True)
     assigned_staff_name = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
