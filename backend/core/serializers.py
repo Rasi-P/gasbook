@@ -424,6 +424,7 @@ class BookingSerializer(serializers.ModelSerializer):
     assigned_staff_phone = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
+    order_id = serializers.CharField(read_only=True)
 
     class Meta:
         model = Booking
@@ -488,7 +489,7 @@ class BookingSerializer(serializers.ModelSerializer):
             booking=booking,
             notification_type="ORDER_PLACED",
             title="Order Placed",
-            body=f"Your GasBook order #{booking.id} has been placed successfully.",
+            body=f"Your GasBook order #{booking.order_id} has been placed successfully.",
         )
 
         for admin in admin_role_users:
@@ -497,7 +498,7 @@ class BookingSerializer(serializers.ModelSerializer):
                 booking=booking,
                 notification_type="ORDER_PLACED",
                 title="New GasBook Order Received",
-                body=f"Order #{booking.id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nTotal: ₹{total:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
+                body=f"Order #{booking.order_id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nTotal: ₹{total:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
             )
         return booking
 
