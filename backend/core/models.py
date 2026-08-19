@@ -260,6 +260,10 @@ class Booking(TimeStampedModel):
     def __str__(self):
         return f"Booking #{self.pk} - {self.customer} - {self.status}"
 
+    @property
+    def order_id(self):
+        return f"GB{self.id}"
+
 
 class Delivery(TimeStampedModel):
     class Status(models.TextChoices):

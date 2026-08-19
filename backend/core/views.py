@@ -462,7 +462,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 booking=booking,
                 notification_type="STAFF_ASSIGNED",
                 title="New Delivery Assigned",
-                body=f"New delivery assigned — Order #{booking.id}.",
+                body=f"New delivery assigned — Order #{booking.order_id}.",
             )
 
         return Response(BookingSerializer(booking, context={"request": request}).data)
@@ -489,7 +489,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 booking=booking,
                 notification_type="ORDER_REJECTED",
                 title="Booking Rejected",
-                body=f"Your GasBook order #{booking.id} was rejected. Reason: {reason}",
+                body=f"Your GasBook order #{booking.order_id} was rejected. Reason: {reason}",
             )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
@@ -530,7 +530,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 booking=delivery.booking,
                 notification_type="ORDER_OUT_FOR_DELIVERY",
                 title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking_id} is out for delivery.",
+                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
             )
 
         for admin in User.objects.filter(role__code="admin"):
@@ -540,7 +540,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                     booking=delivery.booking,
                     notification_type="STAFF_ACCEPTED",
                     title="Delivery Accepted by Staff",
-                    body=f"Staff {staff_name} accepted order #{delivery.booking_id}.",
+                    body=f"Staff {staff_name} accepted order #{delivery.booking.order_id}.",
                 )
 
         return Response(DeliverySerializer(delivery).data)
@@ -571,7 +571,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 booking=booking,
                 notification_type="STAFF_REJECTED",
                 title="Staff Delivery Rejected",
-                body=f"Staff {staff_name} rejected order #{booking.id}. Reason: {reason}",
+                body=f"Staff {staff_name} rejected order #{booking.order_id}. Reason: {reason}",
             )
 
         # Reassignment customer notification (graceful, no internal staff rejection details)
@@ -580,7 +580,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             booking=booking,
             notification_type="STAFF_REJECTED",
             title="Order Status Update",
-            body=f"Your order #{booking.id} is being reassigned for delivery.",
+            body=f"Your order #{booking.order_id} is being reassigned for delivery.",
         )
 
         return Response(DeliverySerializer(delivery).data)
@@ -606,7 +606,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 booking=delivery.booking,
                 notification_type="ORDER_OUT_FOR_DELIVERY",
                 title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking_id} is out for delivery.",
+                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
             )
 
         for admin in User.objects.filter(role__code="admin"):
@@ -616,7 +616,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                     booking=delivery.booking,
                     notification_type="ORDER_OUT_FOR_DELIVERY",
                     title="Order Out for Delivery",
-                    body=f"Order #{delivery.booking_id} is out for delivery by {delivery.staff.username}.",
+                    body=f"Order #{delivery.booking.order_id} is out for delivery by {delivery.staff.username}.",
                 )
         return Response(DeliverySerializer(delivery).data)
 
@@ -679,7 +679,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             delivery_type=Sale.DeliveryType.DELIVERY,
             delivery_staff=delivery.staff.get_full_name() or delivery.staff.username,
             sold_by=request.user,
-            note=f"Booking #{booking.id}",
+            note=f"Booking #{booking.order_id}",
         )
         SaleItem.objects.create(
             sale=sale,
@@ -728,7 +728,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
 
         ActivityLog.objects.create(
             action="delivery_completed",
-            description=f"Delivered booking #{booking.id} for Rs. {total}",
+            description=f"Delivered booking #{booking.order_id} for Rs. {total}",
             user=request.user,
             metadata={"booking_id": booking.id, "sale_id": sale.id, "delivery_id": delivery.id},
         )
@@ -736,7 +736,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         staff_name = delivery.staff.get_full_name() or delivery.staff.username
 
         # Customer Notification
-        customer_msg = f"Your GasBook order #{booking.id} has been delivered successfully."
+        customer_msg = f"Your GasBook order #{booking.order_id} has been delivered successfully."
         if booking.payment_method.upper() == "COD" and payment_collected > 0:
             customer_msg += f" Payment of ₹{payment_collected} was collected successfully."
 
@@ -757,7 +757,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                     booking=booking,
                     notification_type="ORDER_DELIVERED",
                     title="Order Delivered",
-                    body=f"Order #{booking.id} was delivered by {staff_name}.",
+                    body=f"Order #{booking.order_id} was delivered by {staff_name}.",
                 )
 
         return Response(DeliverySerializer(delivery).data)
