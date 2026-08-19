@@ -15,13 +15,14 @@ from rest_framework import status as drf_status
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
+    ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
 from .serializers import (
     ActivityLogSerializer,
     BookingSerializer,
+    CustomerCylinderDiscountSerializer,
     CustomerCylinderRateSerializer,
     CustomerProfileSerializer,
     CylinderTypeSerializer,
@@ -178,7 +179,12 @@ class StockMovementViewSet(viewsets.ModelViewSet):
 
 
 class CustomerProfileViewSet(viewsets.ModelViewSet):
-    queryset = CustomerProfile.objects.select_related("user", "default_staff").prefetch_related("custom_rates", "sales", "payments")
+    queryset = CustomerProfile.objects.select_related("user", "default_staff").prefetch_related(
+        "custom_rates",
+        "cylinder_discounts__cylinder_type",
+        "sales",
+        "payments",
+    )
     serializer_class = CustomerProfileSerializer
 
     def get_permissions(self):
@@ -394,6 +400,19 @@ class CustomerCylinderRateViewSet(viewsets.ModelViewSet):
         return queryset
 
 
+class CustomerCylinderDiscountViewSet(viewsets.ModelViewSet):
+    queryset = CustomerCylinderDiscount.objects.select_related("customer", "cylinder_type")
+    serializer_class = CustomerCylinderDiscountSerializer
+    permission_classes = [IsAdminUserRole]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        customer = self.request.query_params.get("customer")
+        if customer:
+            queryset = queryset.filter(customer_id=customer)
+        return queryset
+
+
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationSerializer
 
@@ -409,7 +428,10 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class BookingViewSet(viewsets.ModelViewSet):
-    queryset = Booking.objects.select_related("customer__user", "cylinder_type", "assigned_staff", "sale").prefetch_related("customer__custom_rates")
+    queryset = Booking.objects.select_related("customer__user", "cylinder_type", "assigned_staff", "sale").prefetch_related(
+        "customer__custom_rates",
+        "customer__cylinder_discounts__cylinder_type",
+    )
     serializer_class = BookingSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ["id", "cylinder_type__name", "status"]
@@ -562,7 +584,10 @@ class BookingViewSet(viewsets.ModelViewSet):
 
 
 class DeliveryViewSet(viewsets.ModelViewSet):
-    queryset = Delivery.objects.select_related("booking__customer__user", "booking__cylinder_type", "staff").prefetch_related("booking__customer__custom_rates")
+    queryset = Delivery.objects.select_related("booking__customer__user", "booking__cylinder_type", "staff").prefetch_related(
+        "booking__customer__custom_rates",
+        "booking__customer__cylinder_discounts__cylinder_type",
+    )
     serializer_class = DeliverySerializer
     permission_classes = [IsStaffOrAdmin]
 

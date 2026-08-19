@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     ActivityLogViewSet,
     BookingViewSet,
+    CustomerCylinderDiscountViewSet,
     CustomerCylinderRateViewSet,
     CustomerProfileViewSet,
     CylinderTypeViewSet,
@@ -36,6 +37,7 @@ router.register("movements", StockMovementViewSet)
 router.register("customers", CustomerProfileViewSet, basename="customers")
 router.register("staff-profiles", StaffProfileViewSet)
 router.register("customer-rates", CustomerCylinderRateViewSet)
+router.register("customer-cylinder-discounts", CustomerCylinderDiscountViewSet)
 router.register("bookings", BookingViewSet)
 router.register("deliveries", DeliveryViewSet)
 router.register("notifications", NotificationViewSet, basename="notifications")

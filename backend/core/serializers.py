@@ -6,7 +6,7 @@ from django.core.validators import RegexValidator
 from rest_framework import serializers
 
 from .models import (
-    ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
+    ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Role, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User, quantize_money,
 )
@@ -31,6 +31,7 @@ def get_customer_pricing_snapshot(customer, cylinder_type, quantity):
             "final_amount": original_amount,
             "has_discount": False,
             "effective_rate": rate,
+            "discount_scope": None,
             "applied_discount_type": None,
             "applied_discount_value": Decimal("0.00"),
         }
@@ -45,19 +46,25 @@ def get_booking_pricing_snapshot(booking):
         or booking.applied_discount_type
     ):
         quantity = Decimal(booking.quantity or 0)
+        original_rate = (
+            quantize_money(Decimal(booking.original_amount) / quantity)
+            if quantity > 0
+            else Decimal("0.00")
+        )
         effective_rate = (
             quantize_money(Decimal(booking.final_amount) / quantity)
             if quantity > 0
             else Decimal("0.00")
         )
         return {
-            "rate": quantize_money(booking.customer.get_rate_for_cylinder(booking.cylinder_type)),
+            "rate": original_rate,
             "quantity": booking.quantity,
             "original_amount": quantize_money(booking.original_amount),
             "discount_amount": quantize_money(booking.discount_amount),
             "final_amount": quantize_money(booking.final_amount),
             "has_discount": booking.discount_amount > 0,
             "effective_rate": effective_rate,
+            "discount_scope": None,
             "applied_discount_type": booking.applied_discount_type,
             "applied_discount_value": quantize_money(booking.applied_discount_value),
         }
@@ -397,6 +404,33 @@ class CustomerCylinderRateSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class CustomerCylinderDiscountSerializer(serializers.ModelSerializer):
+    cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
+
+    class Meta:
+        model = CustomerCylinderDiscount
+        fields = "__all__"
+
+    def validate(self, attrs):
+        customer = attrs.get("customer") or getattr(self.instance, "customer", None)
+        cylinder_type = attrs.get("cylinder_type") or getattr(self.instance, "cylinder_type", None)
+        discount_type = attrs.get("discount_type") or getattr(self.instance, "discount_type", None)
+        discount_value = attrs.get("discount_value", getattr(self.instance, "discount_value", Decimal("0")))
+
+        if discount_value < 0:
+            raise serializers.ValidationError({"discount_value": "Discount value cannot be negative."})
+        if discount_type == CustomerProfile.DiscountType.PERCENTAGE and discount_value > 100:
+            raise serializers.ValidationError({"discount_value": "Percentage discount cannot exceed 100%."})
+        if (
+            customer
+            and cylinder_type
+            and discount_type == CustomerProfile.DiscountType.FIXED
+            and discount_value > customer.get_rate_for_cylinder(cylinder_type)
+        ):
+            raise serializers.ValidationError({"discount_value": "Fixed discount cannot exceed the cylinder price."})
+        return attrs
+
+
 class CustomerProfileSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     full_name = serializers.SerializerMethodField()
@@ -409,6 +443,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     last_delivery_date = serializers.SerializerMethodField()
     empties_owed = serializers.SerializerMethodField()
     custom_rates = CustomerCylinderRateSerializer(many=True, read_only=True)
+    cylinder_discounts = CustomerCylinderDiscountSerializer(many=True, read_only=True)
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     sales_count = serializers.SerializerMethodField()
     empty_credits = serializers.SerializerMethodField()

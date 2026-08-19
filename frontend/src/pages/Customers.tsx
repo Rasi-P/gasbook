@@ -14,6 +14,7 @@ type Customer = {
   global_discount_type?: 'percentage' | 'fixed' | null;
   global_discount_value?: string;
   global_discount_is_active?: boolean;
+  cylinder_discounts?: CylinderDiscount[];
   empties_owed: Record<number, { owed: number; name: string }>;
   empty_credits: Record<number, { credit: number; name: string }>;
   custom_rates?: {
@@ -22,6 +23,16 @@ type Customer = {
     cylinder_type_name: string;
     custom_price: string;
   }[];
+};
+
+type CylinderDiscount = {
+  id: number;
+  customer: number;
+  cylinder_type: number;
+  cylinder_type_name: string;
+  discount_type: 'percentage' | 'fixed';
+  discount_value: string;
+  is_active: boolean;
 };
 
 type SaleItem = {
@@ -105,18 +116,45 @@ function fmtDate(iso: string) {
 
 function hasActiveDiscount(customer: Customer) {
   return Boolean(
-    customer.global_discount_is_active &&
-    customer.global_discount_type &&
-    Number(customer.global_discount_value || 0) > 0
+    (
+      customer.global_discount_is_active &&
+      customer.global_discount_type &&
+      Number(customer.global_discount_value || 0) > 0
+    ) ||
+    (customer.cylinder_discounts || []).some(
+      (discount) => discount.is_active && Number(discount.discount_value || 0) > 0,
+    )
   );
 }
 
+function formatDiscountValue(type: 'percentage' | 'fixed' | null | undefined, value: number | string) {
+  if (!type || Number(value || 0) <= 0) return 'No discount';
+  if (type === 'percentage') return `${Number(value || 0)}%`;
+  return money(value || 0);
+}
+
+function getActiveCylinderDiscountCount(customer: Customer) {
+  return (customer.cylinder_discounts || []).filter(
+    (discount) => discount.is_active && Number(discount.discount_value || 0) > 0,
+  ).length;
+}
+
 function formatCustomerDiscount(customer: Customer) {
-  if (!hasActiveDiscount(customer)) return 'No discount';
-  if (customer.global_discount_type === 'percentage') {
-    return `${Number(customer.global_discount_value || 0)}% off`;
+  const hasGlobalDiscount = Boolean(
+    customer.global_discount_is_active &&
+    customer.global_discount_type &&
+    Number(customer.global_discount_value || 0) > 0,
+  );
+  const activeCylinderCount = getActiveCylinderDiscountCount(customer);
+
+  if (!hasGlobalDiscount && activeCylinderCount === 0) return 'No discount';
+  if (hasGlobalDiscount && activeCylinderCount === 0) {
+    return `${formatDiscountValue(customer.global_discount_type, customer.global_discount_value || 0)} global`;
   }
-  return `${money(customer.global_discount_value || 0)} off`;
+  if (!hasGlobalDiscount && activeCylinderCount > 0) {
+    return `${activeCylinderCount} cylinder discount${activeCylinderCount === 1 ? '' : 's'}`;
+  }
+  return `${formatDiscountValue(customer.global_discount_type, customer.global_discount_value || 0)} global + ${activeCylinderCount} size rule${activeCylinderCount === 1 ? '' : 's'}`;
 }
 
 function getBookingOriginalAmount(booking: Booking) {
@@ -160,18 +198,21 @@ export default function Customers() {
 
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  // Custom rates panel state
-  const [ratesId, setRatesId] = useState<number | null>(null);
   const [cylinderTypes, setCylinderTypes] = useState<{ id: number; name: string }[]>([]);
-  const [rateCylinderId, setRateCylinderId] = useState('');
-  const [ratePrice, setRatePrice] = useState('');
-  const [rateSaving, setRateSaving] = useState(false);
   const [discountId, setDiscountId] = useState<number | null>(null);
+  const [discountTab, setDiscountTab] = useState<'global' | 'cylinder'>('global');
   const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage');
   const [discountValue, setDiscountValue] = useState('');
   const [discountEnabled, setDiscountEnabled] = useState(true);
   const [discountSaving, setDiscountSaving] = useState(false);
   const [discountError, setDiscountError] = useState('');
+  const [discountMessage, setDiscountMessage] = useState('');
+  const [editingCylinderDiscountId, setEditingCylinderDiscountId] = useState<number | 'new' | null>(null);
+  const [cylinderDiscountCylinderId, setCylinderDiscountCylinderId] = useState('');
+  const [cylinderDiscountValue, setCylinderDiscountValue] = useState('');
+  const [cylinderDiscountIsPercentage, setCylinderDiscountIsPercentage] = useState(false);
+  const [cylinderDiscountEnabled, setCylinderDiscountEnabled] = useState(true);
+  const [cylinderDiscountSaving, setCylinderDiscountSaving] = useState(false);
 
   // Add customer form
   const [showAdd, setShowAdd] = useState(false);
@@ -197,6 +238,46 @@ export default function Customers() {
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
+  function syncCustomerRecord(customerId: number, patch: Partial<Customer>) {
+    setCustomers((prev) => prev.map((customer) => (
+      customer.id === customerId ? { ...customer, ...patch } : customer
+    )));
+    if (selected && selected.customer.id === customerId) {
+      setSelected((prev) => prev ? { ...prev, customer: { ...prev.customer, ...patch } } : prev);
+    }
+  }
+
+  async function refreshCustomerRecord(customerId: number) {
+    const { data } = await api.get(`/customers/${customerId}/`);
+    syncCustomerRecord(customerId, data);
+    return data as Customer;
+  }
+
+  async function ensureCylinderTypes() {
+    if (cylinderTypes.length > 0) return cylinderTypes;
+    const { data } = await api.get('/cylinder-types/');
+    const rows = data.results || data;
+    setCylinderTypes(rows);
+    return rows as { id: number; name: string }[];
+  }
+
+  function resetCylinderDiscountEditor() {
+    setEditingCylinderDiscountId(null);
+    setCylinderDiscountCylinderId('');
+    setCylinderDiscountValue('');
+    setCylinderDiscountIsPercentage(false);
+    setCylinderDiscountEnabled(true);
+  }
+
+  function availableCylinderOptions(customer: Customer, currentCylinderId?: number) {
+    const usedIds = new Set(
+      (customer.cylinder_discounts || [])
+        .filter((discount) => discount.cylinder_type !== currentCylinderId)
+        .map((discount) => discount.cylinder_type),
+    );
+    return cylinderTypes.filter((type) => !usedIds.has(type.id));
+  }
+
   function startEdit(c: Customer) {
     setCredsId(null); setCreds(null); setCredsError(''); setPwMsg('');
     closeDiscount();
@@ -216,12 +297,8 @@ export default function Customers() {
         name: editName.trim(), phone: editPhone.trim(),
         email: editEmail.trim(), address: editAddress.trim(),
       });
-      setCustomers((prev) => prev.map((c) => c.id === customerId ? { ...c, ...data } : c));
+      syncCustomerRecord(customerId, data);
       setEditingId(null);
-      // If detail view is open for same customer, refresh
-      if (selected && selected.customer.id === customerId) {
-        setSelected((prev) => prev ? { ...prev, customer: { ...prev.customer, ...data } } : prev);
-      }
     } catch {
       setEditError('Failed to save. Try again.');
     } finally {
@@ -230,7 +307,7 @@ export default function Customers() {
   }
 
   async function loadCreds(customerId: number) {
-    setEditingId(null); closeDiscount(); setRatesId(null);
+    setEditingId(null); closeDiscount();
     setCredsError(''); setCreds(null); setPwMsg('');
     setCredsId(customerId);
     try {
@@ -271,60 +348,47 @@ export default function Customers() {
     }
   }
 
-  async function loadRates(customerId: number) {
-    setEditingId(null); setCredsId(null); setDiscountId(null); setDiscountError('');
-    setRatesId(customerId);
-    if (cylinderTypes.length === 0) {
-      try {
-        const { data } = await api.get('/cylinder-types/');
-        setCylinderTypes(data.results || data);
-        if ((data.results || data).length > 0) {
-          setRateCylinderId((data.results || data)[0].id.toString());
-        }
-      } catch {
-        // failed to fetch types
-      }
-    }
-  }
-
-  function closeRates() {
-    setRatesId(null);
-    setRatePrice('');
-  }
-
-  function openDiscount(customer: Customer) {
+  async function openDiscount(customer: Customer) {
     setEditingId(null);
     setCredsId(null);
-    setRatesId(null);
     setDiscountId(customer.id);
+    setDiscountTab('global');
     setDiscountType(customer.global_discount_type || 'percentage');
     setDiscountValue(String(customer.global_discount_value || ''));
     setDiscountEnabled(Boolean(customer.global_discount_is_active));
     setDiscountError('');
+    setDiscountMessage('');
+    resetCylinderDiscountEditor();
+    try {
+      await ensureCylinderTypes();
+    } catch {
+      setDiscountError('Failed to load cylinder sizes.');
+    }
   }
 
   function closeDiscount() {
     setDiscountId(null);
+    setDiscountTab('global');
     setDiscountValue('');
     setDiscountEnabled(true);
     setDiscountError('');
+    setDiscountMessage('');
+    resetCylinderDiscountEditor();
   }
 
   async function handleSaveDiscount(e: FormEvent, customerId: number) {
     e.preventDefault();
     setDiscountSaving(true);
     setDiscountError('');
+    setDiscountMessage('');
     try {
       const { data } = await api.patch(`/customers/${customerId}/`, {
         global_discount_type: discountType,
         global_discount_value: discountValue || '0',
         global_discount_is_active: discountEnabled,
       });
-      setCustomers((prev) => prev.map((c) => (c.id === customerId ? { ...c, ...data } : c)));
-      if (selected && selected.customer.id === customerId) {
-        setSelected((prev) => prev ? { ...prev, customer: { ...prev.customer, ...data } } : prev);
-      }
-      closeDiscount();
+      syncCustomerRecord(customerId, data);
+      setDiscountMessage('Global discount saved.');
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: Record<string, string> } })?.response?.data;
       setDiscountError(
@@ -337,31 +401,95 @@ export default function Customers() {
     }
   }
 
-  async function handleAddRate(e: FormEvent, customerId: number) {
-    e.preventDefault();
-    if (!rateCylinderId || !ratePrice) return;
-    setRateSaving(true);
+  async function startNewCylinderDiscount(customer: Customer) {
+    setDiscountTab('cylinder');
+    setDiscountError('');
+    setDiscountMessage('');
     try {
-      await api.post('/customer-rates/', {
-        customer: customerId,
-        cylinder_type: rateCylinderId,
-        custom_price: ratePrice,
-      });
-      setRatePrice('');
-      fetchCustomers();
+      const types = await ensureCylinderTypes();
+      const usedIds = new Set((customer.cylinder_discounts || []).map((discount) => discount.cylinder_type));
+      const nextType = types.find((type) => !usedIds.has(type.id));
+      if (!nextType) {
+        setDiscountError('All cylinder sizes already have a discount rule. Edit an existing one instead.');
+        return;
+      }
+      setEditingCylinderDiscountId('new');
+      setCylinderDiscountCylinderId(String(nextType.id));
+      setCylinderDiscountValue('');
+      setCylinderDiscountIsPercentage(false);
+      setCylinderDiscountEnabled(true);
     } catch {
-      alert('Failed to save custom rate. Note: Cannot have duplicate rates for the same cylinder type. Delete the old one first.');
-    } finally {
-      setRateSaving(false);
+      setDiscountError('Failed to load cylinder sizes.');
     }
   }
 
-  async function handleDeleteRate(rateId: number) {
+  function startEditCylinderDiscount(discount: CylinderDiscount) {
+    setDiscountTab('cylinder');
+    setDiscountError('');
+    setDiscountMessage('');
+    setEditingCylinderDiscountId(discount.id);
+    setCylinderDiscountCylinderId(String(discount.cylinder_type));
+    setCylinderDiscountValue(String(discount.discount_value || ''));
+    setCylinderDiscountIsPercentage(discount.discount_type === 'percentage');
+    setCylinderDiscountEnabled(discount.is_active);
+  }
+
+  async function handleSaveCylinderDiscount(e: FormEvent, customer: Customer) {
+    e.preventDefault();
+    if (!cylinderDiscountCylinderId) {
+      setDiscountError('Select a cylinder size.');
+      return;
+    }
+    setCylinderDiscountSaving(true);
+    setDiscountError('');
+    setDiscountMessage('');
     try {
-      await api.delete(`/customer-rates/${rateId}/`);
-      fetchCustomers();
+      const payload = {
+        customer: customer.id,
+        cylinder_type: Number(cylinderDiscountCylinderId),
+        discount_type: cylinderDiscountIsPercentage ? 'percentage' : 'fixed',
+        discount_value: cylinderDiscountValue || '0',
+        is_active: cylinderDiscountEnabled,
+      };
+      if (editingCylinderDiscountId === 'new') {
+        await api.post('/customer-cylinder-discounts/', payload);
+        setDiscountMessage('Cylinder-wise discount added.');
+      } else if (editingCylinderDiscountId) {
+        await api.patch(`/customer-cylinder-discounts/${editingCylinderDiscountId}/`, payload);
+        setDiscountMessage('Cylinder-wise discount updated.');
+      }
+      await refreshCustomerRecord(customer.id);
+      resetCylinderDiscountEditor();
+    } catch (err: unknown) {
+      const detail = (err as { response?: { data?: Record<string, string | string[]> } })?.response?.data;
+      const fieldError = detail?.discount_value || detail?.cylinder_type || detail?.non_field_errors;
+      setDiscountError(
+        Array.isArray(fieldError) ? fieldError.join(', ') : fieldError || 'Failed to save cylinder discount.'
+      );
+    } finally {
+      setCylinderDiscountSaving(false);
+    }
+  }
+
+  async function handleDeleteCylinderDiscount(customer: Customer, discount: CylinderDiscount) {
+    const confirmed = window.confirm(
+      `Remove ${discount.cylinder_type_name} discount? This will stop applying this cylinder-specific discount to future bookings.`,
+    );
+    if (!confirmed) return;
+    setDiscountError('');
+    setDiscountMessage('');
+    setCylinderDiscountSaving(true);
+    try {
+      await api.delete(`/customer-cylinder-discounts/${discount.id}/`);
+      await refreshCustomerRecord(customer.id);
+      if (editingCylinderDiscountId === discount.id) {
+        resetCylinderDiscountEditor();
+      }
+      setDiscountMessage(`${discount.cylinder_type_name} discount removed.`);
     } catch {
-      alert('Failed to delete custom rate.');
+      setDiscountError('Failed to remove cylinder discount.');
+    } finally {
+      setCylinderDiscountSaving(false);
     }
   }
 
@@ -460,7 +588,7 @@ export default function Customers() {
 
   function openLedger(id: number) {
     setLoading(true);
-    setEditingId(null); setCredsId(null); setCreds(null); setCredsError(''); setPwMsg(''); closeDiscount(); setRatesId(null);
+    setEditingId(null); setCredsId(null); setCreds(null); setCredsError(''); setPwMsg(''); closeDiscount();
     api.get(`/customers/${id}/ledger/`)
       .then((r) => setSelected(r.data))
       .catch(() => undefined)
@@ -505,6 +633,391 @@ export default function Customers() {
     } finally {
       setPaymentSaving(false);
     }
+  }
+
+  function renderSwitch(
+    checked: boolean,
+    onChange: (checked: boolean) => void,
+    label: string,
+    compact = false,
+    disabled = false,
+  ) {
+    return (
+      <label className={`discount-switch${compact ? ' compact' : ''}${disabled ? ' disabled' : ''}`}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span className="discount-switch-track">
+          <span className="discount-switch-thumb" />
+        </span>
+        <span className="discount-switch-label">{label}</span>
+      </label>
+    );
+  }
+
+  function renderDiscountTypePills(
+    value: 'percentage' | 'fixed',
+    onChange: (value: 'percentage' | 'fixed') => void,
+    disabled = false,
+  ) {
+    return (
+      <div className={`discount-type-pills${disabled ? ' disabled' : ''}`}>
+        <button
+          type="button"
+          className={`discount-type-pill${value === 'fixed' ? ' active' : ''}`}
+          onClick={() => onChange('fixed')}
+          disabled={disabled}
+        >
+          Amount
+        </button>
+        <button
+          type="button"
+          className={`discount-type-pill${value === 'percentage' ? ' active' : ''}`}
+          onClick={() => onChange('percentage')}
+          disabled={disabled}
+        >
+          Percentage
+        </button>
+      </div>
+    );
+  }
+
+  function renderDiscountValueInput(
+    value: string,
+    onChange: (value: string) => void,
+    isPercentage: boolean,
+    placeholder: string,
+    disabled = false,
+  ) {
+    return (
+      <div className={`discount-value-group${disabled ? ' disabled' : ''}`}>
+        {!isPercentage && <span className="discount-value-prefix">Rs</span>}
+        <input
+          type="number"
+          min="0"
+          max={isPercentage ? '100' : undefined}
+          step="0.01"
+          value={value}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+        />
+        <span className="discount-value-suffix">{isPercentage ? '%' : 'off'}</span>
+      </div>
+    );
+  }
+
+  function renderDiscountManager(customer: Customer, useCardClass = false) {
+    const cylinderDiscounts = customer.cylinder_discounts || [];
+    const currentCylinderId = editingCylinderDiscountId && editingCylinderDiscountId !== 'new'
+      ? cylinderDiscounts.find((discount) => discount.id === editingCylinderDiscountId)?.cylinder_type
+      : undefined;
+    const cylinderOptions = availableCylinderOptions(customer, currentCylinderId);
+
+    return (
+      <div
+        className={`${useCardClass ? 'card ' : ''}discount-manager`}
+        style={useCardClass ? { marginBottom: '16px' } : {
+          padding: '16px 18px',
+          borderBottom: '1px solid var(--border)',
+          background: 'var(--surface-muted)',
+        }}
+      >
+        <div className="discount-header">
+          <div className="discount-header-copy">
+            <h2 className="discount-heading" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <IndianRupee size={18} /> Customer Discount
+            </h2>
+            <p className="discount-subtitle">
+              Configure one global rule and optional cylinder-wise overrides for future bookings.
+            </p>
+          </div>
+          <span className={`discount-summary-badge${hasActiveDiscount(customer) ? ' active' : ''}`}>
+            {formatCustomerDiscount(customer)}
+          </span>
+        </div>
+
+        <div className="discount-tabs">
+          {(['global', 'cylinder'] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              onClick={() => {
+                setDiscountTab(tab);
+                setDiscountError('');
+                setDiscountMessage('');
+              }}
+              className={`discount-tab${discountTab === tab ? ' active' : ''}`}
+            >
+              {tab === 'global' ? 'Global Discount' : 'Cylinder-wise Discount'}
+            </button>
+          ))}
+        </div>
+
+        {discountMessage && <p className="form-note">{discountMessage}</p>}
+        {discountError && <p className="form-error">{discountError}</p>}
+
+        {discountTab === 'global' ? (
+          <form onSubmit={(e) => handleSaveDiscount(e, customer.id)} className="discount-surface form-stack">
+            <div>
+              <h3 className="discount-panel-title">Global Discount</h3>
+              <p className="discount-panel-subtitle">
+                This discount will apply to all cylinder types unless a cylinder-specific discount overrides it.
+              </p>
+            </div>
+
+            <div className="discount-form-grid global">
+              <label className="discount-field">
+                <span>Discount Type</span>
+                {renderDiscountTypePills(discountType, setDiscountType)}
+              </label>
+
+              <label className="discount-field">
+                <span>{discountType === 'percentage' ? 'Discount' : 'Discount Amount'}</span>
+                {renderDiscountValueInput(
+                  discountValue,
+                  setDiscountValue,
+                  discountType === 'percentage',
+                  discountType === 'percentage' ? '5' : '50',
+                )}
+              </label>
+
+              <div className="discount-field switch-field">
+                <span>Discount Active</span>
+                {renderSwitch(discountEnabled, setDiscountEnabled, discountEnabled ? 'On' : 'Off')}
+              </div>
+            </div>
+
+            <div className="discount-note">
+              If a cylinder-specific discount exists and is active, it will be applied instead of the global discount.
+            </div>
+
+            <div className="discount-actions">
+              <button className="btn btn-primary" type="submit" disabled={discountSaving} style={{ width: 'auto', padding: '0 18px' }}>
+                {discountSaving ? 'Saving…' : 'Save Global Discount'}
+              </button>
+              <button
+                className="btn btn-outline"
+                type="button"
+                disabled={discountSaving}
+                style={{ width: 'auto', padding: '0 18px' }}
+                onClick={() => setDiscountEnabled(false)}
+              >
+                Disable
+              </button>
+              <button className="btn btn-secondary" type="button" disabled={discountSaving} style={{ width: 'auto', padding: '0 18px' }} onClick={closeDiscount}>
+                Close
+              </button>
+            </div>
+          </form>
+        ) : (
+          <div className="discount-surface form-stack">
+            <div className="discount-row-head">
+              <div>
+                <h3 className="discount-panel-title">Cylinder-wise Discount</h3>
+                <p className="discount-panel-subtitle">
+                  Set different discounts for specific cylinder sizes. These will override the global discount.
+                </p>
+              </div>
+              <button
+                className="btn btn-outline"
+                type="button"
+                style={{ width: 'auto', padding: '0 14px' }}
+                onClick={() => startNewCylinderDiscount(customer)}
+              >
+                <Tag size={16} />
+                Add Cylinder Discount
+              </button>
+            </div>
+
+            {cylinderDiscounts.length === 0 && editingCylinderDiscountId !== 'new' ? (
+              <div className="discount-empty-state">
+                No cylinder-wise discounts configured yet.
+              </div>
+            ) : (
+              <div className="discount-card-list">
+                {cylinderDiscounts.map((discount) => {
+                  const isEditing = editingCylinderDiscountId === discount.id;
+                  const isPercentage = isEditing ? cylinderDiscountIsPercentage : discount.discount_type === 'percentage';
+                  const value = isEditing ? cylinderDiscountValue : String(discount.discount_value);
+                  const isActive = isEditing ? cylinderDiscountEnabled : discount.is_active;
+
+                  return (
+                    <div key={discount.id} className="cylinder-discount-card">
+                      <div className="cylinder-discount-title">
+                        <strong>{discount.cylinder_type_name}</strong>
+                        <span>{isActive ? 'Active' : 'Inactive'}</span>
+                      </div>
+
+                      {isEditing ? (
+                        <form onSubmit={(e) => handleSaveCylinderDiscount(e, customer)} className="discount-inline-form">
+                          <label className="discount-field">
+                            <span>Cylinder Size</span>
+                            <select value={cylinderDiscountCylinderId} onChange={(e) => setCylinderDiscountCylinderId(e.target.value)}>
+                              {cylinderOptions.map((type) => (
+                                <option key={type.id} value={type.id}>{type.name}</option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <div className="discount-field">
+                            <span>Discount Type</span>
+                            {renderDiscountTypePills(
+                              cylinderDiscountIsPercentage ? 'percentage' : 'fixed',
+                              (next) => setCylinderDiscountIsPercentage(next === 'percentage'),
+                            )}
+                          </div>
+
+                          <label className="discount-field">
+                            <span>Discount Amount</span>
+                            {renderDiscountValueInput(
+                              cylinderDiscountValue,
+                              setCylinderDiscountValue,
+                              cylinderDiscountIsPercentage,
+                              cylinderDiscountIsPercentage ? '5' : '50',
+                            )}
+                          </label>
+
+                          <div className="discount-field switch-field">
+                            <span>Is %</span>
+                            {renderSwitch(
+                              cylinderDiscountIsPercentage,
+                              setCylinderDiscountIsPercentage,
+                              cylinderDiscountIsPercentage ? 'Yes' : 'No',
+                              true,
+                            )}
+                          </div>
+
+                          <div className="discount-field switch-field">
+                            <span>Active</span>
+                            {renderSwitch(cylinderDiscountEnabled, setCylinderDiscountEnabled, isActive ? 'On' : 'Off', true)}
+                          </div>
+
+                          <div className="discount-row-actions">
+                            <button className="btn btn-primary" type="submit" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }}>
+                              {cylinderDiscountSaving ? 'Saving…' : 'Save'}
+                            </button>
+                            <button className="btn btn-secondary" type="button" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }} onClick={resetCylinderDiscountEditor}>
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <div className="discount-inline-form readonly">
+                          <div className="discount-field">
+                            <span>Discount Type</span>
+                            {renderDiscountTypePills(discount.discount_type, () => undefined, true)}
+                          </div>
+
+                          <div className="discount-field">
+                            <span>Discount Amount</span>
+                            {renderDiscountValueInput(value, () => undefined, isPercentage, isPercentage ? '5' : '50', true)}
+                          </div>
+
+                          <div className="discount-field switch-field">
+                            <span>Is %</span>
+                            {renderSwitch(isPercentage, () => undefined, isPercentage ? 'Yes' : 'No', true, true)}
+                          </div>
+
+                          <div className="discount-field switch-field">
+                            <span>Active</span>
+                            {renderSwitch(isActive, () => undefined, isActive ? 'On' : 'Off', true, true)}
+                          </div>
+
+                          <div className="discount-row-actions">
+                            <button className="btn btn-outline" type="button" style={{ width: 'auto', padding: '0 14px' }} onClick={() => startEditCylinderDiscount(discount)}>
+                              Edit
+                            </button>
+                            <button
+                              className="btn btn-outline"
+                              type="button"
+                              style={{ width: 'auto', padding: '0 14px', color: 'var(--danger)' }}
+                              onClick={() => handleDeleteCylinderDiscount(customer, discount)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {editingCylinderDiscountId === 'new' && (
+                  <div className="cylinder-discount-card new">
+                    <div className="cylinder-discount-title">
+                      <strong>New Cylinder Discount</strong>
+                      <span>Draft</span>
+                    </div>
+
+                    <form onSubmit={(e) => handleSaveCylinderDiscount(e, customer)} className="discount-inline-form">
+                      <label className="discount-field">
+                        <span>Cylinder Size</span>
+                        <select value={cylinderDiscountCylinderId} onChange={(e) => setCylinderDiscountCylinderId(e.target.value)}>
+                          <option value="">Select cylinder</option>
+                          {cylinderOptions.map((type) => (
+                            <option key={type.id} value={type.id}>{type.name}</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <div className="discount-field">
+                        <span>Discount Type</span>
+                        {renderDiscountTypePills(
+                          cylinderDiscountIsPercentage ? 'percentage' : 'fixed',
+                          (next) => setCylinderDiscountIsPercentage(next === 'percentage'),
+                        )}
+                      </div>
+
+                      <label className="discount-field">
+                        <span>Discount Amount</span>
+                        {renderDiscountValueInput(
+                          cylinderDiscountValue,
+                          setCylinderDiscountValue,
+                          cylinderDiscountIsPercentage,
+                          cylinderDiscountIsPercentage ? '5' : '50',
+                        )}
+                      </label>
+
+                      <div className="discount-field switch-field">
+                        <span>Is %</span>
+                        {renderSwitch(
+                          cylinderDiscountIsPercentage,
+                          setCylinderDiscountIsPercentage,
+                          cylinderDiscountIsPercentage ? 'Yes' : 'No',
+                          true,
+                        )}
+                      </div>
+
+                      <div className="discount-field switch-field">
+                        <span>Active</span>
+                        {renderSwitch(cylinderDiscountEnabled, setCylinderDiscountEnabled, cylinderDiscountEnabled ? 'On' : 'Off', true)}
+                      </div>
+
+                      <div className="discount-row-actions">
+                        <button className="btn btn-primary" type="submit" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }}>
+                          {cylinderDiscountSaving ? 'Saving…' : 'Save'}
+                        </button>
+                        <button className="btn btn-secondary" type="button" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }} onClick={resetCylinderDiscountEditor}>
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="discount-note">
+              Cylinder-wise discounts are used instead of the global discount for matching cylinders. Discounts are never stacked.
+            </div>
+          </div>
+        )}
+      </div>
+    );
   }
 
   // ── Detail / ledger view ─────────────────────────────────────────────────
@@ -585,70 +1098,7 @@ export default function Customers() {
           </div>
         </div>
 
-        {discountId === customer.id && (
-          <form
-            onSubmit={(e) => handleSaveDiscount(e, customer.id)}
-            className="card form-stack"
-            style={{ marginBottom: '16px' }}
-          >
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-              <IndianRupee size={18} /> Customer Discount
-            </h2>
-            <p style={{ color: 'var(--text-muted)', margin: 0 }}>
-              This discount will be applied automatically to every booking for this customer.
-            </p>
-            <div className="grid-3" style={{ alignItems: 'flex-end' }}>
-              <label>
-                <span>Discount Type</span>
-                <select value={discountType} onChange={(e) => setDiscountType(e.target.value as 'percentage' | 'fixed')}>
-                  <option value="percentage">Percentage</option>
-                  <option value="fixed">Fixed Amount</option>
-                </select>
-              </label>
-              <label>
-                <span>{discountType === 'percentage' ? 'Discount %' : 'Discount Amount'}</span>
-                <input
-                  type="number"
-                  min="0"
-                  step={discountType === 'percentage' ? '0.01' : '1'}
-                  max={discountType === 'percentage' ? '100' : undefined}
-                  value={discountValue}
-                  onChange={(e) => setDiscountValue(e.target.value)}
-                  placeholder={discountType === 'percentage' ? 'e.g. 5' : 'e.g. 100'}
-                />
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', minHeight: '42px' }}>
-                <input
-                  type="checkbox"
-                  checked={discountEnabled}
-                  onChange={(e) => setDiscountEnabled(e.target.checked)}
-                />
-                <span>Discount Active</span>
-              </label>
-            </div>
-            {discountError && <p className="form-error">{discountError}</p>}
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" type="submit" disabled={discountSaving}>
-                {discountSaving ? 'Saving…' : 'Save Discount'}
-              </button>
-              <button
-                className="btn btn-outline"
-                type="button"
-                disabled={discountSaving}
-                onClick={() => {
-                  setDiscountEnabled(false);
-                  setDiscountValue(String(customer.global_discount_value || '0'));
-                  setDiscountType(customer.global_discount_type || 'percentage');
-                }}
-              >
-                Disable
-              </button>
-              <button className="btn btn-secondary" type="button" disabled={discountSaving} onClick={closeDiscount}>
-                Cancel
-              </button>
-            </div>
-          </form>
-        )}
+        {discountId === customer.id && renderDiscountManager(customer, true)}
 
         {/* Summary cards */}
         <section className="stat-grid" style={{ marginBottom: '16px' }}>
@@ -1182,16 +1632,6 @@ export default function Customers() {
                   {editingId === c.id ? <X size={16} /> : <Pencil size={16} />}
                 </button>
 
-                {/* Custom Rates button */}
-                <button
-                  className="icon-button"
-                  title="Custom Cylinder Rates"
-                  onClick={() => ratesId === c.id ? closeRates() : loadRates(c.id)}
-                  style={ratesId === c.id ? { color: 'var(--primary)' } : {}}
-                >
-                  <Tag size={16} />
-                </button>
-
                 <button
                   className="icon-button"
                   title="Customer Discount"
@@ -1343,155 +1783,7 @@ export default function Customers() {
               </div>
             )}
 
-            {discountId === c.id && (
-              <form
-                onSubmit={(e) => handleSaveDiscount(e, c.id)}
-                className="form-stack"
-                style={{
-                  padding: '16px 18px',
-                  borderBottom: '1px solid var(--border)',
-                  background: 'var(--surface-muted)',
-                }}
-              >
-                <h3 style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <IndianRupee size={16} /> Customer Discount
-                </h3>
-                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                  <span className="badge" style={{ background: hasActiveDiscount(c) ? 'rgba(34, 197, 94, 0.12)' : 'rgba(148, 163, 184, 0.12)', color: hasActiveDiscount(c) ? '#16a34a' : '#475569' }}>
-                    {formatCustomerDiscount(c)}
-                  </span>
-                  <span style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                    Applies to every booking for this customer.
-                  </span>
-                </div>
-                <div className="grid-3" style={{ alignItems: 'flex-end' }}>
-                  <label>
-                    <span>Discount Type</span>
-                    <select value={discountType} onChange={(e) => setDiscountType(e.target.value as 'percentage' | 'fixed')}>
-                      <option value="percentage">Percentage</option>
-                      <option value="fixed">Fixed Amount</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{discountType === 'percentage' ? 'Discount %' : 'Discount Amount'}</span>
-                    <input
-                      type="number"
-                      min="0"
-                      step={discountType === 'percentage' ? '0.01' : '1'}
-                      max={discountType === 'percentage' ? '100' : undefined}
-                      value={discountValue}
-                      onChange={(e) => setDiscountValue(e.target.value)}
-                      placeholder={discountType === 'percentage' ? 'e.g. 5' : 'e.g. 100'}
-                    />
-                  </label>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', minHeight: '42px' }}>
-                    <input
-                      type="checkbox"
-                      checked={discountEnabled}
-                      onChange={(e) => setDiscountEnabled(e.target.checked)}
-                    />
-                    <span>Discount Active</span>
-                  </label>
-                </div>
-                {discountError && <p className="form-error">{discountError}</p>}
-                <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                  <button className="btn btn-primary" type="submit" disabled={discountSaving}>
-                    {discountSaving ? 'Saving…' : 'Save Discount'}
-                  </button>
-                  <button
-                    className="btn btn-outline"
-                    type="button"
-                    disabled={discountSaving}
-                    onClick={() => {
-                      setDiscountEnabled(false);
-                      setDiscountValue(String(c.global_discount_value || '0'));
-                      setDiscountType(c.global_discount_type || 'percentage');
-                    }}
-                  >
-                    Disable
-                  </button>
-                  <button className="btn btn-secondary" type="button" disabled={discountSaving} onClick={closeDiscount}>
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-
-            {/* ── Inline Custom Rates panel ── */}
-            {ratesId === c.id && (
-              <div
-                style={{
-                  padding: '16px 18px',
-                  borderBottom: '1px solid var(--border)',
-                  background: 'var(--surface-muted)',
-                }}
-              >
-                <h3 style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Tag size={16} /> Custom Cylinder Rates
-                </h3>
-                
-                {/* Existing Rates */}
-                {c.custom_rates && c.custom_rates.length > 0 ? (
-                  <div style={{ marginBottom: '20px', display: 'grid', gap: '8px' }}>
-                    {c.custom_rates.map(rate => (
-                      <div key={rate.id} style={{
-                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        padding: '10px 16px', background: 'var(--surface)',
-                        border: '1px solid var(--border)', borderRadius: '8px'
-                      }}>
-                        <span style={{ fontWeight: 600 }}>{rate.cylinder_type_name}</span>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                          <span style={{ color: 'var(--success)', fontWeight: 600 }}>{money(rate.custom_price)}</span>
-                          <button
-                            className="icon-button"
-                            onClick={() => handleDeleteRate(rate.id)}
-                            title="Delete custom rate"
-                            style={{ color: 'var(--danger)', padding: '4px' }}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginBottom: '16px' }}>
-                    No custom rates set for this customer yet.
-                  </p>
-                )}
-
-                {/* Add New Rate Form */}
-                <form onSubmit={(e) => handleAddRate(e, c.id)} className="grid-3" style={{ alignItems: 'flex-end', background: 'var(--surface)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                  <label>
-                    <span>Cylinder Type</span>
-                    <select
-                      value={rateCylinderId}
-                      onChange={(e) => setRateCylinderId(e.target.value)}
-                      required
-                    >
-                      {cylinderTypes.map(ct => (
-                        <option key={ct.id} value={ct.id}>{ct.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Custom Price (Rs.)</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={ratePrice}
-                      onChange={(e) => setRatePrice(e.target.value)}
-                      required
-                      placeholder="e.g. 900"
-                    />
-                  </label>
-                  <button className="btn btn-primary" type="submit" disabled={rateSaving}>
-                    {rateSaving ? 'Saving…' : 'Add Rate'}
-                  </button>
-                </form>
-              </div>
-            )}
+            {discountId === c.id && renderDiscountManager(c)}
 
             {/* ── Inline Edit panel ── */}
             {editingId === c.id && (

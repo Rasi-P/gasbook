@@ -131,22 +131,61 @@ class CustomerProfile(TimeStampedModel):
             custom = self.custom_rates.filter(cylinder_type=cylinder_type).first()
         return custom.custom_price if custom else cylinder_type.selling_price
 
-    def calculate_discount_for_amount(self, amount):
-        original_amount = quantize_money(amount or Decimal("0"))
-        discount_amount = Decimal("0.00")
+    def get_active_discount_for_cylinder(self, cylinder_type):
+        prefetched_discounts = getattr(self, "_prefetched_objects_cache", {}).get("cylinder_discounts")
+        if prefetched_discounts is not None:
+            discount = next(
+                (
+                    item
+                    for item in prefetched_discounts
+                    if item.cylinder_type_id == cylinder_type.id and item.is_active
+                ),
+                None,
+            )
+        else:
+            discount = self.cylinder_discounts.filter(cylinder_type=cylinder_type, is_active=True).first()
+
+        if not discount or not discount.discount_type or discount.discount_value <= 0:
+            return None
+        return discount
+
+    def get_discount_configuration(self, cylinder_type=None):
+        if cylinder_type is not None:
+            cylinder_discount = self.get_active_discount_for_cylinder(cylinder_type)
+            if cylinder_discount:
+                return {
+                    "scope": "cylinder",
+                    "type": cylinder_discount.discount_type,
+                    "value": quantize_money(cylinder_discount.discount_value),
+                }
 
         if (
             self.global_discount_is_active
             and self.global_discount_type
             and self.global_discount_value > 0
-            and original_amount > 0
         ):
-            if self.global_discount_type == self.DiscountType.PERCENTAGE:
+            return {
+                "scope": "global",
+                "type": self.global_discount_type,
+                "value": quantize_money(self.global_discount_value),
+            }
+
+        return {"scope": None, "type": None, "value": Decimal("0.00")}
+
+    def calculate_discount_for_amount(self, amount, cylinder_type=None):
+        original_amount = quantize_money(amount or Decimal("0"))
+        discount_amount = Decimal("0.00")
+        discount_rule = self.get_discount_configuration(cylinder_type)
+        discount_type = discount_rule["type"]
+        discount_value = discount_rule["value"]
+
+        if discount_type and discount_value > 0 and original_amount > 0:
+            if discount_type == self.DiscountType.PERCENTAGE:
                 discount_amount = quantize_money(
-                    original_amount * self.global_discount_value / Decimal("100")
+                    original_amount * discount_value / Decimal("100")
                 )
-            elif self.global_discount_type == self.DiscountType.FIXED:
-                discount_amount = quantize_money(min(original_amount, self.global_discount_value))
+            elif discount_type == self.DiscountType.FIXED:
+                discount_amount = quantize_money(min(original_amount, discount_value))
 
         final_amount = quantize_money(max(Decimal("0"), original_amount - discount_amount))
         has_discount = discount_amount > 0
@@ -156,15 +195,16 @@ class CustomerProfile(TimeStampedModel):
             "discount_amount": discount_amount,
             "final_amount": final_amount,
             "has_discount": has_discount,
-            "applied_discount_type": self.global_discount_type if has_discount else None,
-            "applied_discount_value": quantize_money(self.global_discount_value if has_discount else Decimal("0")),
+            "discount_scope": discount_rule["scope"] if has_discount else None,
+            "applied_discount_type": discount_type if has_discount else None,
+            "applied_discount_value": quantize_money(discount_value if has_discount else Decimal("0")),
         }
 
     def calculate_booking_pricing(self, cylinder_type, quantity):
         quantity_decimal = Decimal(quantity or 0)
         base_rate = quantize_money(self.get_rate_for_cylinder(cylinder_type))
         original_amount = quantize_money(base_rate * quantity_decimal)
-        pricing = self.calculate_discount_for_amount(original_amount)
+        pricing = self.calculate_discount_for_amount(original_amount, cylinder_type=cylinder_type)
         pricing["rate"] = base_rate
         pricing["quantity"] = int(quantity or 0)
         pricing["effective_rate"] = (
@@ -292,6 +332,21 @@ class CustomerCylinderRate(TimeStampedModel):
 
     def __str__(self):
         return f"{self.customer} - {self.cylinder_type}: {self.custom_price}"
+
+
+class CustomerCylinderDiscount(TimeStampedModel):
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="cylinder_discounts")
+    cylinder_type = models.ForeignKey(CylinderType, on_delete=models.CASCADE, related_name="customer_discounts")
+    discount_type = models.CharField(max_length=20, choices=CustomerProfile.DiscountType.choices)
+    discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["cylinder_type__weight", "cylinder_type__name", "id"]
+        unique_together = ("customer", "cylinder_type")
+
+    def __str__(self):
+        return f"{self.customer} - {self.cylinder_type}: {self.discount_type} {self.discount_value}"
 
 
 class Booking(TimeStampedModel):
