@@ -6,6 +6,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.db import transaction
 from django.db.models import Count, Q, Sum
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from rest_framework import permissions, viewsets, filters
 from rest_framework.decorators import action, api_view, permission_classes
@@ -50,9 +51,8 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
         username = (request.data.get("username") or "").strip()
-        try:
-            user = User.objects.get(username=username)
-        except User.DoesNotExist:
+        user = User.objects.filter(username=username).first()
+        if not user:
             return response
         response.data["must_change_password"] = bool(getattr(user, "must_change_password", False))
         response.data["user_id"] = user.id
@@ -647,7 +647,8 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         payment_method = request.data.get("payment_method") or booking.payment_method or Sale.PaymentMode.COD
         paid_payment_mode = request.data.get("paid_payment_mode", "cash")
         empty_collected = int(request.data.get("empty_collected", 0) or 0)
-        location = getattr(delivery.staff, "staff_profile", None).vehicle_location if hasattr(delivery.staff, "staff_profile") else None
+        staff_profile = getattr(delivery.staff, "staff_profile", None)
+        location = staff_profile.vehicle_location if staff_profile else None
         if location is None:
             location = StockLocation.objects.filter(code="shop").first() or StockLocation.objects.first()
         if location is None:
@@ -771,7 +772,7 @@ def customer_credentials(request, pk):
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
         profile = CustomerProfile.objects.get(pk=pk)
-    except CustomerProfile.DoesNotExist:
+    except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     
     user = profile.user
@@ -899,7 +900,7 @@ def user_detail(request, pk):
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
         user = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").get(pk=pk)
-    except User.DoesNotExist:
+    except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
         user.delete()
@@ -955,7 +956,7 @@ def user_credentials(request, pk):
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
         user = User.objects.exclude(role__code="customer").get(pk=pk)
-    except User.DoesNotExist:
+    except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "GET":
         return Response({

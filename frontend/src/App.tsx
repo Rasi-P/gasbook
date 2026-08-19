@@ -90,7 +90,7 @@ export default function App() {
       <header className="app-header">
         <div className="brand">
           <Package />
-          GasBook
+          Sabco Gas
         </div>
         <div className="topbar-tools">
           <span className="topbar-date">
@@ -110,7 +110,7 @@ export default function App() {
       <aside className="side-nav">
         <div className="sidebar-brand">
           <Package />
-          <span>GasBook</span>
+          <span>Sabco Gas</span>
         </div>
         <NavItems role={role} />
         <div className="sidebar-profile">
