@@ -481,7 +481,10 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         booking.status = Booking.Status.REJECTED
         booking.rejection_reason = reason
-        booking.save(update_fields=["status", "rejection_reason", "updated_at"])
+        booking.rejected_by = request.user
+        booking.rejected_by_role = "admin"
+        booking.rejected_at = timezone.now()
+        booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
         
         if not Notification.objects.filter(recipient=booking.customer.user, booking=booking, notification_type="ORDER_REJECTED").exists():
             Notification.objects.create(
@@ -489,7 +492,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 booking=booking,
                 notification_type="ORDER_REJECTED",
                 title="Booking Rejected",
-                body=f"Your GasBook order #{booking.order_id} was rejected. Reason: {reason}",
+                body=f"Your GasBook order #{booking.order_id} was rejected by Admin. Reason: {reason}",
             )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
@@ -556,11 +559,14 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         delivery.rejection_reason = reason
         delivery.save(update_fields=["status", "rejection_reason", "updated_at"])
 
-        # Reset booking status to pending & clear assigned staff so admin can reassign
+        # Reject the booking completely
         booking = delivery.booking
-        booking.status = Booking.Status.PENDING
-        booking.assigned_staff = None
-        booking.save(update_fields=["status", "assigned_staff", "updated_at"])
+        booking.status = Booking.Status.REJECTED
+        booking.rejection_reason = reason
+        booking.rejected_by = request.user
+        booking.rejected_by_role = "staff"
+        booking.rejected_at = timezone.now()
+        booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
 
         staff_name = delivery.staff.get_full_name() or delivery.staff.username
 
@@ -574,13 +580,13 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 body=f"Staff {staff_name} rejected order #{booking.order_id}. Reason: {reason}",
             )
 
-        # Reassignment customer notification (graceful, no internal staff rejection details)
+        # Customer notification
         Notification.objects.create(
             recipient=booking.customer.user,
             booking=booking,
-            notification_type="STAFF_REJECTED",
+            notification_type="ORDER_REJECTED",
             title="Order Status Update",
-            body=f"Your order #{booking.order_id} is being reassigned for delivery.",
+            body=f"Your order #{booking.order_id} was rejected by the delivery staff. Reason: {reason}",
         )
 
         return Response(DeliverySerializer(delivery).data)
