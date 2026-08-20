@@ -258,6 +258,9 @@ class Booking(TimeStampedModel):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_bookings")
     sale = models.OneToOneField(Sale, null=True, blank=True, on_delete=models.CASCADE, related_name="booking")
     rejection_reason = models.CharField(max_length=250, blank=True, null=True)
+    rejected_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="rejected_bookings")
+    rejected_by_role = models.CharField(max_length=20, choices=[("admin", "Admin"), ("staff", "Delivery Staff")], null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
 

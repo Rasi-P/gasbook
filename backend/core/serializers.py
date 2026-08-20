@@ -425,11 +425,22 @@ class BookingSerializer(serializers.ModelSerializer):
     rate = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
     order_id = serializers.CharField(read_only=True)
+    rejected_by_name = serializers.SerializerMethodField()
+    rejected_by_role = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
         fields = "__all__"
-        read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale"]
+        read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale", "rejected_by", "rejected_at"]
+
+    def get_rejected_by_name(self, obj):
+        rejected_by = getattr(obj, "rejected_by", None)
+        if not rejected_by:
+            return None
+        return rejected_by.get_full_name() or rejected_by.username
+
+    def get_rejected_by_role(self, obj):
+        return getattr(obj, "rejected_by_role", None)
 
     def get_total_amount(self, obj):
         rate = Decimal(self.get_rate(obj))
