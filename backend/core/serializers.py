@@ -424,11 +424,23 @@ class BookingSerializer(serializers.ModelSerializer):
     assigned_staff_phone = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
     total_amount = serializers.SerializerMethodField()
+    order_id = serializers.CharField(read_only=True)
+    rejected_by_name = serializers.SerializerMethodField()
+    rejected_by_role = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
         fields = "__all__"
-        read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale"]
+        read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale", "rejected_by", "rejected_at"]
+
+    def get_rejected_by_name(self, obj):
+        rejected_by = getattr(obj, "rejected_by", None)
+        if not rejected_by:
+            return None
+        return rejected_by.get_full_name() or rejected_by.username
+
+    def get_rejected_by_role(self, obj):
+        return getattr(obj, "rejected_by_role", None)
 
     def get_total_amount(self, obj):
         rate = Decimal(self.get_rate(obj))
@@ -488,7 +500,7 @@ class BookingSerializer(serializers.ModelSerializer):
             booking=booking,
             notification_type="ORDER_PLACED",
             title="Order Placed",
-            body=f"Your GasBook order #{booking.id} has been placed successfully.",
+            body=f"Your GasBook order #{booking.order_id} has been placed successfully.",
         )
 
         for admin in admin_role_users:
@@ -497,7 +509,7 @@ class BookingSerializer(serializers.ModelSerializer):
                 booking=booking,
                 notification_type="ORDER_PLACED",
                 title="New GasBook Order Received",
-                body=f"Order #{booking.id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nTotal: ₹{total:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
+                body=f"Order #{booking.order_id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nTotal: ₹{total:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
             )
         return booking
 

@@ -6,6 +6,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.db import transaction
 from django.db.models import Count, Q, Sum
+from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from rest_framework import permissions, viewsets, filters
 from rest_framework.decorators import action, api_view, permission_classes
@@ -50,9 +51,8 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
         username = (request.data.get("username") or "").strip()
-        try:
-            user = User.objects.get(username=username)
-        except User.DoesNotExist:
+        user = User.objects.filter(username=username).first()
+        if not user:
             return response
         response.data["must_change_password"] = bool(getattr(user, "must_change_password", False))
         response.data["user_id"] = user.id
@@ -462,7 +462,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 booking=booking,
                 notification_type="STAFF_ASSIGNED",
                 title="New Delivery Assigned",
-                body=f"New delivery assigned — Order #{booking.id}.",
+                body=f"New delivery assigned — Order #{booking.order_id}.",
             )
 
         return Response(BookingSerializer(booking, context={"request": request}).data)
@@ -481,7 +481,10 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         booking.status = Booking.Status.REJECTED
         booking.rejection_reason = reason
-        booking.save(update_fields=["status", "rejection_reason", "updated_at"])
+        booking.rejected_by = request.user
+        booking.rejected_by_role = "admin"
+        booking.rejected_at = timezone.now()
+        booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
         
         if not Notification.objects.filter(recipient=booking.customer.user, booking=booking, notification_type="ORDER_REJECTED").exists():
             Notification.objects.create(
@@ -489,7 +492,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 booking=booking,
                 notification_type="ORDER_REJECTED",
                 title="Booking Rejected",
-                body=f"Your GasBook order #{booking.id} was rejected. Reason: {reason}",
+                body=f"Your GasBook order #{booking.order_id} was rejected by Admin. Reason: {reason}",
             )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
@@ -530,7 +533,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 booking=delivery.booking,
                 notification_type="ORDER_OUT_FOR_DELIVERY",
                 title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking_id} is out for delivery.",
+                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
             )
 
         for admin in User.objects.filter(role__code="admin"):
@@ -540,7 +543,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                     booking=delivery.booking,
                     notification_type="STAFF_ACCEPTED",
                     title="Delivery Accepted by Staff",
-                    body=f"Staff {staff_name} accepted order #{delivery.booking_id}.",
+                    body=f"Staff {staff_name} accepted order #{delivery.booking.order_id}.",
                 )
 
         return Response(DeliverySerializer(delivery).data)
@@ -556,11 +559,14 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         delivery.rejection_reason = reason
         delivery.save(update_fields=["status", "rejection_reason", "updated_at"])
 
-        # Reset booking status to pending & clear assigned staff so admin can reassign
+        # Reject the booking completely
         booking = delivery.booking
-        booking.status = Booking.Status.PENDING
-        booking.assigned_staff = None
-        booking.save(update_fields=["status", "assigned_staff", "updated_at"])
+        booking.status = Booking.Status.REJECTED
+        booking.rejection_reason = reason
+        booking.rejected_by = request.user
+        booking.rejected_by_role = "staff"
+        booking.rejected_at = timezone.now()
+        booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
 
         staff_name = delivery.staff.get_full_name() or delivery.staff.username
 
@@ -571,16 +577,16 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 booking=booking,
                 notification_type="STAFF_REJECTED",
                 title="Staff Delivery Rejected",
-                body=f"Staff {staff_name} rejected order #{booking.id}. Reason: {reason}",
+                body=f"Staff {staff_name} rejected order #{booking.order_id}. Reason: {reason}",
             )
 
-        # Reassignment customer notification (graceful, no internal staff rejection details)
+        # Customer notification
         Notification.objects.create(
             recipient=booking.customer.user,
             booking=booking,
-            notification_type="STAFF_REJECTED",
+            notification_type="ORDER_REJECTED",
             title="Order Status Update",
-            body=f"Your order #{booking.id} is being reassigned for delivery.",
+            body=f"Your order #{booking.order_id} was rejected by the delivery staff. Reason: {reason}",
         )
 
         return Response(DeliverySerializer(delivery).data)
@@ -606,7 +612,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                 booking=delivery.booking,
                 notification_type="ORDER_OUT_FOR_DELIVERY",
                 title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking_id} is out for delivery.",
+                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
             )
 
         for admin in User.objects.filter(role__code="admin"):
@@ -616,7 +622,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                     booking=delivery.booking,
                     notification_type="ORDER_OUT_FOR_DELIVERY",
                     title="Order Out for Delivery",
-                    body=f"Order #{delivery.booking_id} is out for delivery by {delivery.staff.username}.",
+                    body=f"Order #{delivery.booking.order_id} is out for delivery by {delivery.staff.username}.",
                 )
         return Response(DeliverySerializer(delivery).data)
 
@@ -647,7 +653,8 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         payment_method = request.data.get("payment_method") or booking.payment_method or Sale.PaymentMode.COD
         paid_payment_mode = request.data.get("paid_payment_mode", "cash")
         empty_collected = int(request.data.get("empty_collected", 0) or 0)
-        location = getattr(delivery.staff, "staff_profile", None).vehicle_location if hasattr(delivery.staff, "staff_profile") else None
+        staff_profile = getattr(delivery.staff, "staff_profile", None)
+        location = staff_profile.vehicle_location if staff_profile else None
         if location is None:
             location = StockLocation.objects.filter(code="shop").first() or StockLocation.objects.first()
         if location is None:
@@ -679,7 +686,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             delivery_type=Sale.DeliveryType.DELIVERY,
             delivery_staff=delivery.staff.get_full_name() or delivery.staff.username,
             sold_by=request.user,
-            note=f"Booking #{booking.id}",
+            note=f"Booking #{booking.order_id}",
         )
         SaleItem.objects.create(
             sale=sale,
@@ -728,7 +735,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
 
         ActivityLog.objects.create(
             action="delivery_completed",
-            description=f"Delivered booking #{booking.id} for Rs. {total}",
+            description=f"Delivered booking #{booking.order_id} for Rs. {total}",
             user=request.user,
             metadata={"booking_id": booking.id, "sale_id": sale.id, "delivery_id": delivery.id},
         )
@@ -736,7 +743,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         staff_name = delivery.staff.get_full_name() or delivery.staff.username
 
         # Customer Notification
-        customer_msg = f"Your GasBook order #{booking.id} has been delivered successfully."
+        customer_msg = f"Your GasBook order #{booking.order_id} has been delivered successfully."
         if booking.payment_method.upper() == "COD" and payment_collected > 0:
             customer_msg += f" Payment of ₹{payment_collected} was collected successfully."
 
@@ -757,7 +764,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
                     booking=booking,
                     notification_type="ORDER_DELIVERED",
                     title="Order Delivered",
-                    body=f"Order #{booking.id} was delivered by {staff_name}.",
+                    body=f"Order #{booking.order_id} was delivered by {staff_name}.",
                 )
 
         return Response(DeliverySerializer(delivery).data)
@@ -771,7 +778,7 @@ def customer_credentials(request, pk):
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
         profile = CustomerProfile.objects.get(pk=pk)
-    except CustomerProfile.DoesNotExist:
+    except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     
     user = profile.user
@@ -899,7 +906,7 @@ def user_detail(request, pk):
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
         user = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").get(pk=pk)
-    except User.DoesNotExist:
+    except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
         user.delete()
@@ -955,7 +962,7 @@ def user_credentials(request, pk):
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     try:
         user = User.objects.exclude(role__code="customer").get(pk=pk)
-    except User.DoesNotExist:
+    except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "GET":
         return Response({
