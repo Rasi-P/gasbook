@@ -58,6 +58,8 @@ class StockLocation(TimeStampedModel):
     code = models.SlugField(max_length=40, unique=True)
     is_main_supplier = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    
+    objects = models.Manager()
 
     class Meta:
         ordering = ["name"]
@@ -116,6 +118,8 @@ class CustomerProfile(TimeStampedModel):
     global_discount_value = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     global_discount_is_active = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
+    
+    objects = models.Manager()
 
     class Meta:
         ordering = ["user__username"]
@@ -216,6 +220,7 @@ class CustomerProfile(TimeStampedModel):
 
 
 class StaffProfile(TimeStampedModel):
+    objects = models.Manager()
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="staff_profile")
     assigned_area = models.CharField(max_length=100, blank=True)
     vehicle_number = models.CharField(max_length=30, blank=True)
@@ -327,6 +332,8 @@ class CustomerCylinderRate(TimeStampedModel):
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.CASCADE)
     custom_price = models.DecimalField(max_digits=10, decimal_places=2)
 
+    objects = models.Manager()
+
     class Meta:
         unique_together = ("customer", "cylinder_type")
 
@@ -379,6 +386,9 @@ class Booking(TimeStampedModel):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="approved_bookings")
     sale = models.OneToOneField(Sale, null=True, blank=True, on_delete=models.CASCADE, related_name="booking")
     rejection_reason = models.CharField(max_length=250, blank=True, null=True)
+    rejected_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="rejected_bookings")
+    rejected_by_role = models.CharField(max_length=20, choices=[("admin", "Admin"), ("staff", "Delivery Staff")], null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
 
@@ -387,6 +397,10 @@ class Booking(TimeStampedModel):
 
     def __str__(self):
         return f"Booking #{self.pk} - {self.customer} - {self.status}"
+
+    @property
+    def order_id(self):
+        return f"GB{self.pk}"
 
 
 class Delivery(TimeStampedModel):
@@ -397,6 +411,8 @@ class Delivery(TimeStampedModel):
         OUT_FOR_DELIVERY = "out_for_delivery", "Out for Delivery"
         DELIVERED = "delivered", "Delivered"
         CANCELLED = "cancelled", "Cancelled"
+
+    objects = models.Manager()
 
     booking = models.OneToOneField(Booking, on_delete=models.CASCADE, related_name="delivery")
     staff = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="deliveries")
