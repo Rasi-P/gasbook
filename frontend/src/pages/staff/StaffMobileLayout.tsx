@@ -27,6 +27,10 @@ type Delivery = {
   cylinder_type_name: string;
   quantity: number;
   rate: string;
+  original_amount?: string;
+  discount_amount?: string;
+  final_amount?: string;
+  has_discount?: boolean;
   pending_amount: string;
   deposit_cylinders: number;
   booking_payment_method?: string;
@@ -62,6 +66,42 @@ type StaffProfileData = {
 
 function money(v: number | string) {
   return `₹${Number(v || 0).toLocaleString('en-IN')}`;
+}
+
+function originalAmount(delivery: Delivery) {
+  return Number(delivery.original_amount || Number(delivery.rate || 0) * delivery.quantity || 0);
+}
+
+function discountAmount(delivery: Delivery) {
+  return Number(delivery.discount_amount || 0);
+}
+
+function finalAmount(delivery: Delivery) {
+  return Number(delivery.final_amount || originalAmount(delivery));
+}
+
+// Staff see the struck-through original while picking up and delivering, so the
+// amount they collect is unambiguous. History shows the settled amount only.
+function AmountToCollect({
+  delivery,
+  showOriginal,
+  valueStyle,
+}: {
+  delivery: Delivery;
+  showOriginal: boolean;
+  valueStyle: React.CSSProperties;
+}) {
+  const isDiscounted = showOriginal && discountAmount(delivery) > 0;
+  return (
+    <div style={{ textAlign: 'right' }}>
+      {isDiscounted && (
+        <div style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through', lineHeight: 1.3 }}>
+          {money(originalAmount(delivery))}
+        </div>
+      )}
+      <span style={valueStyle}>{money(finalAmount(delivery))}</span>
+    </div>
+  );
 }
 
 function formatJoinDate(value?: string) {
@@ -131,7 +171,7 @@ export default function StaffMobileLayout() {
             rows.map((d: Delivery) => [
               d.id,
               {
-                amount: String(Number(d.rate || 0) * d.quantity),
+                amount: String(finalAmount(d)),
                 method: 'cash',
                 paid_method: 'cash',
                 empty: String(d.quantity)
@@ -438,7 +478,6 @@ export default function StaffMobileLayout() {
 
                 {pendingAssignments.slice(0, 1).map((order) => {
                   const isOnline = order.booking_payment_method === 'ONLINE' || order.booking_payment_status === 'PAID';
-                  const totalAmt = Number(order.rate || 0) * order.quantity;
 
                   return (
                     <div key={order.id} style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 6px 18px rgba(19, 43, 79, 0.06)' }}>
@@ -460,7 +499,11 @@ export default function StaffMobileLayout() {
 
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
                         <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>Amount to Collect:</span>
-                        <span style={{ fontSize: '15px', fontWeight: 800, color: '#1457B8' }}>{money(totalAmt)}</span>
+                        <AmountToCollect
+                          delivery={order}
+                          showOriginal
+                          valueStyle={{ fontSize: '15px', fontWeight: 800, color: '#1457B8' }}
+                        />
                       </div>
 
                       {rejectingId === order.id ? (
@@ -507,7 +550,7 @@ export default function StaffMobileLayout() {
 
                 {(() => {
                   const isOnline = activeDelivery.booking_payment_method === 'ONLINE' || activeDelivery.booking_payment_status === 'PAID';
-                  const totalAmt = Number(activeDelivery.rate || 0) * activeDelivery.quantity;
+                  const totalAmt = finalAmount(activeDelivery);
 
                   return (
                     <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 8px 24px rgba(19, 43, 79, 0.08)' }}>
@@ -551,9 +594,11 @@ export default function StaffMobileLayout() {
                               {isOnline ? 'Payment verified by system' : 'Collect cash upon delivery'}
                             </div>
                           </div>
-                          <div style={{ fontSize: '16px', fontWeight: 800, color: isOnline ? '#15803D' : '#C2410C' }}>
-                            {money(totalAmt)}
-                          </div>
+                          <AmountToCollect
+                            delivery={activeDelivery}
+                            showOriginal
+                            valueStyle={{ fontSize: '16px', fontWeight: 800, color: isOnline ? '#15803D' : '#C2410C' }}
+                          />
                         </div>
 
                         {!isOnline ? (
@@ -659,6 +704,16 @@ export default function StaffMobileLayout() {
                     <span style={{ fontSize: '12px', fontWeight: 700, color: '#1457B8' }}>{d.status.replaceAll('_', ' ')}</span>
                   </div>
                   <div style={{ fontSize: '13px', color: '#4A5568' }}>{d.customer_name} — {d.customer_address}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #F1F5F9' }}>
+                    <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>
+                      {d.status === 'delivered' ? 'Amount Collected:' : 'Amount to Collect:'}
+                    </span>
+                    <AmountToCollect
+                      delivery={d}
+                      showOriginal={d.status !== 'delivered'}
+                      valueStyle={{ fontSize: '14px', fontWeight: 800, color: '#1457B8' }}
+                    />
+                  </div>
                 </div>
               ))}
               {activeDeliveriesList.length === 0 && <div style={{ textAlign: 'center', color: '#718096', padding: '30px' }}>No deliveries found for filter.</div>}
@@ -679,6 +734,14 @@ export default function StaffMobileLayout() {
                   </div>
                   <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '4px' }}>{d.cylinder_type_name} ({d.quantity} qty)</div>
                   <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>{d.customer_name}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #F1F5F9' }}>
+                    <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>Amount Collected:</span>
+                    <AmountToCollect
+                      delivery={d}
+                      showOriginal={false}
+                      valueStyle={{ fontSize: '14px', fontWeight: 800, color: '#132B4F' }}
+                    />
+                  </div>
                 </div>
               ))}
               {completedDeliveries.length === 0 && <div style={{ textAlign: 'center', color: '#718096', padding: '30px' }}>No completed history yet.</div>}

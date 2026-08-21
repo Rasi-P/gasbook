@@ -12,6 +12,11 @@ type Booking = {
   quantity: number;
   status: string;
   rate: string;
+  original_amount?: string;
+  discount_amount?: string;
+  final_amount?: string;
+  total_amount?: string;
+  has_discount?: boolean;
   note: string;
   assigned_staff: number | null;
   assigned_staff_name: string | null;
@@ -23,6 +28,18 @@ type Staff = { id: number; username: string; full_name: string; assigned_area: s
 
 function money(v: number | string) {
   return `Rs. ${Number(v || 0).toLocaleString('en-IN')}`;
+}
+
+function originalAmount(booking: Booking) {
+  return Number(booking.original_amount || Number(booking.rate || 0) * booking.quantity || 0);
+}
+
+function discountAmount(booking: Booking) {
+  return Number(booking.discount_amount || 0);
+}
+
+function finalAmount(booking: Booking) {
+  return Number(booking.final_amount || booking.total_amount || originalAmount(booking));
 }
 
 export default function AdminBookings() {
@@ -107,6 +124,12 @@ export default function AdminBookings() {
                   <td>
                     <strong>{booking.quantity} x {booking.cylinder_type_name}</strong>
                     <p>{money(booking.rate)} each</p>
+                    {discountAmount(booking) > 0 && (
+                      <p style={{ marginTop: 4 }}>
+                        <span style={{ textDecoration: 'line-through', color: '#94a3b8', marginRight: 8 }}>{money(originalAmount(booking))}</span>
+                        <strong style={{ color: '#16a34a' }}>{money(finalAmount(booking))}</strong>
+                      </p>
+                    )}
                     {booking.note && <p>{booking.note}</p>}
                   </td>
                   <td>
