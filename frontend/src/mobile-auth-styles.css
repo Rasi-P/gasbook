@@ -308,6 +308,10 @@ input:focus-visible {
   box-shadow: 0 0 0 3px rgba(15, 85, 216, 0.1);
 }
 
+.input-wrapper--plain input {
+  padding-left: 16px;
+}
+
 .password-toggle {
   position: absolute;
   right: 14px;
@@ -380,7 +384,23 @@ input:focus-visible {
   box-shadow: 0 4px 12px rgba(255, 122, 0, 0.2);
 }
 
+.btn-secondary {
+  background-color: #eff4fb;
+  color: #0f55d8;
+  border-radius: 12px;
+  padding: 15px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-secondary:hover {
+  background-color: #e2ebfb;
+}
+
 .btn-primary:disabled,
+.btn-secondary:disabled,
 .primary-button:disabled {
   cursor: wait;
   opacity: 0.75;
@@ -430,6 +450,39 @@ input:focus-visible {
 .form-feedback--error {
   background: #fef3f2;
   border: 1px solid #fecdca;
+}
+
+.request-note {
+  border-radius: 16px;
+  padding: 16px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+}
+
+.request-note__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.request-note p:last-child {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.request-steps {
+  display: grid;
+  gap: 8px;
+  color: #475569;
+  font-size: 14px;
+}
+
+.request-steps p {
+  margin: 0;
 }
 
 .app-root {
