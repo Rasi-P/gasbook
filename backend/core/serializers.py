@@ -348,6 +348,15 @@ class SaleSerializer(serializers.ModelSerializer):
             description=f"Sale of Rs. {total} ({len(items_data)} item(s))",
             user=user, metadata={"sale_id": sale.id},
         )
+
+        if sale.customer and any(item["quantity"] > 0 for item in items_data):
+            Notification.objects.create(
+                recipient=sale.customer.user,
+                notification_type="DIRECT_SALE_COMPLETED",
+                title="Direct Sale Completed",
+                body="A direct sale has been recorded on your account. Check your order history for the completed entry.",
+            )
+
         return sale
 
 
