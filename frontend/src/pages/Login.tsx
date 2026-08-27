@@ -4,6 +4,30 @@ import { login, api, getRoleHome } from '../lib/api';
 import sabcoLogo from '../assets/sabco_logo.png';
 import splashBg from '../assets/splash_bg.png';
 import splashCylinder from '../assets/splash_cylinder.png';
+
+const SUPPORT_CONTACT_NAME = (import.meta.env.VITE_SUPPORT_CONTACT_NAME || 'Admin').trim() || 'Admin';
+const SUPPORT_WHATSAPP_NUMBER = (import.meta.env.VITE_SUPPORT_WHATSAPP_NUMBER || '').trim();
+
+function sanitizePhoneNumber(value: string) {
+  return value.replace(/[^\d]/g, '');
+}
+
+function buildSupportWhatsappLink(username: string) {
+  const phone = sanitizePhoneNumber(SUPPORT_WHATSAPP_NUMBER);
+  const cleanUsername = username.trim();
+
+  if (!phone || !cleanUsername) {
+    return null;
+  }
+
+  const message =
+    `Hello ${SUPPORT_CONTACT_NAME}, I forgot my GasBook staff password.` +
+    ` Please send a temporary password for username: ${cleanUsername}.` +
+    ` I will change it immediately after login.`;
+
+  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+}
+
 function UserIcon() {
   return (
     <svg className="field-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -53,12 +77,15 @@ function EyeIcon({ open }: { open: boolean }) {
 
 export default function Login() {
   const [showSplash, setShowSplash] = useState(true);
+  const [view, setView] = useState<'login' | 'forgot-password'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const supportWhatsappAvailable = Boolean(sanitizePhoneNumber(SUPPORT_WHATSAPP_NUMBER));
+  const supportWhatsappLink = buildSupportWhatsappLink(username);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -94,6 +121,19 @@ export default function Login() {
     }
   }
 
+  function handleOpenForgotPassword() {
+    setLoginError('');
+    setView('forgot-password');
+  }
+
+  function handleOpenSupportWhatsapp() {
+    if (!supportWhatsappLink) {
+      return;
+    }
+
+    window.location.assign(supportWhatsappLink);
+  }
+
   if (showSplash) {
     return (
       <div className="app-container" onClick={() => setShowSplash(false)}>
@@ -117,6 +157,71 @@ export default function Login() {
                 <span className="dot" />
                 <span className="dot" />
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (view === 'forgot-password') {
+    return (
+      <div className="legacy-auth-shell">
+        <div className="login-screen">
+          <div className="login-header">
+            <img src={sabcoLogo} className="login-brand-logo" alt="Sabco logo" />
+          </div>
+
+          <div className="login-card">
+            <div className="login-card-header">
+              <h2>Request Password Reset</h2>
+              <p>Only admin can send a temporary password for your account.</p>
+            </div>
+
+            <div className="login-form">
+              <div className="form-group">
+                <label htmlFor="forgot-username">Username</label>
+                <div className="input-wrapper input-wrapper--plain">
+                  <input
+                    id="forgot-username"
+                    type="text"
+                    placeholder="Enter your username"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    autoComplete="username"
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="request-note">
+                <p className="request-note__title">Important</p>
+                <p>
+                  Admin should send only a temporary password on WhatsApp. After you log in with that password, you must
+                  change it immediately.
+                </p>
+              </div>
+
+              <div className="request-steps">
+                <p>1. Confirm your username.</p>
+                <p>2. Tap the WhatsApp button to request a temporary password from {SUPPORT_CONTACT_NAME}.</p>
+                <p>3. Log in with the temporary password.</p>
+                <p>4. Change your password on the next screen.</p>
+              </div>
+
+              {!supportWhatsappAvailable ? (
+                <p className="form-feedback form-feedback--error">
+                  Admin WhatsApp contact is not available right now. Please contact the distributor directly.
+                </p>
+              ) : null}
+
+              <button type="button" className="btn-primary" disabled={!supportWhatsappLink} onClick={handleOpenSupportWhatsapp}>
+                REQUEST ON WHATSAPP
+              </button>
+
+              <button type="button" className="btn-secondary" onClick={() => setView('login')}>
+                BACK TO LOGIN
+              </button>
             </div>
           </div>
         </div>
@@ -187,7 +292,7 @@ export default function Login() {
                 />
                 <span>Remember me</span>
               </label>
-              <button type="button" className="forgot-link">
+              <button type="button" className="forgot-link" onClick={handleOpenForgotPassword}>
                 Forgot Password?
               </button>
             </div>
@@ -201,7 +306,7 @@ export default function Login() {
 
           <div className="login-footer">
             <p>Need Help?</p>
-            <button type="button" className="contact-link">
+            <button type="button" className="contact-link" onClick={handleOpenForgotPassword}>
               Distributor Contact
             </button>
           </div>
@@ -210,4 +315,3 @@ export default function Login() {
     </div>
   );
 }
-
