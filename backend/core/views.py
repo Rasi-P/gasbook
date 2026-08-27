@@ -39,7 +39,9 @@ from .serializers import (
     UserSerializer,
     get_booking_pricing_snapshot,
     get_customer_pricing_snapshot,
+    get_sale_pricing_snapshot,
     get_stock_row,
+    serialize_decimal,
 )
 
 
@@ -48,6 +50,99 @@ def get_staff_image_url(request, user):
     if not profile or not profile.image:
         return None
     return request.build_absolute_uri(profile.image.url)
+
+
+def format_decimal_label(value):
+    number = Decimal(value)
+    if number == number.to_integral():
+        return str(int(number))
+    return format(number.normalize(), "f")
+
+
+def build_sale_history_display(sale):
+    billed_items = [item for item in sale.items.all() if item.quantity > 0 or item.total_amount > 0]
+    total_quantity = sum(item.quantity for item in billed_items)
+
+    if len(billed_items) == 1:
+        item = billed_items[0]
+        weight = item.cylinder_type.weight
+        weight_label = format_decimal_label(weight)
+        return {
+            "display_name": f"{weight_label} KG Cylinder",
+            "display_badge": f"{weight_label} KG",
+            "cylinder_type_id": item.cylinder_type_id,
+            "cylinder_type_name": item.cylinder_type.name,
+            "cylinder_type_weight": serialize_decimal(weight),
+            "quantity": item.quantity,
+            "rate": serialize_decimal(item.rate),
+            "item_count": 1,
+        }
+
+    item_count = len(billed_items)
+    primary_item = billed_items[0] if billed_items else None
+    quantity_label = total_quantity if total_quantity > 0 else item_count
+    return {
+        "display_name": "Mixed Cylinders",
+        "display_badge": f"{quantity_label} Cylinders" if quantity_label else "Direct Sale",
+        "cylinder_type_id": primary_item.cylinder_type_id if item_count == 1 and primary_item else None,
+        "cylinder_type_name": "Mixed Cylinders",
+        "cylinder_type_weight": None,
+        "quantity": total_quantity,
+        "rate": serialize_decimal(sale.total_amount),
+        "item_count": item_count,
+    }
+
+
+def build_direct_sale_history_entry(sale):
+    billed_items = [item for item in sale.items.all() if item.quantity > 0 or item.total_amount > 0]
+    if not billed_items:
+        return None
+
+    pricing = get_sale_pricing_snapshot(sale)
+    display = build_sale_history_display(sale)
+    sold_by_name = sale.sold_by.get_full_name() or sale.sold_by.username
+    payment_status = "PAID" if sale.balance_due <= 0 else "PENDING"
+
+    return {
+        "id": sale.id,
+        "history_source": "sale",
+        "source_id": sale.id,
+        "order_id": f"SALE-{sale.id}",
+        "display_reference": f"Direct Sale #{sale.id}",
+        "status": Booking.Status.DELIVERED,
+        "created_at": sale.created_at.isoformat(),
+        "updated_at": sale.updated_at.isoformat(),
+        "approved_at": None,
+        "delivered_at": sale.created_at.isoformat(),
+        "cylinder_type_id": display["cylinder_type_id"],
+        "cylinder_type_name": display["cylinder_type_name"],
+        "cylinder_type_weight": display["cylinder_type_weight"],
+        "display_name": display["display_name"],
+        "display_badge": display["display_badge"],
+        "quantity": display["quantity"],
+        "rate": display["rate"],
+        "original_amount": serialize_decimal(pricing["original_amount"]),
+        "discount_amount": serialize_decimal(pricing["discount_amount"]),
+        "total_amount": serialize_decimal(pricing["final_amount"]),
+        "final_amount": serialize_decimal(pricing["final_amount"]),
+        "has_discount": pricing["has_discount"],
+        "applied_discount_type": pricing["applied_discount_type"],
+        "applied_discount_value": serialize_decimal(pricing["applied_discount_value"]),
+        "assigned_staff_name": sale.delivery_staff or sold_by_name,
+        "assigned_staff_phone": None,
+        "payment_method": sale.payment_mode.upper(),
+        "payment_status": payment_status,
+        "rejection_reason": None,
+        "rejected_at": None,
+        "can_track": False,
+        "can_order_again": bool(display["cylinder_type_id"]),
+        "item_count": display["item_count"],
+        "note": sale.note,
+        "detail_message": (
+            f"Direct sale recorded by {sold_by_name}."
+            + (f" Balance due: Rs. {serialize_decimal(sale.balance_due)}." if sale.balance_due > 0 else "")
+        ),
+    }
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -456,6 +551,73 @@ class BookingViewSet(viewsets.ModelViewSet):
         if getattr(getattr(self.request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can create booking requests.")
         serializer.save()
+
+    @action(detail=False, methods=["get"], permission_classes=[permissions.IsAuthenticated])
+    def history(self, request):
+        if getattr(getattr(request.user, "role", None), "code", "") != "customer":
+            raise PermissionDenied("Only customers can view booking history.")
+
+        profile = getattr(request.user, "customer_profile", None)
+        if not profile:
+            return Response({"count": 0, "next": None, "previous": None, "results": []})
+
+        status_param = request.query_params.get("status", "")
+        statuses = [status.strip() for status in status_param.split(",") if status.strip()]
+        search_term = (request.query_params.get("search") or "").strip().lower()
+
+        booking_queryset = self.get_queryset().filter(customer=profile).select_related("cylinder_type", "assigned_staff")
+        booking_data = BookingSerializer(booking_queryset, many=True, context={"request": request}).data
+
+        history_entries = []
+
+        for row in booking_data:
+            history_entries.append({
+                **row,
+                "history_source": "booking",
+                "source_id": row["id"],
+                "display_reference": f"Order #{row['order_id']}",
+                "display_name": None,
+                "display_badge": None,
+                "cylinder_type_id": row.get("cylinder_type"),
+                "can_track": True,
+                "can_order_again": True,
+                "item_count": 1,
+                "detail_message": None,
+            })
+
+        include_direct_sales = not statuses or Booking.Status.DELIVERED in statuses
+        if include_direct_sales:
+            direct_sales = (
+                Sale.objects.filter(customer=profile, booking__isnull=True)
+                .select_related("customer__user", "location", "sold_by")
+                .prefetch_related("items__cylinder_type")
+                .order_by("-created_at")
+            )
+            for sale in direct_sales:
+                entry = build_direct_sale_history_entry(sale)
+                if entry is not None:
+                    history_entries.append(entry)
+
+        if search_term:
+            def matches_search(entry):
+                haystack = [
+                    str(entry.get("display_reference", "")),
+                    str(entry.get("order_id", "")),
+                    str(entry.get("cylinder_type_name", "")),
+                    str(entry.get("display_name", "")),
+                    str(entry.get("note", "")),
+                ]
+                return search_term in " ".join(haystack).lower()
+
+            history_entries = [entry for entry in history_entries if matches_search(entry)]
+
+        history_entries.sort(key=lambda entry: str(entry.get("created_at") or ""), reverse=True)
+
+        page = self.paginate_queryset(history_entries)
+        if page is not None:
+            return self.get_paginated_response(page)
+
+        return Response(history_entries)
 
     @action(detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated])
     def preview(self, request):
