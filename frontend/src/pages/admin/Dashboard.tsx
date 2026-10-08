@@ -13,7 +13,8 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api } from '../../lib/api';
+import { api, extractApiError } from '../../lib/api';
+import { ErrorState, InlineWarning, LoadingState } from '../../components/AsyncState';
 
 type DashboardData = {
   total_cylinders: number; filled_cylinders: number; empty_cylinders: number;
@@ -35,11 +36,15 @@ function percent(value: number, total: number) {
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [error, setError] = useState('');
 
   const loadDashboard = useCallback(() => {
     api.get('/dashboard/')
-      .then((response: any) => setData(response.data))
-      .catch(() => undefined);
+      .then((response) => {
+        setData(response.data as DashboardData);
+        setError('');
+      })
+      .catch((err) => setError(extractApiError(err, [], 'Could not load the dashboard.')));
   }, []);
 
   useEffect(() => {
@@ -49,7 +54,10 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [loadDashboard]);
 
-  if (!data) return <p style={{ textAlign: 'center', padding: '40px' }}>Loading...</p>;
+  if (!data) {
+    if (error) return <ErrorState message={error} onRetry={loadDashboard} />;
+    return <LoadingState label="Loading dashboard…" />;
+  }
 
   const filledPercent = percent(data.filled_cylinders, data.total_cylinders);
   const emptyPercent = percent(data.empty_cylinders, data.total_cylinders);
@@ -74,6 +82,10 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {error && (
+        <InlineWarning message={`Showing the last loaded data. Refresh failed: ${error}`} onRetry={loadDashboard} />
+      )}
 
       <section className="stat-grid">
         <div className="metric-card strong purple">

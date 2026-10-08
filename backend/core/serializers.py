@@ -1,17 +1,111 @@
 from decimal import Decimal
 
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.db import transaction
 from django.db.models import Q
 from django.core.validators import RegexValidator
 from rest_framework import serializers
 
+from .exceptions import ApiError
 from .models import (
     ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Role, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User, quantize_money,
 )
+from .services import display_name, notify
 
 phone_validator = RegexValidator(regex=r"^\d+$", message="Phone number must contain only digits.")
+
+NAME_PART_MAX = User._meta.get_field("first_name").max_length  # 150
+
+
+def split_full_name(value):
+    parts = (value or "").strip().split(" ", 1)
+    first = parts[0] if parts else ""
+    last = parts[1].strip() if len(parts) > 1 else ""
+    return first, last
+
+
+class UserContactInputSerializer(serializers.Serializer):
+    """Length/format validation for the user contact fields written by hand in the
+    register / user_detail / me / customer create+update views. Every field is
+    optional; only the keys present in the input are validated."""
+
+    full_name = serializers.CharField(required=False, allow_blank=True)
+    phone = serializers.CharField(
+        required=False, allow_blank=True, max_length=User._meta.get_field("phone").max_length,
+        validators=[phone_validator],
+    )
+    email = serializers.EmailField(
+        required=False, allow_blank=True, max_length=User._meta.get_field("email").max_length,
+    )
+    address = serializers.CharField(required=False, allow_blank=True)
+    username = serializers.CharField(
+        required=False, allow_blank=True, max_length=User._meta.get_field("username").max_length,
+        validators=[UnicodeUsernameValidator()],
+    )
+    area = serializers.CharField(
+        required=False, allow_blank=True, max_length=CustomerProfile._meta.get_field("area").max_length,
+    )
+    vehicle_number = serializers.CharField(
+        required=False, allow_blank=True, max_length=StaffProfile._meta.get_field("vehicle_number").max_length,
+    )
+
+    def validate_full_name(self, value):
+        first, last = split_full_name(value)
+        if len(first) > NAME_PART_MAX or len(last) > NAME_PART_MAX:
+            raise serializers.ValidationError(
+                f"Name is too long (max {NAME_PART_MAX} characters per part).", code="max_length"
+            )
+        return value.strip()
+
+
+def contact_validation_error(errors):
+    """Flatten DRF ``serializer.errors`` into an ApiError:
+    {"detail": first message, "code": "invalid"|"max_length", "field": name, "errors": {...}}
+    plus the field-keyed lists themselves."""
+    field, messages = next(iter(errors.items()))
+    first = messages[0] if isinstance(messages, (list, tuple)) and messages else messages
+    code = getattr(first, "code", None)
+    code = "max_length" if code == "max_length" else "invalid"
+    plain_errors = {key: [str(message) for message in value] for key, value in errors.items()}
+    return ApiError(str(first), code=code, field=field, errors=plain_errors, **plain_errors)
+
+
+def validate_user_contact(data, *, name_key="full_name", exclude_user=None, check_duplicate_phone=False):
+    """Validate the contact fields present in ``data`` (a dict or QueryDict) BEFORE
+    any write. Returns the cleaned values (stripped) keyed by canonical field name.
+    Raises ApiError (400) on the first problem."""
+    payload = {}
+    for key in ("phone", "email", "address", "username", "area", "vehicle_number"):
+        value = data.get(key)
+        if value is not None:
+            payload[key] = value
+    name = data.get(name_key)
+    if name is not None:
+        payload["full_name"] = name
+    for key, value in payload.items():
+        if not isinstance(value, str):
+            raise ApiError(f"{key} must be text.", code="invalid", field=key, errors={key: ["Must be text."]})
+
+    serializer = UserContactInputSerializer(data=payload)
+    if not serializer.is_valid():
+        raise contact_validation_error(serializer.errors)
+    cleaned = dict(serializer.validated_data)
+
+    phone = cleaned.get("phone")
+    if check_duplicate_phone and phone:
+        existing = User.objects.filter(phone=phone, role__code="customer")
+        if exclude_user is not None:
+            existing = existing.exclude(pk=exclude_user.pk)
+        existing = existing.first()
+        if existing:
+            message = (
+                f"This mobile number is already in the system. The user is: "
+                f"{display_name(existing)} ({existing.username})."
+            )
+            raise ApiError(message, code="duplicate_phone", field="phone", errors={"phone": [message]}, phone=[message])
+    return cleaned
 
 
 def serialize_decimal(value):
@@ -350,11 +444,13 @@ class SaleSerializer(serializers.ModelSerializer):
         )
 
         if sale.customer and any(item["quantity"] > 0 for item in items_data):
-            Notification.objects.create(
-                recipient=sale.customer.user,
-                notification_type="DIRECT_SALE_COMPLETED",
-                title="Direct Sale Completed",
-                body="A direct sale has been recorded on your account. Check your order history for the completed entry.",
+            notify(
+                sale.customer.user,
+                None,
+                "DIRECT_SALE_COMPLETED",
+                "Direct Sale Completed",
+                "A direct sale has been recorded on your account. Check your order history for the completed entry.",
+                dedupe=False,
             )
 
         return sale
@@ -593,11 +689,51 @@ class BookingSerializer(serializers.ModelSerializer):
     order_id = serializers.CharField(read_only=True)
     rejected_by_name = serializers.SerializerMethodField()
     rejected_by_role = serializers.SerializerMethodField()
+    delivery_status = serializers.SerializerMethodField()
+    delivery_staff_name = serializers.SerializerMethodField()
+    delivery_rejection_reason = serializers.SerializerMethodField()
+    needs_reassignment = serializers.SerializerMethodField()
 
     class Meta:
         model = Booking
         fields = "__all__"
         read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale", "rejected_by", "rejected_at"]
+
+    def _get_delivery(self, obj):
+        try:
+            return obj.delivery
+        except Delivery.DoesNotExist:
+            return None
+
+    def _requester_is_staff_or_admin(self):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return False
+        role = getattr(getattr(user, "role", None), "code", "")
+        return role in ("admin", "staff") or bool(getattr(user, "is_superuser", False))
+
+    def get_delivery_status(self, obj):
+        delivery = self._get_delivery(obj)
+        return delivery.status if delivery else None
+
+    def get_delivery_staff_name(self, obj):
+        delivery = self._get_delivery(obj)
+        return display_name(delivery.staff) if delivery else None
+
+    def get_delivery_rejection_reason(self, obj):
+        delivery = self._get_delivery(obj)
+        if not delivery or not self._requester_is_staff_or_admin():
+            return None
+        return delivery.rejection_reason or None
+
+    def get_needs_reassignment(self, obj):
+        delivery = self._get_delivery(obj)
+        return bool(
+            obj.status == Booking.Status.PENDING
+            and delivery is not None
+            and delivery.status == Delivery.Status.REJECTED
+        )
 
     def get_rejected_by_name(self, obj):
         rejected_by = getattr(obj, "rejected_by", None)
@@ -662,6 +798,8 @@ class BookingSerializer(serializers.ModelSerializer):
         profile = getattr(user, "customer_profile", None)
         if not profile:
             raise serializers.ValidationError({"detail": "Customer profile is required to place an order."})
+        if profile.is_active is False or not user.is_active:
+            raise ApiError("This account is inactive.", code="inactive", status=403)
         if not validated_data.get("delivery_address"):
             validated_data["delivery_address"] = user.address
         if not validated_data.get("delivery_phone"):
@@ -682,26 +820,28 @@ class BookingSerializer(serializers.ModelSerializer):
         )
 
         admin_role_users = User.objects.filter(role__code="admin")
-        customer_name = profile.user.get_full_name() or profile.user.username
-        
-        Notification.objects.create(
-            recipient=profile.user,
-            booking=booking,
-            notification_type="ORDER_PLACED",
-            title="Order Placed",
-            body=f"Your GasBook order #{booking.order_id} has been placed successfully.",
+        customer_name = display_name(profile.user)
+
+        notify(
+            profile.user,
+            booking,
+            "ORDER_PLACED",
+            "Order Placed",
+            f"Your GasBook order #{booking.order_id} has been placed successfully.",
+            dedupe=True,
         )
 
         for admin in admin_role_users:
             discount_line = ""
             if pricing["has_discount"]:
                 discount_line = f"\nDiscount: -₹{pricing['discount_amount']:,.2f}"
-            Notification.objects.create(
-                recipient=admin,
-                booking=booking,
-                notification_type="ORDER_PLACED",
-                title="New GasBook Order Received",
-                body=f"Order #{booking.order_id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nOriginal: ₹{pricing['original_amount']:,.2f}{discount_line}\nFinal: ₹{pricing['final_amount']:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
+            notify(
+                admin,
+                booking,
+                "ORDER_PLACED",
+                "New GasBook Order Received",
+                f"Order #{booking.order_id} - {customer_name}\nProduct: {booking.quantity}x {booking.cylinder_type.name}\nOriginal: ₹{pricing['original_amount']:,.2f}{discount_line}\nFinal: ₹{pricing['final_amount']:,.2f}\nPayment: 💵 COD\nAddress: {booking.delivery_address}",
+                dedupe=True,
             )
         return booking
 
@@ -714,6 +854,7 @@ class DeliverySerializer(serializers.ModelSerializer):
     cylinder_type_name = serializers.CharField(source="booking.cylinder_type.name", read_only=True)
     quantity = serializers.IntegerField(source="booking.quantity", read_only=True)
     booking_status = serializers.CharField(source="booking.status", read_only=True)
+    order_id = serializers.CharField(source="booking.order_id", read_only=True)
     booking_payment_method = serializers.CharField(source="booking.payment_method", read_only=True)
     booking_payment_status = serializers.CharField(source="booking.payment_status", read_only=True)
     staff_name = serializers.SerializerMethodField()

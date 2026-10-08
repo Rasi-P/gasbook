@@ -1,7 +1,10 @@
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag, ClipboardList, Truck } from 'lucide-react';
-import { api } from '../lib/api';
+import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag, ClipboardList, Truck, UserX, UserCheck } from 'lucide-react';
+import { api, extractApiError, fetchAllPages, getApiErrorCode, getApiStatus, LIMITS } from '../lib/api';
+import { ErrorState, LoadingState } from '../components/AsyncState';
+import { Pager } from '../components/Pager';
+import { usePager } from '../hooks/usePager';
 
 type Customer = {
   id: number;
@@ -23,7 +26,11 @@ type Customer = {
     cylinder_type_name: string;
     custom_price: string;
   }[];
+  is_active?: boolean;
 };
+
+type CylinderTypeOption = { id: number; name: string; selling_price?: string };
+type RowNotice = { id: number; text: string; tone: 'info' | 'error' | 'confirm' };
 
 type CylinderDiscount = {
   id: number;
@@ -102,6 +109,10 @@ type Booking = {
   payment_method?: string;
   payment_status?: string;
   created_at: string;
+  delivery_status?: string | null;
+  delivery_staff_name?: string | null;
+  delivery_rejection_reason?: string | null;
+  needs_reassignment?: boolean;
 };
 
 type Staff = { id: number; username: string; full_name: string; assigned_area: string; user: number };
@@ -180,6 +191,14 @@ export default function Customers() {
   const [requestsId, setRequestsId] = useState<number | null>(null);
   const [requestsBusyId, setRequestsBusyId] = useState<number | null>(null);
   const [requestsMessage, setRequestsMessage] = useState('');
+  const [requestsMessageTone, setRequestsMessageTone] = useState<'info' | 'error'>('info');
+  const [listStatus, setListStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [listError, setListError] = useState('');
+  const [bookingsError, setBookingsError] = useState('');
+  const [ledgerError, setLedgerError] = useState('');
+  const [ledgerErrorId, setLedgerErrorId] = useState<number | null>(null);
+  const [rowNotice, setRowNotice] = useState<RowNotice | null>(null);
+  const listPager = usePager(customers, 10, search);
 
   // Per-row action state — track which customer's panel is open
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -198,7 +217,7 @@ export default function Customers() {
 
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  const [cylinderTypes, setCylinderTypes] = useState<{ id: number; name: string }[]>([]);
+  const [cylinderTypes, setCylinderTypes] = useState<CylinderTypeOption[]>([]);
   const [discountId, setDiscountId] = useState<number | null>(null);
   const [discountTab, setDiscountTab] = useState<'global' | 'cylinder'>('global');
   const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage');
@@ -213,6 +232,7 @@ export default function Customers() {
   const [cylinderDiscountIsPercentage, setCylinderDiscountIsPercentage] = useState(false);
   const [cylinderDiscountEnabled, setCylinderDiscountEnabled] = useState(true);
   const [cylinderDiscountSaving, setCylinderDiscountSaving] = useState(false);
+  const [cylinderDiscountError, setCylinderDiscountError] = useState('');
 
   // Add customer form
   const [showAdd, setShowAdd] = useState(false);
@@ -255,10 +275,9 @@ export default function Customers() {
 
   async function ensureCylinderTypes() {
     if (cylinderTypes.length > 0) return cylinderTypes;
-    const { data } = await api.get('/cylinder-types/');
-    const rows = data.results || data;
+    const rows = await fetchAllPages<CylinderTypeOption>('/cylinder-types/');
     setCylinderTypes(rows);
-    return rows as { id: number; name: string }[];
+    return rows;
   }
 
   function resetCylinderDiscountEditor() {
@@ -267,6 +286,16 @@ export default function Customers() {
     setCylinderDiscountValue('');
     setCylinderDiscountIsPercentage(false);
     setCylinderDiscountEnabled(true);
+    setCylinderDiscountError('');
+  }
+
+  // Price the discount is validated against: the customer's agreed rate when one exists, else the list price.
+  function cylinderPriceFor(customer: Customer, cylinderTypeId: number) {
+    const custom = customer.custom_rates?.find((rate) => rate.cylinder_type === cylinderTypeId)?.custom_price;
+    const type = cylinderTypes.find((t) => t.id === cylinderTypeId);
+    const raw = custom ?? type?.selling_price;
+    const price = Number(raw);
+    return raw !== undefined && Number.isFinite(price) ? price : null;
   }
 
   function availableCylinderOptions(customer: Customer, currentCylinderId?: number) {
@@ -299,8 +328,8 @@ export default function Customers() {
       });
       syncCustomerRecord(customerId, data);
       setEditingId(null);
-    } catch {
-      setEditError('Failed to save. Try again.');
+    } catch (err) {
+      setEditError(extractApiError(err, ['name', 'full_name', 'phone', 'email', 'address'], 'Failed to save. Try again.'));
     } finally {
       setEditSaving(false);
     }
@@ -326,8 +355,8 @@ export default function Customers() {
     try {
       const { data } = await api.post(`/customers/${customerId}/credentials/`, {});
       setPwMsg(data.temporary_password || 'Password reset successfully.');
-    } catch {
-      setPwMsg('Failed to reset password.');
+    } catch (err) {
+      setPwMsg(extractApiError(err, [], 'Failed to reset password.'));
     } finally {
       setPwSaving(false);
     }
@@ -335,14 +364,61 @@ export default function Customers() {
 
   async function handleDeleteCustomer(customerId: number, name: string) {
     const ok = window.confirm(
-      `PERMANENTLY DELETE customer ${name}? This will completely destroy all their sales, payments, and booking data. This cannot be undone.`
+      `Delete customer ${name}? Customers with sales, payments or bookings cannot be deleted and can only be deactivated.`
     );
     if (!ok) return;
     setDeletingId(customerId);
+    setRowNotice(null);
     try {
-      await api.delete(`/customers/${customerId}/credentials/`);
+      await api.delete(`/customers/${customerId}/`);
       setCustomers((prev) => prev.filter((c) => c.id !== customerId));
       if (selected && selected.customer.id === customerId) setSelected(null);
+    } catch (err) {
+      const detail = extractApiError(err, [], 'Failed to delete customer.');
+      if (getApiStatus(err) === 409 && getApiErrorCode(err) === 'has_history') {
+        const body = (err as { response?: { data?: { is_active?: boolean } } })?.response?.data;
+        const alreadyInactive = body?.is_active === false || customers.find((c) => c.id === customerId)?.is_active === false;
+        if (alreadyInactive) {
+          setRowNotice({
+            id: customerId,
+            text: 'This customer has transaction history and cannot be deleted. The account is already deactivated; ledger and order history are preserved.',
+            tone: 'info',
+          });
+        } else {
+          setRowNotice({ id: customerId, text: detail, tone: 'confirm' });
+        }
+      } else {
+        setRowNotice({ id: customerId, text: detail, tone: 'error' });
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function deactivateCustomer(customerId: number) {
+    setDeletingId(customerId);
+    try {
+      const { data } = await api.post(`/customers/${customerId}/deactivate/`, {});
+      const updated = (data as { customer?: Partial<Customer> } | undefined)?.customer;
+      syncCustomerRecord(customerId, { ...(updated ?? {}), is_active: false });
+      setRowNotice({ id: customerId, text: (data as { detail?: string })?.detail || 'Customer deactivated. Ledger and order history are preserved.', tone: 'info' });
+    } catch (err) {
+      setRowNotice({ id: customerId, text: extractApiError(err, [], 'Failed to deactivate customer.'), tone: 'error' });
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function reactivateCustomer(customerId: number) {
+    setDeletingId(customerId);
+    setRowNotice(null);
+    try {
+      const { data } = await api.post(`/customers/${customerId}/reactivate/`, {});
+      const updated = (data as { customer?: Partial<Customer> } | undefined)?.customer;
+      syncCustomerRecord(customerId, { ...(updated ?? {}), is_active: true });
+      setRowNotice({ id: customerId, text: (data as { detail?: string })?.detail || 'Customer reactivated.', tone: 'info' });
+    } catch (err) {
+      setRowNotice({ id: customerId, text: extractApiError(err, [], 'Failed to reactivate customer.'), tone: 'error' });
     } finally {
       setDeletingId(null);
     }
@@ -390,12 +466,7 @@ export default function Customers() {
       syncCustomerRecord(customerId, data);
       setDiscountMessage('Global discount saved.');
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: Record<string, string> } })?.response?.data;
-      setDiscountError(
-        detail?.global_discount_value ||
-        detail?.global_discount_type ||
-        'Failed to save discount settings.'
-      );
+      setDiscountError(extractApiError(err, ['global_discount_value', 'global_discount_type', 'global_discount_is_active'], 'Failed to save discount settings.'));
     } finally {
       setDiscountSaving(false);
     }
@@ -414,10 +485,12 @@ export default function Customers() {
         return;
       }
       setEditingCylinderDiscountId('new');
-      setCylinderDiscountCylinderId(String(nextType.id));
+      // No pre-selection: the admin must pick the cylinder explicitly.
+      setCylinderDiscountCylinderId('');
       setCylinderDiscountValue('');
       setCylinderDiscountIsPercentage(false);
       setCylinderDiscountEnabled(true);
+      setCylinderDiscountError('');
     } catch {
       setDiscountError('Failed to load cylinder sizes.');
     }
@@ -432,13 +505,32 @@ export default function Customers() {
     setCylinderDiscountValue(String(discount.discount_value || ''));
     setCylinderDiscountIsPercentage(discount.discount_type === 'percentage');
     setCylinderDiscountEnabled(discount.is_active);
+    setCylinderDiscountError('');
   }
 
   async function handleSaveCylinderDiscount(e: FormEvent, customer: Customer) {
     e.preventDefault();
+    setCylinderDiscountError('');
     if (!cylinderDiscountCylinderId) {
-      setDiscountError('Select a cylinder size.');
+      setCylinderDiscountError('Select a cylinder size.');
       return;
+    }
+    const cylinderTypeId = Number(cylinderDiscountCylinderId);
+    const value = Number(cylinderDiscountValue);
+    if (!cylinderDiscountValue.trim() || !Number.isFinite(value) || value <= 0) {
+      setCylinderDiscountError('Enter a discount greater than 0.');
+      return;
+    }
+    if (cylinderDiscountIsPercentage && value > 100) {
+      setCylinderDiscountError('Percentage discount cannot exceed 100%.');
+      return;
+    }
+    if (!cylinderDiscountIsPercentage) {
+      const price = cylinderPriceFor(customer, cylinderTypeId);
+      if (price !== null && value > price) {
+        setCylinderDiscountError(`Fixed discount cannot exceed the cylinder price (${money(price)}).`);
+        return;
+      }
     }
     setCylinderDiscountSaving(true);
     setDiscountError('');
@@ -446,9 +538,9 @@ export default function Customers() {
     try {
       const payload = {
         customer: customer.id,
-        cylinder_type: Number(cylinderDiscountCylinderId),
+        cylinder_type: cylinderTypeId,
         discount_type: cylinderDiscountIsPercentage ? 'percentage' : 'fixed',
-        discount_value: cylinderDiscountValue || '0',
+        discount_value: cylinderDiscountValue.trim(),
         is_active: cylinderDiscountEnabled,
       };
       if (editingCylinderDiscountId === 'new') {
@@ -461,11 +553,7 @@ export default function Customers() {
       await refreshCustomerRecord(customer.id);
       resetCylinderDiscountEditor();
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: Record<string, string | string[]> } })?.response?.data;
-      const fieldError = detail?.discount_value || detail?.cylinder_type || detail?.non_field_errors;
-      setDiscountError(
-        Array.isArray(fieldError) ? fieldError.join(', ') : fieldError || 'Failed to save cylinder discount.'
-      );
+      setCylinderDiscountError(extractApiError(err, ['discount_value', 'cylinder_type', 'discount_type', 'non_field_errors'], 'Failed to save cylinder discount.'));
     } finally {
       setCylinderDiscountSaving(false);
     }
@@ -486,8 +574,8 @@ export default function Customers() {
         resetCylinderDiscountEditor();
       }
       setDiscountMessage(`${discount.cylinder_type_name} discount removed.`);
-    } catch {
-      setDiscountError('Failed to remove cylinder discount.');
+    } catch (err) {
+      setDiscountError(extractApiError(err, [], 'Failed to remove cylinder discount.'));
     } finally {
       setCylinderDiscountSaving(false);
     }
@@ -518,8 +606,7 @@ export default function Customers() {
         setCreatedUsername(username);
       }
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setAddError(detail || 'Failed to save. Try again.');
+      setAddError(extractApiError(err, ['full_name', 'name', 'username', 'phone', 'email', 'address', 'linked_customer'], 'Failed to save. Try again.'));
     } finally {
       setAddSaving(false);
     }
@@ -527,25 +614,44 @@ export default function Customers() {
 
   const fetchCustomers = useCallback(() => {
     const params = search ? { search } : {};
-    api.get('/customers/', { params })
-      .then((r) => setCustomers(r.data.results ?? r.data))
-      .catch(() => undefined);
+    setListStatus((prev) => (prev === 'ready' ? prev : 'loading'));
+    setListError('');
+    return fetchAllPages<Customer>('/customers/', params)
+      .then((rows) => {
+        setCustomers(rows);
+        setListStatus('ready');
+      })
+      .catch((err) => {
+        setListError(extractApiError(err, [], 'Could not load customers.'));
+        setListStatus('error');
+      });
   }, [search]);
 
   const loadBookingData = useCallback(() => {
-    const bookingsRequest = api.get('/bookings/').then((r) => r.data.results ?? r.data).catch(() => []);
-    const staffRequest = api.get('/staff-profiles/').then((r) => r.data.results ?? r.data).catch(() => []);
-
-    Promise.all([bookingsRequest, staffRequest])
-      .then(([bookingRows, staffRows]) => {
-        setBookings(bookingRows);
-        setStaff(staffRows);
-        setStaffByBooking((prev) => ({
-          ...Object.fromEntries(bookingRows.map((b: Booking) => [b.id, String(b.assigned_staff || '')])),
-          ...prev,
-        }));
-      })
-      .catch(() => undefined);
+    // Only pending bookings feed the per-customer request badges.
+    Promise.allSettled([
+      fetchAllPages<Booking>('/bookings/', { status: 'pending' }),
+      fetchAllPages<Staff>('/staff-profiles/'),
+    ])
+      .then(([bookingsResult, staffResult]) => {
+        let problem = '';
+        if (bookingsResult.status === 'fulfilled') {
+          const bookingRows = bookingsResult.value;
+          setBookings(bookingRows);
+          setStaffByBooking((prev) => ({
+            ...Object.fromEntries(bookingRows.map((b: Booking) => [b.id, String(b.assigned_staff || '')])),
+            ...prev,
+          }));
+        } else {
+          problem = extractApiError(bookingsResult.reason, [], 'Booking requests unavailable.');
+        }
+        if (staffResult.status === 'fulfilled') {
+          setStaff(staffResult.value);
+        } else if (!problem) {
+          problem = extractApiError(staffResult.reason, [], 'Staff list unavailable.');
+        }
+        setBookingsError(problem);
+      });
   }, []);
 
   useEffect(() => {
@@ -558,29 +664,41 @@ export default function Customers() {
   }, [loadBookingData]);
 
   async function approveBooking(id: number) {
+    if (requestsBusyId !== null) return;
     const assigned_staff = staffByBooking[id];
-    setRequestsBusyId(id);
     setRequestsMessage('');
+    const booking = bookings.find((b) => b.id === id);
+    if (booking?.needs_reassignment && !assigned_staff) {
+      setRequestsMessageTone('error');
+      setRequestsMessage('Pick a different staff member before reassigning.');
+      return;
+    }
+    setRequestsBusyId(id);
     try {
       await api.post(`/bookings/${id}/approve/`, { assigned_staff });
+      setRequestsMessageTone('info');
       setRequestsMessage('Booking approved and assigned.');
       loadBookingData();
-    } catch {
-      setRequestsMessage('Failed to approve booking.');
+    } catch (err) {
+      setRequestsMessageTone('error');
+      setRequestsMessage(extractApiError(err, ['assigned_staff'], 'Failed to approve booking.'));
     } finally {
       setRequestsBusyId(null);
     }
   }
 
   async function rejectBooking(id: number) {
+    if (requestsBusyId !== null) return;
     setRequestsBusyId(id);
     setRequestsMessage('');
     try {
       await api.post(`/bookings/${id}/reject/`, { reason: 'Rejected by admin' });
+      setRequestsMessageTone('info');
       setRequestsMessage('Booking rejected.');
       loadBookingData();
-    } catch {
-      setRequestsMessage('Failed to reject booking.');
+    } catch (err) {
+      setRequestsMessageTone('error');
+      setRequestsMessage(extractApiError(err, ['reason'], 'Failed to reject booking.'));
     } finally {
       setRequestsBusyId(null);
     }
@@ -588,10 +706,15 @@ export default function Customers() {
 
   function openLedger(id: number) {
     setLoading(true);
+    setLedgerError('');
+    setLedgerErrorId(null);
     setEditingId(null); setCredsId(null); setCreds(null); setCredsError(''); setPwMsg(''); closeDiscount();
     api.get(`/customers/${id}/ledger/`)
       .then((r) => setSelected(r.data))
-      .catch(() => undefined)
+      .catch((err) => {
+        setLedgerError(extractApiError(err, [], 'Could not load the customer ledger.'));
+        setLedgerErrorId(id);
+      })
       .finally(() => setLoading(false));
   }
 
@@ -896,6 +1019,8 @@ export default function Customers() {
                             {renderSwitch(cylinderDiscountEnabled, setCylinderDiscountEnabled, isActive ? 'On' : 'Off', true)}
                           </div>
 
+                          {cylinderDiscountError && <p className="form-error" role="alert">{cylinderDiscountError}</p>}
+
                           <div className="discount-row-actions">
                             <button className="btn btn-primary" type="submit" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }}>
                               {cylinderDiscountSaving ? 'Saving…' : 'Save'}
@@ -956,7 +1081,7 @@ export default function Customers() {
                     <form onSubmit={(e) => handleSaveCylinderDiscount(e, customer)} className="discount-inline-form">
                       <label className="discount-field">
                         <span>Cylinder Size</span>
-                        <select value={cylinderDiscountCylinderId} onChange={(e) => setCylinderDiscountCylinderId(e.target.value)}>
+                        <select value={cylinderDiscountCylinderId} required aria-invalid={Boolean(cylinderDiscountError) && !cylinderDiscountCylinderId} onChange={(e) => { setCylinderDiscountCylinderId(e.target.value); setCylinderDiscountError(''); }}>
                           <option value="">Select cylinder</option>
                           {cylinderOptions.map((type) => (
                             <option key={type.id} value={type.id}>{type.name}</option>
@@ -996,6 +1121,8 @@ export default function Customers() {
                         <span>Active</span>
                         {renderSwitch(cylinderDiscountEnabled, setCylinderDiscountEnabled, cylinderDiscountEnabled ? 'On' : 'Off', true)}
                       </div>
+
+                      {cylinderDiscountError && <p className="form-error" role="alert">{cylinderDiscountError}</p>}
 
                       <div className="discount-row-actions">
                         <button className="btn btn-primary" type="submit" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }}>
@@ -1492,17 +1619,17 @@ export default function Customers() {
           <div className="grid-2">
             <label>
               <span>Name *</span>
-              <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="e.g. Ravi Kumar" required autoFocus />
+              <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="e.g. Ravi Kumar" maxLength={LIMITS.name} required autoFocus />
             </label>
             <label>
               <span>Phone *</span>
-              <input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" placeholder="Required" required />
+              <input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" placeholder="Required" required />
             </label>
           </div>
           <div className="grid-2">
             <label>
               <span>Username</span>
-              <input value={addUsername} onChange={(e) => setAddUsername(e.target.value)} placeholder="e.g. ravi" required />
+              <input value={addUsername} onChange={(e) => setAddUsername(e.target.value)} placeholder="e.g. ravi" maxLength={LIMITS.username} autoComplete="off" required />
             </label>
             <label>
               <span>Password</span>
@@ -1512,14 +1639,14 @@ export default function Customers() {
           <div className="grid-2">
             <label>
               <span>Email</span>
-              <input type="email" value={addEmail} onChange={(e) => setAddEmail(e.target.value)} placeholder="Optional" />
+              <input type="email" value={addEmail} onChange={(e) => setAddEmail(e.target.value)} placeholder="Optional" maxLength={LIMITS.email} />
             </label>
             <label>
               <span>Address</span>
               <input value={addAddress} onChange={(e) => setAddAddress(e.target.value)} placeholder="Optional" />
             </label>
           </div>
-          {addError && <p className="form-error">{addError}</p>}
+          {addError && <p className="form-error" role="alert">{addError}</p>}
           <button className="btn btn-primary" type="submit" disabled={addSaving}>
             <UserPlus size={18} /> {addSaving ? 'Saving…' : 'Save Customer'}
           </button>
@@ -1537,29 +1664,44 @@ export default function Customers() {
 
       {loading && <p style={{ textAlign: 'center', padding: '24px' }}>Loading…</p>}
 
+      {ledgerError && ledgerErrorId !== null && (
+        <ErrorState message={ledgerError} onRetry={() => openLedger(ledgerErrorId)} compact />
+      )}
+
+      {bookingsError && (
+        <p className="form-error" role="alert" style={{ marginBottom: '12px' }}>
+          Booking requests unavailable. {bookingsError}{' '}
+          <button type="button" className="async-inline-retry" onClick={loadBookingData}>Retry</button>
+        </p>
+      )}
+
+      {listStatus === 'error' && <ErrorState message={listError} onRetry={() => void fetchCustomers()} />}
+
+      {listStatus !== 'error' && (
       <div className="card" style={{ padding: 0 }}>
-        {customers.length === 0 && !loading && (
+        {listStatus === 'loading' && <LoadingState label="Loading customers…" />}
+        {listStatus === 'ready' && customers.length === 0 && (
           <p style={{ textAlign: 'center', padding: '24px' }}>No customers found.</p>
         )}
 
-        {customers.map((c) => {
+        {listStatus === 'ready' && listPager.pageItems.map((c) => {
           const customerBookings = bookings
             .filter((b) => b.customer === c.id && b.status === 'pending')
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
           const pendingCount = customerBookings.length;
           const hasRequests = pendingCount > 0;
+          const inactive = c.is_active === false;
+          const rowBusy = deletingId === c.id;
 
           return (
           <div key={c.id}>
             {/* ── Row ── */}
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '14px 18px', borderBottom: '1px solid var(--border)',
-            }}>
+            <div className="customer-row">
               {/* Left: customer details */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <strong style={{ fontSize: '1rem' }}>{c.name}</strong>
+              <div className="customer-row-main">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+                  <strong style={{ fontSize: '1rem', opacity: inactive ? 0.6 : 1 }}>{c.name}</strong>
+                  {inactive && <span className="badge badge-danger">INACTIVE</span>}
                 </div>
                 <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
                   {c.phone && <span>{c.phone}</span>}
@@ -1568,8 +1710,8 @@ export default function Customers() {
                 </div>
               </div>
 
-              {/* Right: badges + action buttons + ledger arrow */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              {/* Badges (wrap onto their own line on phones) */}
+              <div className="customer-row-badges">
                 {hasRequests && (
                   <button
                     className="icon-button"
@@ -1621,11 +1763,15 @@ export default function Customers() {
                     {Object.values(c.empties_owed || {}).reduce((s, x) => s + x.owed, 0)} empty
                   </span>
                 )}
+              </div>
 
+              {/* Action buttons + ledger arrow */}
+              <div className="customer-row-actions">
                 {/* Edit button */}
                 <button
                   className="icon-button"
                   title="Edit"
+                  aria-label="Edit"
                   onClick={() => editingId === c.id ? cancelEdit() : startEdit(c)}
                   style={editingId === c.id ? { color: 'var(--primary)' } : {}}
                 >
@@ -1635,6 +1781,7 @@ export default function Customers() {
                 <button
                   className="icon-button"
                   title="Customer Discount"
+                  aria-label="Customer Discount"
                   onClick={() => discountId === c.id ? closeDiscount() : openDiscount(c)}
                   style={discountId === c.id ? { color: 'var(--primary)' } : {}}
                 >
@@ -1645,18 +1792,46 @@ export default function Customers() {
                 <button
                   className="icon-button"
                   title="Credentials / Reset Password"
+                  aria-label="Credentials / Reset Password"
                   onClick={() => credsId === c.id ? closeCreds() : loadCreds(c.id)}
                   style={credsId === c.id ? { color: 'var(--primary)' } : {}}
                 >
                   <KeyRound size={16} />
                 </button>
 
+                {inactive ? (
+                  <button
+                    className="icon-button"
+                    title="Reactivate Customer"
+                    aria-label="Reactivate Customer"
+                    style={{ color: 'var(--success)' }}
+                    disabled={rowBusy}
+                    onClick={() => reactivateCustomer(c.id)}
+                  >
+                    <UserCheck size={16} />
+                  </button>
+                ) : (
+                  <button
+                    className="icon-button"
+                    title="Deactivate Customer"
+                    aria-label="Deactivate Customer"
+                    style={{ color: 'var(--warning)' }}
+                    disabled={rowBusy}
+                    onClick={() => {
+                      if (window.confirm(`Deactivate ${c.name}? They will no longer be able to sign in or order. Ledger and order history are preserved.`)) void deactivateCustomer(c.id);
+                    }}
+                  >
+                    <UserX size={16} />
+                  </button>
+                )}
+
                 {/* Delete button */}
                 <button
                   className="icon-button"
                   title="Delete Customer"
+                  aria-label="Delete Customer"
                   style={{ color: 'var(--danger)' }}
-                  disabled={deletingId === c.id}
+                  disabled={rowBusy}
                   onClick={() => handleDeleteCustomer(c.id, c.name)}
                 >
                   <Trash2 size={16} />
@@ -1666,6 +1841,7 @@ export default function Customers() {
                 <button
                   className="icon-button"
                   title="View Ledger"
+                  aria-label="View Ledger"
                   onClick={() => openLedger(c.id)}
                   style={{ color: 'var(--text-muted)' }}
                 >
@@ -1673,6 +1849,31 @@ export default function Customers() {
                 </button>
               </div>
             </div>
+
+            {rowNotice?.id === c.id && (
+              <div
+                role={rowNotice.tone === 'error' ? 'alert' : 'status'}
+                className={rowNotice.tone === 'error' ? 'form-error' : 'form-note'}
+                style={{ margin: '0 18px 12px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}
+              >
+                <span>{rowNotice.text}</span>
+                <span style={{ display: 'inline-flex', gap: '8px' }}>
+                  {rowNotice.tone === 'confirm' && !inactive && (
+                    <button
+                      type="button"
+                      className="btn btn-compact"
+                      disabled={rowBusy}
+                      onClick={() => {
+                        if (window.confirm(`Deactivate ${c.name} instead? They will no longer be able to sign in or order. Ledger and order history are preserved.`)) void deactivateCustomer(c.id);
+                      }}
+                    >
+                      {rowBusy ? 'Deactivating…' : 'Deactivate instead'}
+                    </button>
+                  )}
+                  <button type="button" className="btn btn-compact" onClick={() => setRowNotice(null)}>Dismiss</button>
+                </span>
+              </div>
+            )}
 
             {/* ── Inline Booking Requests panel ── */}
             {requestsId === c.id && hasRequests && (
@@ -1696,7 +1897,11 @@ export default function Customers() {
                   </span>
                 </div>
 
-                {requestsMessage && <p className="form-note" style={{ margin: 0 }}>{requestsMessage}</p>}
+                {requestsMessage && (
+                  <p className={requestsMessageTone === 'error' ? 'form-error' : 'form-note'} role={requestsMessageTone === 'error' ? 'alert' : 'status'} style={{ margin: 0 }}>
+                    {requestsMessage}
+                  </p>
+                )}
 
                 {customerBookings.map((booking) => (
                   <div
@@ -1727,6 +1932,12 @@ export default function Customers() {
                         {booking.note && (
                           <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{booking.note}</span>
                         )}
+                        {booking.status === 'pending' && booking.needs_reassignment && (
+                          <span className="badge badge-warning" style={{ whiteSpace: 'normal', justifySelf: 'start' }}>
+                            Declined by {booking.delivery_staff_name || 'staff'}
+                            {booking.delivery_rejection_reason ? `: ${booking.delivery_rejection_reason}` : ''}
+                          </span>
+                        )}
                       </div>
                       <span className={`badge ${
                         booking.status === 'pending' ? 'badge-warning' :
@@ -1746,18 +1957,24 @@ export default function Customers() {
                           onChange={(e) => setStaffByBooking((prev) => ({ ...prev, [booking.id]: e.target.value }))}
                           style={{ minWidth: '220px' }}
                         >
-                          <option value="">Select staff</option>
-                          {staff.map((s) => (
-                            <option key={s.id} value={s.user}>
-                              {s.full_name || s.username}
-                            </option>
-                          ))}
+                          <option value="">{booking.needs_reassignment ? 'Select staff (required)' : 'Select staff'}</option>
+                          {staff.map((s) => {
+                            const name = s.full_name || s.username;
+                            const declined = Boolean(booking.needs_reassignment && booking.delivery_staff_name && name === booking.delivery_staff_name);
+                            return (
+                              <option key={s.id} value={s.user} disabled={declined}>
+                                {declined ? `${name} (declined)` : name}
+                              </option>
+                            );
+                          })}
                         </select>
                         <div style={{ display: 'inline-flex', gap: '8px' }}>
                           <button
                             className="icon-button"
-                            title="Approve & Assign"
-                            disabled={requestsBusyId === booking.id}
+                            title={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
+                            aria-label={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
+                            disabled={requestsBusyId !== null}
+                            aria-busy={requestsBusyId === booking.id}
                             onClick={() => approveBooking(booking.id)}
                           >
                             <Check size={18} />
@@ -1765,7 +1982,8 @@ export default function Customers() {
                           <button
                             className="icon-button"
                             title="Reject Booking"
-                            disabled={requestsBusyId === booking.id}
+                            aria-label="Reject Booking"
+                            disabled={requestsBusyId !== null}
                             onClick={() => rejectBooking(booking.id)}
                           >
                             <X size={18} />
@@ -1800,24 +2018,24 @@ export default function Customers() {
                 <div className="grid-2">
                   <label>
                     <span>Name *</span>
-                    <input value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus />
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={LIMITS.name} required autoFocus />
                   </label>
                   <label>
                     <span>Phone *</span>
-                    <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} required />
+                    <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" required />
                   </label>
                 </div>
                 <div className="grid-2">
                   <label>
                     <span>Email</span>
-                    <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
+                    <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} maxLength={LIMITS.email} />
                   </label>
                   <label>
                     <span>Address</span>
                     <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
                   </label>
                 </div>
-                {editError && <p className="form-error">{editError}</p>}
+                {editError && <p className="form-error" role="alert">{editError}</p>}
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button className="btn btn-primary" type="submit" disabled={editSaving}>
                     <Check size={16} /> {editSaving ? 'Saving…' : 'Save'}
@@ -2069,7 +2287,13 @@ export default function Customers() {
           </div>
         );
         })}
+        {listStatus === 'ready' && (
+          <div style={{ padding: '0 18px' }}>
+            <Pager page={listPager.page} pageCount={listPager.pageCount} onChange={listPager.setPage} total={listPager.total} />
+          </div>
+        )}
       </div>
+      )}
     </div>
   );
 }

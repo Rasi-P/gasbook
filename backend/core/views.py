@@ -20,6 +20,24 @@ from .models import (
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
+from .exceptions import ApiError
+from .services import (
+    admin_users,
+    clean_reason,
+    deactivate_customer,
+    deactivate_user,
+    default_staff_customers,
+    delete_customer,
+    delete_user,
+    display_name,
+    lock_booking_and_delivery,
+    notify,
+    parse_money,
+    parse_non_negative_int,
+    reactivate_customer,
+    reactivate_user,
+    user_search_q,
+)
 from .serializers import (
     ActivityLogSerializer,
     BookingSerializer,
@@ -42,6 +60,8 @@ from .serializers import (
     get_sale_pricing_snapshot,
     get_stock_row,
     serialize_decimal,
+    split_full_name,
+    validate_user_contact,
 )
 
 
@@ -149,11 +169,28 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
         username = (request.data.get("username") or "").strip()
-        user = User.objects.filter(username=username).first()
+        user = User.objects.filter(username=username).select_related("role").first()
         if not user:
             return response
+        role = getattr(user.role, "code", "") or ""
+        client = str(request.data.get("client") or "").strip().lower()
+        if client == "customer" and role != "customer":
+            return Response(
+                {"detail": "This account cannot sign in to the customer app.", "code": "role_not_allowed", "role": role},
+                status=drf_status.HTTP_403_FORBIDDEN,
+            )
+        if client == "management" and role == "customer":
+            return Response(
+                {
+                    "detail": "This account is for the customer app, not the management portal.",
+                    "code": "role_not_allowed",
+                    "role": "customer",
+                },
+                status=drf_status.HTTP_403_FORBIDDEN,
+            )
         response.data["must_change_password"] = bool(getattr(user, "must_change_password", False))
         response.data["user_id"] = user.id
+        response.data["role"] = role
         return response
 
 
@@ -283,8 +320,12 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerProfileSerializer
 
     def get_permissions(self):
+        if getattr(self, "action", None) == "me":
+            return [permissions.IsAuthenticated()]
+        if self.request.method == "DELETE" or getattr(self, "action", None) in ("deactivate", "reactivate"):
+            return [IsAdminUserRole()]
         if getattr(getattr(self.request.user, "role", None), "code", "") == "customer":
-            if self.request.method in ["POST", "DELETE"]:
+            if self.request.method == "POST":
                 return [IsAdminUserRole()]
             return [permissions.IsAuthenticated()]
         return [IsStaffOrAdmin()]
@@ -305,29 +346,18 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(area__icontains=area)
         if active in ["0", "1"]:
             queryset = queryset.filter(is_active=active == "1")
-        if term:
-            queryset = queryset.filter(Q(user__first_name__icontains=term) | Q(user__last_name__icontains=term) | Q(user__phone__icontains=term))
+        if term and term.split():
+            queryset = queryset.filter(user_search_q(term, prefix="user__"))
         return queryset
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        name = request.data.get("name", "").strip()
-        phone = request.data.get("phone", "").strip()
-        email = request.data.get("email", "").strip()
-        address = request.data.get("address", "").strip()
+        contact = validate_user_contact(request.data, name_key="name", check_duplicate_phone=True)
+        name = contact.get("full_name", "")
+        phone = contact.get("phone", "")
+        email = contact.get("email", "")
+        address = contact.get("address", "")
         parts = name.split(" ", 1)
-        
-        if phone and not phone.isdigit():
-            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
-
-        if phone:
-            existing_user = User.objects.filter(phone=phone, role__code="customer").first()
-            if existing_user:
-                full_name = existing_user.get_full_name() or existing_user.username
-                return Response(
-                    {"detail": f"This mobile number is already in the system. The user is: {full_name} ({existing_user.username})."}, 
-                    status=drf_status.HTTP_400_BAD_REQUEST
-                )
 
         base_name = "_".join(parts).lower() if parts else "customer"
         username_str = f"{base_name}_{phone[-4:]}" if phone else f"{base_name}_{get_random_string(8)}"
@@ -350,6 +380,45 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         profile = CustomerProfile.objects.create(user=user)
         return Response(self.get_serializer(profile).data, status=drf_status.HTTP_201_CREATED)
 
+    @action(detail=False, methods=["get"], url_path="me", permission_classes=[permissions.IsAuthenticated])
+    def me(self, request):
+        if getattr(getattr(request.user, "role", None), "code", "") != "customer":
+            raise ApiError("Customer account required.", code="role_not_allowed", status=403)
+        profile = getattr(request.user, "customer_profile", None)
+        if profile is None:
+            raise ApiError("Customer profile not found.", code="customer_profile_missing", status=404)
+        profile = self.get_queryset().filter(pk=profile.pk).first() or profile
+        return Response(self.get_serializer(profile).data)
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        profile = self.get_object()
+        return Response(delete_customer(profile, request.user))
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        profile = deactivate_customer(self.get_object(), request.user)
+        profile = self.get_queryset().filter(pk=profile.pk).first() or profile
+        data = self.get_serializer(profile).data
+        return Response(
+            {
+                "detail": "Customer deactivated. Ledger and order history are preserved.",
+                "mode": "deactivated",
+                "pending_amount": data.get("pending_amount"),
+                "customer": data,
+            }
+        )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
+    def reactivate(self, request, pk=None):
+        profile = reactivate_customer(self.get_object(), request.user)
+        profile = self.get_queryset().filter(pk=profile.pk).first() or profile
+        return Response(
+            {"detail": "Customer reactivated.", "mode": "reactivated", "customer": self.get_serializer(profile).data}
+        )
+
     @action(detail=True, methods=["get"], permission_classes=[IsStaffOrAdmin])
     def ledger(self, request, pk=None):
         customer_profile = self.get_object()
@@ -358,26 +427,49 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         bookings = BookingSerializer(customer_profile.bookings.select_related("assigned_staff", "cylinder_type").order_by("-created_at"), many=True, context={'request': request}).data
         return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments, "bookings": bookings})
 
+    def update(self, request, *args, **kwargs):
+        if getattr(getattr(request.user, "role", None), "code", "") == "customer":
+            # Customers may only change their own contact details (name/phone/email/address);
+            # every profile field (balances, discounts, default_staff, is_active...) is ignored.
+            instance = self.get_object()
+            serializer = self.get_serializer(instance, data={}, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(self.get_serializer(instance).data)
+        return super().update(request, *args, **kwargs)
+
+    @transaction.atomic
     def perform_update(self, serializer):
+        user = serializer.instance.user
+        contact = validate_user_contact(
+            self.request.data, name_key="name", exclude_user=user, check_duplicate_phone=True
+        )
+        if "is_active" in serializer.validated_data:
+            # Account status is admin-only and must go through the deactivate/reactivate
+            # policy (open-order guard + ActivityLog), never through a plain field write.
+            wants_active = bool(serializer.validated_data.pop("is_active"))
+            if getattr(getattr(self.request.user, "role", None), "code", "") != "admin":
+                raise ApiError("Only admins can change account status.", code="forbidden", status=403)
+            currently_active = bool(serializer.instance.is_active and user.is_active)
+            if wants_active != currently_active:
+                if wants_active:
+                    reactivate_customer(serializer.instance, self.request.user)
+                else:
+                    deactivate_customer(serializer.instance, self.request.user)
         profile = serializer.save()
         user = profile.user
-        name = self.request.data.get("name")
-        phone = self.request.data.get("phone")
-        address = self.request.data.get("address")
-        email = self.request.data.get("email")
+        update_fields = ["first_name", "last_name", "phone", "address", "email"]
 
-        if name is not None:
-            parts = name.strip().split(" ", 1)
-            user.first_name = parts[0] if parts else ""
-            user.last_name = parts[1] if len(parts) > 1 else ""
-        if phone is not None:
-            user.phone = phone.strip()
-        if address is not None:
-            user.address = address.strip()
-        if email is not None:
-            user.email = email.strip()
-            
-        user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
+        if "full_name" in contact:
+            user.first_name, user.last_name = split_full_name(contact["full_name"])
+        if "phone" in contact:
+            user.phone = contact["phone"]
+        if "address" in contact:
+            user.address = contact["address"]
+        if "email" in contact:
+            user.email = contact["email"]
+
+        user.save(update_fields=update_fields)
 
 
 class SaleViewSet(viewsets.ModelViewSet):
@@ -390,8 +482,8 @@ class SaleViewSet(viewsets.ModelViewSet):
         term = self.request.query_params.get("search")
         payment_mode = self.request.query_params.get("payment_mode")
         pending = self.request.query_params.get("pending")
-        if term:
-            queryset = queryset.filter(Q(customer__user__first_name__icontains=term) | Q(customer__user__last_name__icontains=term) | Q(customer__user__phone__icontains=term))
+        if term and term.split():
+            queryset = queryset.filter(user_search_q(term, prefix="customer__user__"))
         if payment_mode:
             queryset = queryset.filter(payment_mode=payment_mode)
         if pending == "1":
@@ -481,6 +573,17 @@ class StaffProfileViewSet(viewsets.ModelViewSet):
     serializer_class = StaffProfileSerializer
     permission_classes = [IsStaffOrAdmin]
 
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            return [IsAdminUserRole()]
+        return super().get_permissions()
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        # Routed through the same deletion policy as DELETE /api/auth/users/{pk}/.
+        profile = self.get_object()
+        return Response(delete_user(profile.user, request.user))
+
 
 class CustomerCylinderRateViewSet(viewsets.ModelViewSet):
     queryset = CustomerCylinderRate.objects.select_related("customer", "cylinder_type")
@@ -523,7 +626,9 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class BookingViewSet(viewsets.ModelViewSet):
-    queryset = Booking.objects.select_related("customer__user", "cylinder_type", "assigned_staff", "sale").prefetch_related(
+    queryset = Booking.objects.select_related(
+        "customer__user", "cylinder_type", "assigned_staff", "sale", "delivery", "delivery__staff"
+    ).prefetch_related(
         "customer__custom_rates",
         "customer__cylinder_discounts__cylinder_type",
     )
@@ -547,6 +652,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(status=statuses[0])
         return queryset
 
+    @transaction.atomic
     def perform_create(self, serializer):
         if getattr(getattr(self.request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can create booking requests.")
@@ -685,50 +791,133 @@ class BookingViewSet(viewsets.ModelViewSet):
         })
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
     def approve(self, request, pk=None):
         booking = self.get_object()
+        booking, delivery = lock_booking_and_delivery(booking.pk)
+
+        if booking.status not in (Booking.Status.PENDING, Booking.Status.APPROVED, Booking.Status.ACCEPTED):
+            raise ApiError(
+                f"Cannot approve booking in {booking.status} status.",
+                code="invalid_state",
+                status_value=booking.status,
+            )
+
         staff_id = request.data.get("assigned_staff") or booking.customer.default_staff_id
         if not staff_id:
-            return Response({"detail": "Assign delivery staff before approval."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            raise ApiError("Assign delivery staff before approval.", code="required", field="assigned_staff")
+        try:
+            staff_id = int(str(staff_id).strip())
+        except (TypeError, ValueError):
+            raise ApiError("Valid active staff user is required.", code="invalid", field="assigned_staff")
         staff = User.objects.filter(id=staff_id, role__code="staff", is_active=True).first()
         if not staff:
-            return Response({"detail": "Valid active staff user is required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            raise ApiError("Valid active staff user is required.", code="invalid", field="assigned_staff")
+
+        # Same staff, delivery still live: nothing to do (keeps an `accepted` booking accepted).
+        if (
+            delivery
+            and delivery.staff_id == staff.id
+            and delivery.status in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED)
+        ):
+            return Response(BookingSerializer(booking, context={"request": request}).data)
+
+        if delivery and delivery.status in (
+            Delivery.Status.OUT_FOR_DELIVERY, Delivery.Status.DELIVERED, Delivery.Status.CANCELLED
+        ):
+            raise ApiError("Delivery state is inconsistent with the booking.", code="conflict", status=409)
+
         booking.status = Booking.Status.APPROVED
         booking.assigned_staff = staff
         booking.approved_by = request.user
         booking.approved_at = timezone.now()
-        booking.save(update_fields=["status", "assigned_staff", "approved_by", "approved_at", "updated_at"])
-        
-        delivery, created = Delivery.objects.get_or_create(booking=booking, defaults={"staff": staff, "status": Delivery.Status.ASSIGNED})
-        if not created and (delivery.staff_id != staff.id or delivery.status == Delivery.Status.REJECTED):
+        booking.rejection_reason = None
+        booking.rejected_by = None
+        booking.rejected_by_role = None
+        booking.rejected_at = None
+        booking.save(update_fields=[
+            "status", "assigned_staff", "approved_by", "approved_at",
+            "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at",
+        ])
+
+        previous_staff = None
+        previous_status = None
+        if delivery is None:
+            delivery = Delivery.objects.create(booking=booking, staff=staff, status=Delivery.Status.ASSIGNED)
+            created = True
+        else:
+            created = False
+            previous_staff = delivery.staff
+            previous_status = delivery.status
             delivery.staff = staff
             delivery.status = Delivery.Status.ASSIGNED
             delivery.rejection_reason = ""
-            delivery.save(update_fields=["staff", "status", "rejection_reason", "updated_at"])
+            delivery.started_at = None
+            delivery.completed_at = None
+            delivery.note = ""
+            delivery.empty_collected = 0
+            delivery.payment_collected = 0
+            delivery.save(update_fields=[
+                "staff", "status", "rejection_reason", "started_at", "completed_at",
+                "note", "empty_collected", "payment_collected", "updated_at",
+            ])
 
-        # Staff notification
-        if not Notification.objects.filter(recipient=staff, booking=booking, notification_type="STAFF_ASSIGNED").exists():
-            Notification.objects.create(
-                recipient=staff,
-                booking=booking,
-                notification_type="STAFF_ASSIGNED",
-                title="New Delivery Assigned",
-                body=f"New delivery assigned — Order #{booking.order_id}.",
+        ActivityLog.objects.create(
+            action="booking_approved",
+            user=request.user,
+            description=f"Assigned order #{booking.order_id} to {display_name(staff)}"[:255],
+            metadata={
+                "booking_id": booking.id,
+                "delivery_id": delivery.id,
+                "staff_id": staff.id,
+                "previous_staff_id": previous_staff.id if previous_staff else None,
+                "previous_delivery_status": previous_status,
+                "reassignment": not created,
+            },
+        )
+
+        notify(
+            staff,
+            booking,
+            "STAFF_ASSIGNED",
+            "New Delivery Assigned",
+            f"New delivery assigned — Order #{booking.order_id}.",
+            dedupe=created,
+        )
+        if (
+            not created
+            and previous_staff is not None
+            and previous_staff.id != staff.id
+            and previous_status in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED)
+        ):
+            notify(
+                previous_staff,
+                booking,
+                "DELIVERY_REASSIGNED",
+                "Delivery Reassigned",
+                f"Order #{booking.order_id} has been reassigned to another staff member.",
+                dedupe=False,
             )
 
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
     def reject(self, request, pk=None):
         booking = self.get_object()
-        
-        # Don't allow rejecting if already rejected or delivered/out for delivery
-        if booking.status in [Booking.Status.REJECTED, Booking.Status.OUT_FOR_DELIVERY, Booking.Status.DELIVERED]:
-            return Response({"detail": f"Cannot reject booking in {booking.status} status."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        booking, delivery = lock_booking_and_delivery(booking.pk)
 
-        reason = request.data.get("reason", "").strip()
-        if not reason:
-            return Response({"detail": "Rejection reason is required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if booking.status in (
+            Booking.Status.REJECTED, Booking.Status.OUT_FOR_DELIVERY,
+            Booking.Status.DELIVERED, Booking.Status.CANCELLED,
+        ):
+            raise ApiError(
+                f"Cannot reject booking in {booking.status} status.",
+                code="invalid_state",
+                status_value=booking.status,
+            )
+
+        reason = clean_reason(request.data.get("reason"), Booking._meta.get_field("rejection_reason").max_length)
 
         booking.status = Booking.Status.REJECTED
         booking.rejection_reason = reason
@@ -736,15 +925,38 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking.rejected_by_role = "admin"
         booking.rejected_at = timezone.now()
         booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
-        
-        if not Notification.objects.filter(recipient=booking.customer.user, booking=booking, notification_type="ORDER_REJECTED").exists():
-            Notification.objects.create(
-                recipient=booking.customer.user,
-                booking=booking,
-                notification_type="ORDER_REJECTED",
-                title="Booking Rejected",
-                body=f"Your GasBook order #{booking.order_id} was rejected by Admin. Reason: {reason}",
-            )
+
+        if delivery and delivery.status in (
+            Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED, Delivery.Status.REJECTED
+        ):
+            previous_status = delivery.status
+            delivery.status = Delivery.Status.CANCELLED
+            delivery.save(update_fields=["status", "updated_at"])
+            if previous_status in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED):
+                notify(
+                    delivery.staff,
+                    booking,
+                    "DELIVERY_CANCELLED",
+                    "Delivery Cancelled",
+                    f"Order #{booking.order_id} was rejected by Admin and removed from your deliveries.",
+                    dedupe=False,
+                )
+
+        ActivityLog.objects.create(
+            action="booking_rejected",
+            user=request.user,
+            description=f"Rejected order #{booking.order_id}: {reason}"[:255],
+            metadata={"booking_id": booking.id, "delivery_id": delivery.id if delivery else None, "reason": reason},
+        )
+
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_REJECTED",
+            "Booking Rejected",
+            f"Your GasBook order #{booking.order_id} was rejected by Admin. Reason: {reason}",
+            dedupe=True,
+        )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
 
@@ -765,169 +977,252 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(status=status_param)
         return queryset
 
+    def _check_ownership(self, request, delivery):
+        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
+            raise ApiError("This delivery is not assigned to you.", code="forbidden", status=403)
+
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def accept(self, request, pk=None):
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        
-        if delivery.status not in [Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED]:
-            return Response({"detail": f"Cannot accept delivery from current status ({delivery.status})."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
+
+        if delivery.status not in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED):
+            raise ApiError(
+                f"Cannot accept delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
+        if delivery.status == Delivery.Status.ACCEPTED:
+            return Response(DeliverySerializer(delivery).data)
 
         delivery.status = Delivery.Status.ACCEPTED
         delivery.save(update_fields=["status", "updated_at"])
-        delivery.booking.status = Booking.Status.OUT_FOR_DELIVERY
-        delivery.booking.save(update_fields=["status", "updated_at"])
+        booking.status = Booking.Status.ACCEPTED
+        booking.save(update_fields=["status", "updated_at"])
 
-        staff_name = delivery.staff.get_full_name() or delivery.staff.username
-
-        if not Notification.objects.filter(recipient=delivery.booking.customer.user, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
-            Notification.objects.create(
-                recipient=delivery.booking.customer.user,
-                booking=delivery.booking,
-                notification_type="ORDER_OUT_FOR_DELIVERY",
-                title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
+        staff_name = display_name(delivery.staff)
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_ACCEPTED",
+            "Order Accepted",
+            f"Your GasBook order #{booking.order_id} has been accepted by {staff_name} and will be delivered soon.",
+            dedupe=True,
+        )
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "STAFF_ACCEPTED",
+                "Delivery Accepted by Staff",
+                f"Staff {staff_name} accepted order #{booking.order_id}.",
+                dedupe=True,
             )
-
-        for admin in User.objects.filter(role__code="admin"):
-            if not Notification.objects.filter(recipient=admin, booking=delivery.booking, notification_type="STAFF_ACCEPTED").exists():
-                Notification.objects.create(
-                    recipient=admin,
-                    booking=delivery.booking,
-                    notification_type="STAFF_ACCEPTED",
-                    title="Delivery Accepted by Staff",
-                    body=f"Staff {staff_name} accepted order #{delivery.booking.order_id}.",
-                )
 
         return Response(DeliverySerializer(delivery).data)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def reject(self, request, pk=None):
+        """Staff *decline*: the Delivery is rejected and the Booking returns to the
+        pending queue for re-assignment. The Booking's rejected_* fields are never
+        written here (they mean "order rejected by admin")."""
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        
-        reason = request.data.get("reason", "").strip() or "Other"
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
+
+        if delivery.status not in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED):
+            raise ApiError(
+                f"Cannot decline delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
+
+        reason = clean_reason(request.data.get("reason"), Delivery._meta.get_field("rejection_reason").max_length)
+        previous_status = delivery.status
+
         delivery.status = Delivery.Status.REJECTED
         delivery.rejection_reason = reason
         delivery.save(update_fields=["status", "rejection_reason", "updated_at"])
 
-        # Reject the booking completely
-        booking = delivery.booking
-        booking.status = Booking.Status.REJECTED
-        booking.rejection_reason = reason
-        booking.rejected_by = request.user
-        booking.rejected_by_role = "staff"
-        booking.rejected_at = timezone.now()
-        booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
+        booking.status = Booking.Status.PENDING
+        booking.assigned_staff = None
+        booking.approved_by = None
+        booking.approved_at = None
+        booking.save(update_fields=["status", "assigned_staff", "approved_by", "approved_at", "updated_at"])
 
-        staff_name = delivery.staff.get_full_name() or delivery.staff.username
+        staff_name = display_name(delivery.staff)
+        ActivityLog.objects.create(
+            action="delivery_declined",
+            user=request.user,
+            description=f"{staff_name} declined order #{booking.order_id}: {reason}"[:255],
+            metadata={
+                "booking_id": booking.id,
+                "delivery_id": delivery.id,
+                "staff_id": delivery.staff_id,
+                "reason": reason,
+                "previous_delivery_status": previous_status,
+            },
+        )
 
-        # Admin notification
-        for admin in User.objects.filter(role__code="admin"):
-            Notification.objects.create(
-                recipient=admin,
-                booking=booking,
-                notification_type="STAFF_REJECTED",
-                title="Staff Delivery Rejected",
-                body=f"Staff {staff_name} rejected order #{booking.order_id}. Reason: {reason}",
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "STAFF_REJECTED",
+                "Staff Declined Delivery",
+                f"Staff {staff_name} declined order #{booking.order_id}. Reason: {reason}. Please assign another staff.",
+                dedupe=False,
             )
-
-        # Customer notification
-        Notification.objects.create(
-            recipient=booking.customer.user,
-            booking=booking,
-            notification_type="ORDER_REJECTED",
-            title="Order Status Update",
-            body=f"Your order #{booking.order_id} was rejected by the delivery staff. Reason: {reason}",
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_REASSIGNMENT",
+            "Order Update",
+            f"Your GasBook order #{booking.order_id} is being reassigned to another delivery partner. "
+            "We will notify you once a new partner is assigned.",
+            dedupe=False,
         )
 
         return Response(DeliverySerializer(delivery).data)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def start(self, request, pk=None):
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        
-        if delivery.status in [Delivery.Status.DELIVERED, Delivery.Status.CANCELLED, Delivery.Status.REJECTED]:
-            return Response({"detail": f"Cannot start delivery from current status ({delivery.status})."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
+
+        if delivery.status in (Delivery.Status.DELIVERED, Delivery.Status.CANCELLED, Delivery.Status.REJECTED):
+            raise ApiError(
+                f"Cannot start delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
 
         delivery.status = Delivery.Status.OUT_FOR_DELIVERY
         delivery.started_at = timezone.now()
-        delivery.booking.status = Booking.Status.OUT_FOR_DELIVERY
-        delivery.booking.save(update_fields=["status", "updated_at"])
+        booking.status = Booking.Status.OUT_FOR_DELIVERY
+        booking.save(update_fields=["status", "updated_at"])
         delivery.save(update_fields=["status", "started_at", "updated_at"])
 
-        if not Notification.objects.filter(recipient=delivery.booking.customer.user, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
-            Notification.objects.create(
-                recipient=delivery.booking.customer.user,
-                booking=delivery.booking,
-                notification_type="ORDER_OUT_FOR_DELIVERY",
-                title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_OUT_FOR_DELIVERY",
+            "Out for Delivery",
+            f"Your GasBook order #{booking.order_id} is out for delivery.",
+            dedupe=True,
+        )
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "ORDER_OUT_FOR_DELIVERY",
+                "Order Out for Delivery",
+                f"Order #{booking.order_id} is out for delivery by {delivery.staff.username}.",
+                dedupe=True,
             )
-
-        for admin in User.objects.filter(role__code="admin"):
-            if not Notification.objects.filter(recipient=admin, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
-                Notification.objects.create(
-                    recipient=admin,
-                    booking=delivery.booking,
-                    notification_type="ORDER_OUT_FOR_DELIVERY",
-                    title="Order Out for Delivery",
-                    body=f"Order #{delivery.booking.order_id} is out for delivery by {delivery.staff.username}.",
-                )
         return Response(DeliverySerializer(delivery).data)
 
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def complete(self, request, pk=None):
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        if delivery.status == Delivery.Status.DELIVERED:
-            return Response({"detail": "Delivery already completed."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
 
-        booking = delivery.booking
+        # --- guards (no writes yet) ---
+        if (
+            delivery.status == Delivery.Status.DELIVERED
+            or booking.sale_id is not None
+            or booking.status == Booking.Status.DELIVERED
+        ):
+            raise ApiError("Delivery already completed.", code="already_completed", sale_id=booking.sale_id)
+        if delivery.status in (Delivery.Status.REJECTED, Delivery.Status.CANCELLED):
+            raise ApiError(
+                f"Cannot complete delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
+
         profile = booking.customer
         pricing = get_booking_pricing_snapshot(booking)
         total = pricing["final_amount"]
 
-        payment_collected = Decimal(str(request.data.get("payment_collected", "0") or "0"))
-        split_payments = request.data.get("split_payments", [])
-        if split_payments:
-            payment_collected = sum(Decimal(str(p.get("amount", 0))) for p in split_payments)
-            
-        if payment_collected < 0 or payment_collected > total:
-            return Response({"detail": "Collected amount must be between 0 and sale total."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        # --- input validation ---
+        data = request.data
+        empty_collected = parse_non_negative_int(data.get("empty_collected"), "empty_collected", "Empty cylinders collected")
+        payment_collected = parse_money(data.get("payment_collected", "0"), "payment_collected", "Collected amount")
+        split_payments = data.get("split_payments") or []
+        if not isinstance(split_payments, list):
+            raise ApiError("Split payments must be a list.", code="invalid", field="split_payments")
+        parsed_splits = []
+        for item in split_payments:
+            if not isinstance(item, dict):
+                raise ApiError("Split payments must be a list.", code="invalid", field="split_payments")
+            amount = parse_money(item.get("amount"), "split_payments", "Split amount")
+            if amount < 0:
+                raise ApiError("Split amount must be a valid amount.", code="invalid", field="split_payments")
+            mode = item.get("mode", Sale.PaymentMode.CASH)
+            if mode not in Sale.PaymentMode.values:
+                raise ApiError("Split payment mode is invalid.", code="invalid", field="split_payments")
+            parsed_splits.append((amount, mode))
+        if parsed_splits:
+            payment_collected = sum((amount for amount, _mode in parsed_splits), Decimal("0"))
 
-        payment_method = request.data.get("payment_method") or booking.payment_method or "COD"
-        paid_payment_mode = request.data.get("paid_payment_mode", "cash")
-        empty_collected = int(request.data.get("empty_collected", 0) or 0)
+        if payment_collected < 0 or payment_collected > total:
+            raise ApiError("Collected amount must be between 0 and sale total.", code="invalid", field="payment_collected")
+
+        payment_method = data.get("payment_method") or booking.payment_method or "COD"
+        paid_payment_mode = data.get("paid_payment_mode") or Sale.PaymentMode.CASH
+        if paid_payment_mode not in Sale.PaymentMode.values:
+            raise ApiError("Payment mode is invalid.", code="invalid", field="paid_payment_mode")
+        note = str(data.get("note", "") or "")[:300]
+
+        # --- location ---
         staff_profile = getattr(delivery.staff, "staff_profile", None)
         location = staff_profile.vehicle_location if staff_profile else None
         if location is None:
             location = StockLocation.objects.filter(code="shop").first() or StockLocation.objects.first()
         if location is None:
-            return Response({"detail": "No stock location configured."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        # Temporary: staff delivery completion should not be blocked by stock/load sync
-        # until the warehouse/vehicle stock workflow is finalized.
-        # stock = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
-        # if stock.quantity < booking.quantity:
-        #     return Response({"detail": f"Not enough filled stock at {location.name}."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        # stock.quantity -= booking.quantity
-        # stock.save(update_fields=["quantity", "updated_at"])
+            raise ApiError("No stock location configured.", code="no_location")
 
-        # if empty_collected > 0:
-        #     empty_stock = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
-        #     empty_stock.quantity += empty_collected
-        #     empty_stock.save(update_fields=["quantity", "updated_at"])
-        if split_payments:
+        # --- stock: lock FILLED then EMPTY, refuse before any write if short ---
+        filled = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
+        if filled.quantity < booking.quantity:
+            raise ApiError(
+                f"Not enough filled {booking.cylinder_type.name} stock at {location.name} "
+                f"({filled.quantity} available, {booking.quantity} needed). Load stock before completing.",
+                code="insufficient_stock",
+                location=location.code,
+                location_name=location.name,
+                available=filled.quantity,
+                required=booking.quantity,
+            )
+        filled.quantity -= booking.quantity
+        filled.save(update_fields=["quantity", "updated_at"])
+        empty = None
+        if empty_collected > 0:
+            empty = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
+            empty.quantity += empty_collected
+            empty.save(update_fields=["quantity", "updated_at"])
+
+        if parsed_splits:
             sale_payment_mode = Sale.PaymentMode.SPLIT
         else:
             sale_payment_mode = Sale.PaymentMode.CREDIT if payment_collected < total else payment_method
-        
+
         sale = Sale.objects.create(
             customer=profile,
             location=location,
@@ -940,7 +1235,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             balance_due=total - payment_collected,
             payment_mode=sale_payment_mode,
             delivery_type=Sale.DeliveryType.DELIVERY,
-            delivery_staff=delivery.staff.get_full_name() or delivery.staff.username,
+            delivery_staff=display_name(delivery.staff),
             sold_by=request.user,
             note=f"Booking #{booking.order_id}",
         )
@@ -953,15 +1248,13 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             empty_returned=empty_collected,
         )
         if payment_collected > 0:
-            if split_payments:
-                for sp in split_payments:
-                    amt = Decimal(str(sp.get("amount", 0)))
-                    mode = sp.get("mode", Sale.PaymentMode.CASH)
+            if parsed_splits:
+                for index, (amt, mode) in enumerate(parsed_splits):
                     if amt > 0:
                         Payment.objects.create(
                             customer=profile, sale=sale, amount=amt,
                             payment_mode=mode, received_by=request.user,
-                            note="Delivery collection (split)", empty_collected=empty_collected if sp == split_payments[0] else 0,
+                            note="Delivery collection (split)", empty_collected=empty_collected if index == 0 else 0,
                         )
             else:
                 actual_payment_mode = paid_payment_mode if sale_payment_mode == Sale.PaymentMode.CREDIT and paid_payment_mode else payment_method
@@ -980,7 +1273,7 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         delivery.payment_method = payment_method
         delivery.empty_collected = empty_collected
         delivery.completed_at = timezone.now()
-        delivery.note = request.data.get("note", "")
+        delivery.note = note
         delivery.save()
 
         booking.status = Booking.Status.DELIVERED
@@ -993,35 +1286,33 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             action="delivery_completed",
             description=f"Delivered booking #{booking.order_id} for Rs. {total}",
             user=request.user,
-            metadata={"booking_id": booking.id, "sale_id": sale.id, "delivery_id": delivery.id},
+            metadata={
+                "booking_id": booking.id,
+                "sale_id": sale.id,
+                "delivery_id": delivery.id,
+                "location": location.code,
+                "filled_after": filled.quantity,
+                "empty_after": empty.quantity if empty is not None else None,
+                "empty_collected": empty_collected,
+            },
         )
 
-        staff_name = delivery.staff.get_full_name() or delivery.staff.username
+        staff_name = display_name(delivery.staff)
 
-        # Customer Notification
         customer_msg = f"Your GasBook order #{booking.order_id} has been delivered successfully."
         if booking.payment_method.upper() == "COD" and payment_collected > 0:
             customer_msg += f" Payment of ₹{payment_collected} was collected successfully."
 
-        if not Notification.objects.filter(recipient=profile.user, booking=booking, notification_type="ORDER_DELIVERED").exists():
-            Notification.objects.create(
-                recipient=profile.user,
-                booking=booking,
-                notification_type="ORDER_DELIVERED",
-                title="Order Delivered",
-                body=customer_msg,
+        notify(profile.user, booking, "ORDER_DELIVERED", "Order Delivered", customer_msg, dedupe=True)
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "ORDER_DELIVERED",
+                "Order Delivered",
+                f"Order #{booking.order_id} was delivered by {staff_name}.",
+                dedupe=True,
             )
-
-        # Admin Notification
-        for admin in User.objects.filter(role__code="admin"):
-            if not Notification.objects.filter(recipient=admin, booking=booking, notification_type="ORDER_DELIVERED").exists():
-                Notification.objects.create(
-                    recipient=admin,
-                    booking=booking,
-                    notification_type="ORDER_DELIVERED",
-                    title="Order Delivered",
-                    body=f"Order #{booking.order_id} was delivered by {staff_name}.",
-                )
 
         return Response(DeliverySerializer(delivery).data)
 
@@ -1045,15 +1336,15 @@ def customer_credentials(request, pk):
             "is_active": user.is_active,
         })
     if request.method == "DELETE":
-        user.delete()
-        return Response({"detail": "Customer deleted completely."})
-    
+        with transaction.atomic():
+            return Response(delete_customer(profile, request.user))
+
+    # A password reset must not silently reactivate a deactivated account.
     new_password = request.data.get("password", "").strip() or get_random_string(length=12)
     user.set_password(new_password)
     user.plain_password = ""
     user.must_change_password = True
-    user.is_active = True
-    user.save(update_fields=["password", "plain_password", "must_change_password", "is_active"])
+    user.save(update_fields=["password", "plain_password", "must_change_password"])
     return Response({"detail": "Temporary password generated.", "username": user.username, "temporary_password": new_password})
 
 
@@ -1102,23 +1393,16 @@ def serialize_me(request):
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
     if request.method == "PATCH":
-        full_name = request.data.get("full_name")
-        phone = request.data.get("phone")
-        email = request.data.get("email")
-        address = request.data.get("address")
+        contact = validate_user_contact(request.data)
 
-        if full_name is not None:
-            parts = full_name.strip().split(" ", 1)
-            request.user.first_name = parts[0] if parts else ""
-            request.user.last_name = parts[1] if len(parts) > 1 else ""
-        if phone is not None:
-            request.user.phone = phone.strip()
-            if request.user.phone and not request.user.phone.isdigit():
-                return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        if email is not None:
-            request.user.email = email.strip()
-        if address is not None:
-            request.user.address = address.strip()
+        if "full_name" in contact:
+            request.user.first_name, request.user.last_name = split_full_name(contact["full_name"])
+        if "phone" in contact:
+            request.user.phone = contact["phone"]
+        if "email" in contact:
+            request.user.email = contact["email"]
+        if "address" in contact:
+            request.user.address = contact["address"]
 
         request.user.save(update_fields=["first_name", "last_name", "phone", "email", "address"])
 
@@ -1139,6 +1423,7 @@ def users_list(request):
             "first_name": u.first_name,
             "last_name": u.last_name,
             "role": getattr(u.role, "code", ""),
+            "is_active": u.is_active,
             "phone": u.phone,
             "email": u.email,
             "address": u.address,
@@ -1165,49 +1450,88 @@ def user_detail(request, pk):
     except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
-        user.delete()
-        return Response({"detail": "User completely deleted."})
+        with transaction.atomic():
+            return Response(delete_user(user, request.user))
 
-    full_name = request.data.get("full_name")
-    phone = request.data.get("phone")
-    address = request.data.get("address")
-    email = request.data.get("email")
+    contact = validate_user_contact(request.data)
+    if "phone" in contact and not contact["phone"]:
+        raise ApiError("Phone required.", code="required", field="phone")
 
-    if full_name is not None:
-        parts = full_name.strip().split(" ", 1)
-        user.first_name = parts[0] if parts else ""
-        user.last_name = parts[1] if len(parts) > 1 else ""
-    if phone is not None:
-        user.phone = phone.strip()
-        if not user.phone:
-            return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        if not user.phone.isdigit():
-            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if address is not None:
-        user.address = address.strip()
-    if email is not None:
-        user.email = email.strip()
+    with transaction.atomic():
+        if "full_name" in contact:
+            user.first_name, user.last_name = split_full_name(contact["full_name"])
+        if "phone" in contact:
+            user.phone = contact["phone"]
+        if "address" in contact:
+            user.address = contact["address"]
+        if "email" in contact:
+            user.email = contact["email"]
 
-    user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
+        user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
-    if getattr(getattr(user, "role", None), "code", "") == "staff":
-        profile, _ = StaffProfile.objects.get_or_create(user=user)
         new_image = request.FILES.get("image")
-        remove_image = str(request.data.get("remove_staff_image", "")).lower() in {"1", "true", "yes", "on"}
-
-        if remove_image and profile.image:
-            profile.image.delete(save=False)
-            profile.image = None
-        if new_image:
-            if profile.image:
+        remove_image = str(request.data.get("remove_staff_image", "")).strip().lower() in {"1", "true", "yes", "on"}
+        # Work on the instance cached by select_related so the response reflects the
+        # saved state (a second StaffProfile instance would leave the cache stale).
+        profile = getattr(user, "staff_profile", None)
+        if profile is None and getattr(getattr(user, "role", None), "code", "") == "staff":
+            profile = StaffProfile.objects.create(user=user)
+        if profile is not None:
+            if remove_image and profile.image:
                 profile.image.delete(save=False)
-            profile.image = new_image
-        if remove_image or new_image:
-            profile.save(update_fields=["image", "updated_at"])
+                profile.image = None
+            if new_image:
+                if profile.image:
+                    profile.image.delete(save=False)
+                profile.image = new_image
+            if remove_image or new_image:
+                profile.save(update_fields=["image", "updated_at"])
+            user.staff_profile = profile
 
     return Response({
         **UserSerializer(user).data,
         "staff_image_url": get_staff_image_url(request, user),
+    })
+
+
+def _admin_user_or_response(request, pk):
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
+        return None, Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
+    try:
+        user = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").get(pk=pk)
+    except ObjectDoesNotExist:
+        return None, Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+    return user, None
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def user_deactivate(request, pk):
+    user, error = _admin_user_or_response(request, pk)
+    if error is not None:
+        return error
+    with transaction.atomic():
+        user = deactivate_user(user, request.user)
+    return Response({
+        "detail": "User deactivated. History is preserved.",
+        "mode": "deactivated",
+        "default_staff_customers": default_staff_customers(user),
+        "user": {**UserSerializer(user).data, "staff_image_url": get_staff_image_url(request, user)},
+    })
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def user_reactivate(request, pk):
+    user, error = _admin_user_or_response(request, pk)
+    if error is not None:
+        return error
+    with transaction.atomic():
+        user = reactivate_user(user, request.user)
+    return Response({
+        "detail": "User reactivated.",
+        "mode": "reactivated",
+        "user": {**UserSerializer(user).data, "staff_image_url": get_staff_image_url(request, user)},
     })
 
 
@@ -1226,12 +1550,12 @@ def user_credentials(request, pk):
             "full_name": user.get_full_name() or user.username,
             "is_active": user.is_active,
         })
+    # A password reset must not silently reactivate a deactivated account.
     new_password = request.data.get("password", "").strip() or get_random_string(length=12)
     user.set_password(new_password)
     user.plain_password = ""
     user.must_change_password = True
-    user.is_active = True
-    user.save(update_fields=["password", "plain_password", "must_change_password", "is_active"])
+    user.save(update_fields=["password", "plain_password", "must_change_password"])
     return Response({"detail": "Temporary password generated.", "username": user.username, "temporary_password": new_password})
 
 
@@ -1265,34 +1589,35 @@ def change_password(request):
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+@transaction.atomic
 def register(request):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
-    username = request.data.get("username", "").strip()
-    password = request.data.get("password", "").strip() or get_random_string(length=12)
-    full_name = request.data.get("full_name", "").strip()
+    contact = validate_user_contact(request.data)
+    username = contact.get("username", "")
+    password = str(request.data.get("password", "") or "").strip() or get_random_string(length=12)
+    full_name = contact.get("full_name", "")
     role = request.data.get("role", "staff")
-    phone = request.data.get("phone", "").strip()
-    email = request.data.get("email", "").strip()
-    address = request.data.get("address", "").strip()
-    area = request.data.get("area", "").strip()
+    phone = contact.get("phone", "")
+    email = contact.get("email", "")
+    address = contact.get("address", "")
+    area = contact.get("area", "")
+    vehicle_number = contact.get("vehicle_number", "")
     staff_image = request.FILES.get("image")
     if not username:
-        return Response({"detail": "Username required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Username required.", "code": "required", "field": "username"}, status=drf_status.HTTP_400_BAD_REQUEST)
     if not phone:
-        return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if phone and not phone.isdigit():
-        return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Phone required.", "code": "required", "field": "phone"}, status=drf_status.HTTP_400_BAD_REQUEST)
     if User.objects.filter(username=username).exists():
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if role not in [r.code for r in Role.objects.all()]:
         return Response({"detail": "Invalid role."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    parts = full_name.split(" ", 1)
+    first_name, last_name = split_full_name(full_name)
     user = User.objects.create_user(
         username=username,
         password=password,
-        first_name=parts[0],
-        last_name=parts[1] if len(parts) > 1 else "",
+        first_name=first_name,
+        last_name=last_name,
         email=email,
         role=Role.objects.get(code=role),
         plain_password="",
@@ -1313,12 +1638,12 @@ def register(request):
         StaffProfile.objects.create(
             user=user,
             assigned_area=area,
-            vehicle_number=request.data.get("vehicle_number", "").strip(),
+            vehicle_number=vehicle_number,
             vehicle_location_id=request.data.get("vehicle_location") or None,
             image=staff_image,
         )
     response_data = UserSerializer(user).data
-    if request.data.get("password", "").strip() == "":
+    if str(request.data.get("password", "") or "").strip() == "":
         response_data["temporary_password"] = password
     return Response(response_data, status=drf_status.HTTP_201_CREATED)
 
@@ -1338,7 +1663,9 @@ def dashboard(request):
     today_sales = Sale.objects.filter(created_at__date=today)
     today_payments = Payment.objects.filter(created_at__date=today)
     pending = Sale.objects.aggregate(total=Sum("balance_due"))["total"] or 0
-    pending_deliveries = Booking.objects.filter(status__in=[Booking.Status.APPROVED, Booking.Status.OUT_FOR_DELIVERY]).count()
+    pending_deliveries = Booking.objects.filter(
+        status__in=[Booking.Status.APPROVED, Booking.Status.ACCEPTED, Booking.Status.OUT_FOR_DELIVERY]
+    ).count()
     today_bookings = Booking.objects.filter(created_at__date=today).count()
     staff_live_status = [
         {
@@ -1346,7 +1673,9 @@ def dashboard(request):
             "name": staff.get_full_name() or staff.username,
             "area": staff.staff_profile.assigned_area if hasattr(staff, "staff_profile") else "",
             "active": staff.staff_profile.is_active if hasattr(staff, "staff_profile") else staff.is_active,
-            "assigned_deliveries": staff.deliveries.exclude(status=Delivery.Status.DELIVERED).count(),
+            "assigned_deliveries": staff.deliveries.exclude(
+                status__in=[Delivery.Status.DELIVERED, Delivery.Status.REJECTED, Delivery.Status.CANCELLED]
+            ).count(),
         }
         for staff in User.objects.filter(role__code="staff").prefetch_related("deliveries")
     ]
@@ -1447,8 +1776,21 @@ def reports(request):
     try:
         start = date.fromisoformat(start_str)
         end = date.fromisoformat(end_str)
-    except ValueError:
-        start = end = today
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "Invalid date. Use YYYY-MM-DD.", "code": "invalid_date"},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+    if start > end:
+        return Response(
+            {
+                "detail": "Start date must be on or before end date.",
+                "code": "invalid_range",
+                "start": start_str,
+                "end": end_str,
+            },
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
     month_start = today.replace(day=1)
 
     range_sales = Sale.objects.filter(created_at__date__gte=start, created_at__date__lte=end)

@@ -12,13 +12,16 @@ import {
   ChevronRight,
   History,
   Check,
-  Pencil
+  Pencil,
+  RefreshCw
 } from 'lucide-react';
-import { api, logout } from '../../lib/api';
+import { api, logout, extractApiError, fetchAllPages, getApiErrorCode, LIMITS } from '../../lib/api';
 import cylinderImg from '../../assets/splash_cylinder.png';
 
 type Delivery = {
   id: number;
+  booking: number;
+  order_id?: string;
   status: string;
   customer_name: string;
   customer_phone: string;
@@ -66,6 +69,11 @@ type StaffProfileData = {
 
 function money(v: number | string) {
   return `₹${Number(v || 0).toLocaleString('en-IN')}`;
+}
+
+// The order number shown to staff is the booking's id (GB{booking}), never the delivery row id.
+function orderRef(d: Delivery) {
+  return d.order_id || `GB${d.booking}`;
 }
 
 function originalAmount(delivery: Delivery) {
@@ -119,6 +127,8 @@ export default function StaffMobileLayout() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [notifError, setNotifError] = useState('');
 
   const [collections, setCollections] = useState<
     Record<
@@ -127,6 +137,7 @@ export default function StaffMobileLayout() {
     >
   >({});
   const [message, setMessage] = useState('');
+  const [messageTone, setMessageTone] = useState<'info' | 'error'>('info');
   const [userName, setUserName] = useState('');
   const [vehicleLocation, setVehicleLocation] = useState('');
   const [staffProfile, setStaffProfile] = useState<StaffProfileData | null>(null);
@@ -137,6 +148,8 @@ export default function StaffMobileLayout() {
 
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('Too far');
+  const [rejectBusy, setRejectBusy] = useState(false);
+  const [actionBusyId, setActionBusyId] = useState<number | null>(null);
   const [codConfirmed, setCodConfirmed] = useState<Record<number, boolean>>({});
 
   // Dynamic Greeting based on time of day
@@ -147,25 +160,40 @@ export default function StaffMobileLayout() {
     return 'Good Evening';
   };
 
+  function showInfo(text: string) {
+    setMessageTone('info');
+    setMessage(text);
+  }
+
+  function showError(text: string) {
+    setMessageTone('error');
+    setMessage(text);
+  }
+
   function load() {
     setIsLoading(true);
+    setLoadError('');
     setUserName(localStorage.getItem('gasbook_name') || 'Staff Partner');
     setVehicleLocation(localStorage.getItem('gasbook_vehicle_location') || '');
 
     Promise.all([
       api.get('/auth/me/'),
-      api.get('/deliveries/'),
-      api.get('/stock/'),
-      api.get('/notifications/').catch(() => ({ data: [] }))
+      fetchAllPages<Delivery>('/deliveries/'),
+      fetchAllPages<NotificationItem>('/notifications/')
+        .then((rows) => ({ rows, error: '' }))
+        .catch((err) => ({ rows: null, error: extractApiError(err, [], 'Notifications unavailable.') })),
     ])
-      .then(([meRes, deliveryRes, , notifRes]) => {
+      .then(([meRes, rows, notif]) => {
         setStaffProfile(meRes.data);
         setUserName(meRes.data.name || localStorage.getItem('gasbook_name') || 'Staff Partner');
         setVehicleLocation(meRes.data.vehicle_location_name || '');
-        const rows = deliveryRes.data.results ?? deliveryRes.data;
         setDeliveries(rows);
-        const notifData = notifRes.data.results ?? notifRes.data;
-        setNotifications(Array.isArray(notifData) ? notifData : []);
+        if (notif.rows) {
+          setNotifications(notif.rows);
+          setNotifError('');
+        } else {
+          setNotifError(notif.error);
+        }
         setCollections(
           Object.fromEntries(
             rows.map((d: Delivery) => [
@@ -180,7 +208,9 @@ export default function StaffMobileLayout() {
           )
         );
       })
-      .catch(() => undefined)
+      .catch((err) => {
+        setLoadError(extractApiError(err, [], 'Could not load your deliveries.'));
+      })
       .finally(() => setIsLoading(false));
   }
 
@@ -198,37 +228,59 @@ export default function StaffMobileLayout() {
   const unreadNotifCount = notifications.filter((n) => !n.is_read).length;
 
   async function accept(id: number) {
+    if (actionBusyId !== null) return;
+    setActionBusyId(id);
     try {
       await api.post(`/deliveries/${id}/accept/`);
-      setMessage('Delivery accepted!');
+      showInfo('Delivery accepted!');
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to accept delivery.');
+    } catch (err) {
+      showError(extractApiError(err, [], 'Failed to accept delivery.'));
+    } finally {
+      setActionBusyId(null);
     }
   }
 
   async function reject(id: number) {
+    if (rejectBusy) return;
+    const reason = rejectReason.trim();
+    if (!reason) {
+      showError('Please select a reason.');
+      return;
+    }
+    if (reason.length > LIMITS.staffReason) {
+      showError(`Reason must be ${LIMITS.staffReason} characters or fewer.`);
+      return;
+    }
+    setRejectBusy(true);
     try {
-      await api.post(`/deliveries/${id}/reject/`, { reason: rejectReason });
-      setMessage('Delivery rejected.');
+      await api.post(`/deliveries/${id}/reject/`, { reason });
+      showInfo('Delivery declined. Admin will reassign it.');
       setRejectingId(null);
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to reject delivery.');
+    } catch (err) {
+      showError(extractApiError(err, ['reason'], 'Failed to decline delivery.'));
+    } finally {
+      setRejectBusy(false);
     }
   }
 
   async function start(id: number) {
+    if (actionBusyId !== null) return;
+    setActionBusyId(id);
     try {
       await api.post(`/deliveries/${id}/start/`);
-      setMessage('Delivery started. Customer notified.');
+      showInfo('Delivery started. Customer notified.');
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to start delivery.');
+    } catch (err) {
+      showError(extractApiError(err, [], 'Failed to start delivery.'));
+    } finally {
+      setActionBusyId(null);
     }
   }
 
   async function complete(id: number, isCod: boolean, totalAmount: number) {
+    if (actionBusyId !== null) return;
     const form = collections[id] || {
       amount: String(totalAmount),
       method: 'cash',
@@ -237,22 +289,34 @@ export default function StaffMobileLayout() {
     };
 
     if (isCod && !codConfirmed[id]) {
-      setMessage('Please confirm payment collected from customer.');
+      showError('Please confirm payment collected from customer.');
       return;
     }
 
-    const payload: any = {
+    const payload = {
       payment_method: isCod ? form.method : 'gpay',
       empty_collected: Number(form.empty || 0),
       payment_collected: String(totalAmount)
     };
 
+    setActionBusyId(id);
     try {
       await api.post(`/deliveries/${id}/complete/`, payload);
-      setMessage('Delivery completed successfully!');
+      showInfo('Delivery completed successfully!');
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to complete delivery.');
+    } catch (err) {
+      const code = getApiErrorCode(err);
+      const detail = extractApiError(err, ['empty_collected', 'payment_collected', 'split_payments'], 'Failed to complete delivery.');
+      if (code === 'insufficient_stock') {
+        showError(`Stock not loaded — contact admin: ${detail}`);
+      } else if (code === 'already_completed') {
+        showError(detail);
+        load();
+      } else {
+        showError(detail);
+      }
+    } finally {
+      setActionBusyId(null);
     }
   }
 
@@ -314,9 +378,9 @@ export default function StaffMobileLayout() {
       setUserName(data.name || userName);
       localStorage.setItem('gasbook_name', data.name || userName);
       setShowEditProfile(false);
-      setMessage('Profile updated successfully.');
-    } catch (err: any) {
-      setEditProfileError(err.response?.data?.detail || 'Failed to update profile.');
+      showInfo('Profile updated successfully.');
+    } catch (err) {
+      setEditProfileError(extractApiError(err, ['full_name', 'name', 'phone', 'email', 'address'], 'Failed to update profile.'));
     } finally {
       setIsSavingProfile(false);
     }
@@ -364,9 +428,18 @@ export default function StaffMobileLayout() {
         </div>
 
         {message && (
-          <div style={{ margin: '0 20px 16px', background: '#EFF6FF', border: '1px solid #BFDBFE', color: '#1457B8', padding: '10px 14px', borderRadius: '12px', fontSize: '13px', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div
+            role={messageTone === 'error' ? 'alert' : 'status'}
+            style={{
+              margin: '0 20px 16px',
+              background: messageTone === 'error' ? '#FEF2F2' : '#EFF6FF',
+              border: messageTone === 'error' ? '1px solid #FECACA' : '1px solid #BFDBFE',
+              color: messageTone === 'error' ? '#B91C1C' : '#1457B8',
+              padding: '10px 14px', borderRadius: '12px', fontSize: '13px', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
+            }}
+          >
             <span>{message}</span>
-            <button onClick={() => setMessage('')} style={{ background: 'none', border: 'none', color: '#1457B8', cursor: 'pointer', fontWeight: 700 }}>✕</button>
+            <button onClick={() => setMessage('')} aria-label="Dismiss" style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontWeight: 700 }}>✕</button>
           </div>
         )}
 
@@ -377,10 +450,25 @@ export default function StaffMobileLayout() {
           </div>
         ) : null}
 
+        {/* LOAD ERROR STATE */}
+        {!isLoading && loadError && activeTab !== 'profile' ? (
+          <div role="alert" style={{ margin: '0 20px', background: '#FFFFFF', borderRadius: '20px', padding: '28px 20px', textAlign: 'center', border: '1px solid #FECACA' }}>
+            <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#B91C1C', margin: 0 }}>Could not load deliveries</h4>
+            <p style={{ fontSize: '13px', color: '#718096', marginTop: '6px' }}>{loadError}</p>
+            <button
+              type="button"
+              onClick={load}
+              style={{ marginTop: '14px', padding: '10px 18px', background: '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+            >
+              <RefreshCw size={16} /> Retry
+            </button>
+          </div>
+        ) : null}
+
         {/* ================================================== */}
         {/* MAIN TAB CONTENT */}
         {/* ================================================== */}
-        {activeTab === 'home' && !isLoading && (
+        {activeTab === 'home' && !isLoading && !loadError && (
           <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
             {/* ================================================== */}
@@ -482,7 +570,7 @@ export default function StaffMobileLayout() {
                   return (
                     <div key={order.id} style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 6px 18px rgba(19, 43, 79, 0.06)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 800, color: '#132B4F' }}>Order #GB{order.id}</span>
+                        <span style={{ fontSize: '14px', fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(order)}</span>
                         <span style={{ fontSize: '12px', color: isOnline ? '#22A06B' : '#FF6F00', fontWeight: 700, background: isOnline ? '#E6F4EA' : '#FFF3EB', padding: '2px 8px', borderRadius: '8px' }}>
                           {isOnline ? '✓ Paid Online' : '💵 COD'}
                         </span>
@@ -511,6 +599,8 @@ export default function StaffMobileLayout() {
                           <select
                             value={rejectReason}
                             onChange={(e) => setRejectReason(e.target.value)}
+                            disabled={rejectBusy}
+                            aria-label="Decline reason"
                             style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #FCA5A5', fontSize: '13px' }}
                           >
                             <option value="Too far">Too far</option>
@@ -518,17 +608,17 @@ export default function StaffMobileLayout() {
                             <option value="Vehicle issue">Vehicle issue</option>
                           </select>
                           <div style={{ display: 'flex', gap: '8px' }}>
-                            <button onClick={() => reject(order.id)} style={{ flex: 1, padding: '8px', background: '#E11D48', color: '#FFF', border: 'none', borderRadius: '8px', fontWeight: 700, cursor: 'pointer' }}>Confirm Reject</button>
-                            <button onClick={() => setRejectingId(null)} style={{ padding: '8px 12px', background: '#FFF', border: '1px solid #CBD5E1', borderRadius: '8px', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                            <button onClick={() => reject(order.id)} disabled={rejectBusy} style={{ flex: 1, padding: '8px', background: rejectBusy ? '#FDA4AF' : '#E11D48', color: '#FFF', border: 'none', borderRadius: '8px', fontWeight: 700, cursor: rejectBusy ? 'not-allowed' : 'pointer' }}>{rejectBusy ? 'Declining…' : 'Confirm Reject'}</button>
+                            <button onClick={() => setRejectingId(null)} disabled={rejectBusy} style={{ padding: '8px 12px', background: '#FFF', border: '1px solid #CBD5E1', borderRadius: '8px', fontWeight: 600, cursor: rejectBusy ? 'not-allowed' : 'pointer' }}>Cancel</button>
                           </div>
                         </div>
                       ) : (
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '10px' }}>
-                          <button onClick={() => setRejectingId(order.id)} style={{ padding: '12px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer' }}>
+                          <button onClick={() => setRejectingId(order.id)} disabled={actionBusyId !== null} style={{ padding: '12px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer' }}>
                             Reject
                           </button>
-                          <button onClick={() => accept(order.id)} style={{ padding: '12px', background: '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer' }}>
-                            Accept Assignment
+                          <button onClick={() => accept(order.id)} disabled={actionBusyId !== null} style={{ padding: '12px', background: actionBusyId === order.id ? '#93C5FD' : '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: actionBusyId !== null ? 'not-allowed' : 'pointer' }}>
+                            {actionBusyId === order.id ? 'Accepting…' : 'Accept Assignment'}
                           </button>
                         </div>
                       )}
@@ -555,7 +645,7 @@ export default function StaffMobileLayout() {
                   return (
                     <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 8px 24px rgba(19, 43, 79, 0.08)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                        <span style={{ fontSize: '15px', fontWeight: 800, color: '#132B4F' }}>Order #GB{activeDelivery.id}</span>
+                        <span style={{ fontSize: '15px', fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(activeDelivery)}</span>
                         <span style={{ background: '#E0E7FF', color: '#1457B8', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 700 }}>
                           {activeDelivery.status.replaceAll('_', ' ')}
                         </span>
@@ -617,7 +707,8 @@ export default function StaffMobileLayout() {
                       {activeDelivery.status === 'accepted' && (
                         <button
                           onClick={() => start(activeDelivery.id)}
-                          style={{ width: '100%', padding: '14px', background: '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '14px', fontWeight: 700, fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}
+                          disabled={actionBusyId !== null}
+                          style={{ width: '100%', padding: '14px', background: actionBusyId !== null ? '#93C5FD' : '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '14px', fontWeight: 700, fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}
                         >
                           <Navigation size={18} /> Start Delivery &amp; Notify Customer
                         </button>
@@ -626,11 +717,11 @@ export default function StaffMobileLayout() {
                       {activeDelivery.status === 'out_for_delivery' && (
                         <button
                           onClick={() => complete(activeDelivery.id, !isOnline, totalAmt)}
-                          disabled={!isOnline && !codConfirmed[activeDelivery.id]}
+                          disabled={(!isOnline && !codConfirmed[activeDelivery.id]) || actionBusyId !== null}
                           style={{
                             width: '100%',
                             padding: '14px',
-                            background: (!isOnline && !codConfirmed[activeDelivery.id]) ? '#A0AEC0' : '#22A06B',
+                            background: ((!isOnline && !codConfirmed[activeDelivery.id]) || actionBusyId !== null) ? '#A0AEC0' : '#22A06B',
                             color: '#FFFFFF',
                             border: 'none',
                             borderRadius: '14px',
@@ -643,7 +734,7 @@ export default function StaffMobileLayout() {
                             cursor: (!isOnline && !codConfirmed[activeDelivery.id]) ? 'not-allowed' : 'pointer'
                           }}
                         >
-                          <CheckCircle2 size={18} /> Complete Delivery
+                          <CheckCircle2 size={18} /> {actionBusyId === activeDelivery.id ? 'Completing…' : 'Complete Delivery'}
                         </button>
                       )}
                     </div>
@@ -673,7 +764,7 @@ export default function StaffMobileLayout() {
                 <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: '0 0 12px' }}>Recent Delivery</h4>
                 <div style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px', border: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#132B4F' }}>Order #GB{recentCompleted.id}</div>
+                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#132B4F' }}>Order #{orderRef(recentCompleted)}</div>
                     <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>{recentCompleted.cylinder_type_name}</div>
                   </div>
                   <span style={{ fontSize: '12px', background: '#E6F4EA', color: '#22A06B', padding: '4px 10px', borderRadius: '12px', fontWeight: 700 }}>
@@ -686,7 +777,7 @@ export default function StaffMobileLayout() {
         )}
 
         {/* TAB 2: DELIVERIES ALL LIST */}
-        {activeTab === 'deliveries' && !isLoading && (
+        {activeTab === 'deliveries' && !isLoading && !loadError && (
           <div style={{ padding: '0 20px' }}>
             <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#132B4F', marginBottom: '14px' }}>All Deliveries</h3>
             <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '12px', marginBottom: '12px' }}>
@@ -700,7 +791,7 @@ export default function StaffMobileLayout() {
               {activeDeliveriesList.map((d) => (
                 <div key={d.id} style={{ background: '#FFFFFF', borderRadius: '16px', padding: '16px', border: '1px solid #E2E8F0' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #GB{d.id}</span>
+                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(d)}</span>
                     <span style={{ fontSize: '12px', fontWeight: 700, color: '#1457B8' }}>{d.status.replaceAll('_', ' ')}</span>
                   </div>
                   <div style={{ fontSize: '13px', color: '#4A5568' }}>{d.customer_name} — {d.customer_address}</div>
@@ -722,14 +813,14 @@ export default function StaffMobileLayout() {
         )}
 
         {/* TAB 3: HISTORY */}
-        {activeTab === 'history' && !isLoading && (
+        {activeTab === 'history' && !isLoading && !loadError && (
           <div style={{ padding: '0 20px' }}>
             <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#132B4F', marginBottom: '14px' }}>Delivery History</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {completedDeliveries.map((d) => (
                 <div key={d.id} style={{ background: '#FFFFFF', borderRadius: '16px', padding: '16px', border: '1px solid #E2E8F0' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #GB{d.id}</span>
+                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(d)}</span>
                     <span style={{ fontSize: '12px', background: '#E6F4EA', color: '#22A06B', padding: '2px 8px', borderRadius: '8px', fontWeight: 700 }}>✓ Delivered</span>
                   </div>
                   <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '4px' }}>{d.cylinder_type_name} ({d.quantity} qty)</div>
@@ -900,7 +991,13 @@ export default function StaffMobileLayout() {
                     <p style={{ fontSize: '12px', color: '#475569', margin: 0 }}>{n.body}</p>
                   </div>
                 ))}
-                {notifications.length === 0 && <p style={{ textAlign: 'center', color: '#94A3B8', marginTop: '40px', fontSize: '13px' }}>No alerts received yet.</p>}
+                {notifError && (
+                  <div role="alert" style={{ textAlign: 'center', color: '#B91C1C', marginTop: '24px', fontSize: '13px' }}>
+                    <p style={{ margin: 0 }}>Notifications unavailable. {notifError}</p>
+                    <button type="button" onClick={load} style={{ marginTop: '10px', padding: '8px 14px', background: '#1457B8', color: '#FFF', border: 'none', borderRadius: '10px', fontWeight: 700, cursor: 'pointer' }}>Retry</button>
+                  </div>
+                )}
+                {!notifError && notifications.length === 0 && <p style={{ textAlign: 'center', color: '#94A3B8', marginTop: '40px', fontSize: '13px' }}>No alerts received yet.</p>}
               </div>
             </div>
           </div>
@@ -941,11 +1038,11 @@ export default function StaffMobileLayout() {
                   </div>
                 ) : null}
 
-                {[
-                  { key: 'full_name', label: 'Full Name *', type: 'text', placeholder: 'Enter your full name' },
-                  { key: 'phone', label: 'Phone Number', type: 'tel', placeholder: 'Enter mobile number' },
-                  { key: 'email', label: 'Email Address', type: 'email', placeholder: 'Enter email address' },
-                ].map((field) => (
+                {([
+                  { key: 'full_name', label: 'Full Name *', type: 'text', placeholder: 'Enter your full name', maxLength: LIMITS.name },
+                  { key: 'phone', label: 'Phone Number', type: 'tel', placeholder: 'Enter mobile number', maxLength: LIMITS.phone, inputMode: 'numeric', pattern: '[0-9]*' },
+                  { key: 'email', label: 'Email Address', type: 'email', placeholder: 'Enter email address', maxLength: LIMITS.email },
+                ] as { key: string; label: string; type: string; placeholder: string; maxLength: number; inputMode?: 'numeric'; pattern?: string }[]).map((field) => (
                   <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#334155' }}>{field.label}</span>
                     <input
@@ -953,6 +1050,10 @@ export default function StaffMobileLayout() {
                       value={editProfileValues[field.key as keyof typeof editProfileValues]}
                       onChange={(e) => setEditProfileValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
                       placeholder={field.placeholder}
+                      maxLength={field.maxLength}
+                      inputMode={field.inputMode}
+                      pattern={field.pattern}
+                      title={field.pattern ? 'Only digits allowed' : undefined}
                       style={{ width: '100%', padding: '12px 14px', borderRadius: '14px', border: '1px solid #D7E0EA', fontSize: '14px', color: '#132B4F', outline: 'none', background: '#FFFFFF' }}
                     />
                   </label>
