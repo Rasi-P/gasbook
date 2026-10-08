@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import type { FormEvent } from 'react';
-import { login, api, getRoleHome } from '../lib/api';
+import { login, api, getRoleHome, logout, extractApiError, getApiStatus, getApiErrorCode, FORCE_PASSWORD_CHANGE_KEY } from '../lib/api';
 import sabcoLogo from '../assets/sabco_logo.png';
 import splashBg from '../assets/splash_bg.png';
 import splashCylinder from '../assets/splash_cylinder.png';
@@ -104,18 +104,42 @@ export default function Login() {
     setIsSubmitting(true);
     try {
       const tokenData = await login(username, password);
-      if (tokenData.must_change_password) {
-        localStorage.setItem('gasbook_force_password_change', '1');
-        window.location.href = '/change-password';
+      const { data } = await api.get('/auth/me/');
+      if (data.role === 'customer') {
+        logout();
+        setLoginError('This account is for the customer app, not the management portal.');
         return;
       }
-      const { data } = await api.get('/auth/me/');
       localStorage.setItem('gasbook_role', data.role);
       localStorage.setItem('gasbook_name', data.name);
       localStorage.setItem('gasbook_vehicle_location', data.vehicle_location_name || '');
+      if (tokenData.must_change_password || data.must_change_password) {
+        localStorage.setItem(FORCE_PASSWORD_CHANGE_KEY, '1');
+        window.location.href = '/change-password';
+        return;
+      }
+      localStorage.removeItem(FORCE_PASSWORD_CHANGE_KEY);
       window.location.href = getRoleHome(data.role);
-    } catch {
-      setLoginError('Wrong username or password.');
+    } catch (err) {
+      const status = getApiStatus(err);
+      const code = getApiErrorCode(err);
+      if (status === 403 && code === 'password_change_required') {
+        // Token issued but every other call is gated: go straight to the change-password screen.
+        localStorage.setItem(FORCE_PASSWORD_CHANGE_KEY, '1');
+        window.location.href = '/change-password';
+        return;
+      }
+      if (status === 401) {
+        logout();
+        setLoginError('Wrong username or password.');
+      } else if (status === 403) {
+        logout();
+        setLoginError(extractApiError(err, [], 'This account cannot sign in here.'));
+      } else if (!status) {
+        setLoginError(extractApiError(err, [], 'Cannot reach the server. Check your connection and try again.'));
+      } else {
+        setLoginError(extractApiError(err, [], 'Login failed. Please try again.'));
+      }
     } finally {
       setIsSubmitting(false);
     }

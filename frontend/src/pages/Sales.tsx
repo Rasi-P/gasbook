@@ -4,7 +4,10 @@ import {
   Banknote, Building2, CreditCard, Plus,
   RotateCcw, Search, Smartphone, Trash2, User,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, extractApiError, fetchAllPages, LIMITS } from '../lib/api';
+import { ErrorState, LoadingState } from '../components/AsyncState';
+import { Pager } from '../components/Pager';
+import { usePager } from '../hooks/usePager';
 
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
@@ -44,7 +47,8 @@ export default function Sales() {
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
-  const [customerSuggestions, setCustomerSuggestions] = useState<{ id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: Record<number, { owed: number; name: string }>; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }> }[]>([]);
+  type CustomerSuggestion = { id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: Record<number, { owed: number; name: string }>; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }>; is_active?: boolean };
+  const [customerSuggestions, setCustomerSuggestions] = useState<CustomerSuggestion[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [location, setLocation] = useState(0);
@@ -67,20 +71,26 @@ export default function Sales() {
 
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [refStatus, setRefStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [refError, setRefError] = useState('');
 
   // Stock availability
   const [stockData, setStockData] = useState<{ cylinder_type: number; location: number; status: string; quantity: number }[]>([]);
+  const [stockError, setStockError] = useState('');
 
   // History state
   const [sales, setSales] = useState<HistorySale[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [historyError, setHistoryError] = useState('');
   const [search, setSearch] = useState('');
   const [filterPending, setFilterPending] = useState(false);
+  const historyPager = usePager(sales, 10, `${search}|${filterPending}`);
 
-  useEffect(() => {
-    Promise.all([api.get('/cylinder-types/'), api.get('/locations/')])
-      .then(([tr, lr]) => {
-        const types: CylinderType[] = tr.data.results ?? tr.data;
-        const locs: Location[] = (lr.data.results ?? lr.data).filter((l: Location) => !l.is_main_supplier && l.code !== 'supplier');
+  function loadReferenceData() {
+    Promise.all([fetchAllPages<CylinderType>('/cylinder-types/'), fetchAllPages<Location>('/locations/')])
+      .then(([types, allLocs]) => {
+        const locs = allLocs.filter((l) => !l.is_main_supplier && l.code !== 'supplier');
         setCylinderTypes(types);
         setLocations(locs);
         const savedLoc = localStorage.getItem('lastSalesLoc');
@@ -89,10 +99,17 @@ export default function Sales() {
         } else {
           setLocation(locs[0]?.id ?? 1);
         }
+        setRefError('');
+        setRefStatus('ready');
         // Don't pre-populate items — user adds when ready
       })
-      .catch(() => undefined);
-  }, []);
+      .catch((err) => {
+        setRefError(extractApiError(err, [], 'Could not load cylinder types and locations.'));
+        setRefStatus('error');
+      });
+  }
+
+  useEffect(() => { loadReferenceData(); }, []);
 
   useEffect(() => {
     if (location) localStorage.setItem('lastSalesLoc', String(location));
@@ -103,9 +120,9 @@ export default function Sales() {
     if (!location || locations.length === 0) return;
     const loc = locations.find(l => l.id === location);
     if (!loc) return;
-    api.get('/stock/', { params: { location: loc.code, status: 'filled' } })
-      .then((r) => setStockData(r.data.results ?? r.data))
-      .catch(() => undefined);
+    fetchAllPages<{ cylinder_type: number; location: number; status: string; quantity: number }>('/stock/', { location: loc.code, status: 'filled' })
+      .then((rows) => { setStockData(rows); setStockError(''); })
+      .catch((err) => setStockError(extractApiError(err, [], 'Stock levels unavailable.')));
   }, [location, locations]);
 
   useEffect(() => {
@@ -113,21 +130,29 @@ export default function Sales() {
       setCustomerSuggestions([]);
       return;
     }
+    let cancelled = false;
     const t = setTimeout(() => {
-      api.get('/customers/', { params: { search: customerName } })
-        .then((r) => setCustomerSuggestions((r.data.results ?? r.data).slice(0, 5)))
+      fetchAllPages<CustomerSuggestion>('/customers/', { search: customerName }, 2)
+        .then((rows) => {
+          if (cancelled) return;
+          // Deactivated customers cannot take new sales.
+          setCustomerSuggestions(rows.filter((c) => c.is_active !== false).slice(0, 5));
+        })
         .catch(() => undefined);
     }, 300);
-    return () => clearTimeout(t);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [customerName, selectedCustomerId]);
 
   function fetchHistory() {
     const params: Record<string, string> = {};
     if (search) params.search = search;
     if (filterPending) params.pending = '1';
-    api.get('/sales/', { params })
-      .then((r) => setSales(r.data.results ?? r.data))
-      .catch(() => undefined);
+    fetchAllPages<HistorySale>('/sales/', params)
+      .then((rows) => { setSales(rows); setHistoryError(''); setHistoryStatus('ready'); })
+      .catch((err) => {
+        setHistoryError(extractApiError(err, [], 'Could not load sales history.'));
+        setHistoryStatus('error');
+      });
   }
 
   useEffect(() => {
@@ -222,12 +247,14 @@ export default function Sales() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
+    if (saving) return;
     setMessage(''); setError('');
     if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
     if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
       setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
       return;
     }
+    setSaving(true);
     try {
       let customerId: number | null = selectedCustomerId;
       if (!customerId) {
@@ -287,8 +314,9 @@ export default function Sales() {
       setPastAmount(''); setPastPaymentMode('cash'); setPastSplit({ cash: '', gpay: '', bank: '' });
       setItems([]);
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setError(msg ? JSON.stringify(msg) : 'Failed to save sale. Check backend connection.');
+      setError(extractApiError(err, ['name', 'phone', 'address', 'customer', 'location', 'sale_items', 'paid_amount', 'split_payments', 'non_field_errors'], 'Failed to save sale. Check backend connection.'));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -296,10 +324,12 @@ export default function Sales() {
 
   async function handleReturnSubmit(e: FormEvent) {
     e.preventDefault();
+    if (saving) return;
     setMessage(''); setError('');
     if (!selectedCustomerId) { setError('Select a customer to record empty returns.'); return; }
     if (returnEmpties.length === 0) { setError('Add at least one cylinder type to return.'); return; }
     const totalEmpties = returnEmpties.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+    setSaving(true);
     try {
       await api.post('/sales/', {
         customer: selectedCustomerId,
@@ -320,8 +350,9 @@ export default function Sales() {
       setReturnEmpties([]);
       setReturnMode(false);
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setError(msg ? JSON.stringify(msg) : 'Failed to record return.');
+      setError(extractApiError(err, ['customer', 'location', 'sale_items', 'non_field_errors'], 'Failed to record return.'));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -346,7 +377,10 @@ export default function Sales() {
         ))}
       </div>
 
-      {tab === 'new' && (
+      {tab === 'new' && refStatus === 'loading' && <LoadingState label="Loading sale setup…" />}
+      {tab === 'new' && refStatus === 'error' && <ErrorState message={refError} onRetry={() => { setRefStatus('loading'); loadReferenceData(); }} />}
+
+      {tab === 'new' && refStatus === 'ready' && (
         <>
           {/* Mode toggle: Sale vs Return Empties */}
           <div style={{ display: 'flex', background: 'var(--border)', borderRadius: '8px', padding: '4px', marginBottom: '16px' }}>
@@ -389,6 +423,7 @@ export default function Sales() {
                       onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); }}
                       placeholder="Search or enter new customer"
                       autoComplete="off"
+                      maxLength={LIMITS.name}
                     />
                   </div>
                   {customerSuggestions.length > 0 && (
@@ -424,7 +459,7 @@ export default function Sales() {
               </label>
               <label>
                 <span>Phone</span>
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Required for new customer" required={Boolean(customerName.trim() && selectedCustomerId === null && !returnMode)} />
+                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Required for new customer" maxLength={LIMITS.phone} inputMode="numeric" pattern="[0-9]*" title="Only digits allowed" required={Boolean(customerName.trim() && selectedCustomerId === null && !returnMode)} />
               </label>
             </div>
             <div style={{ marginTop: '12px' }}>
@@ -540,11 +575,11 @@ export default function Sales() {
                 )}
               </div>
 
-              {error && <p className="form-error">{error}</p>}
+              {error && <p className="form-error" role="alert">{error}</p>}
               {message && <p className="form-note">{message}</p>}
 
-              <button type="submit" className="btn btn-primary">
-                <RotateCcw size={18} /> Record Empty Return
+              <button type="submit" className="btn btn-primary" disabled={saving}>
+                <RotateCcw size={18} /> {saving ? 'Saving…' : 'Record Empty Return'}
               </button>
             </form>
           )}
@@ -588,12 +623,12 @@ export default function Sales() {
                               display: 'inline-flex',
                               alignItems: 'center',
                               gap: '5px',
-                              background: available > 0 ? 'var(--success-soft, rgba(34,197,94,0.1))' : 'var(--danger-soft, rgba(239,68,68,0.1))',
-                              color: available > 0 ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)',
-                              border: `1px solid ${available > 0 ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
-                            }}>
+                              background: stockError ? 'var(--surface-muted)' : available > 0 ? 'var(--success-soft, rgba(34,197,94,0.1))' : 'var(--danger-soft, rgba(239,68,68,0.1))',
+                              color: stockError ? 'var(--text-muted)' : available > 0 ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)',
+                              border: `1px solid ${stockError ? 'var(--border)' : available > 0 ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                            }} title={stockError || undefined}>
                               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'currentColor' }} />
-                              {available} in stock
+                              {stockError ? 'stock unknown' : `${available} in stock`}
                             </span>
                           </div>
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -780,11 +815,11 @@ export default function Sales() {
                 </div>
               )}
 
-              {error && <p className="form-error">{error}</p>}
+              {error && <p className="form-error" role="alert">{error}</p>}
               {message && <p className="form-note">{message}</p>}
 
-              <button type="submit" className="btn btn-primary">
-                <Plus size={20} /> Complete Sale
+              <button type="submit" className="btn btn-primary" disabled={saving}>
+                <Plus size={20} /> {saving ? 'Saving…' : 'Complete Sale'}
               </button>
             </form>
           )}
@@ -806,7 +841,11 @@ export default function Sales() {
             </button>
           </div>
 
+          {historyStatus === 'error' && <ErrorState message={historyError} onRetry={() => { setHistoryStatus('loading'); fetchHistory(); }} />}
+          {historyStatus !== 'error' && (
           <div className="card">
+            {historyStatus === 'loading' && <LoadingState label="Loading sales…" />}
+            {historyStatus === 'ready' && (
             <div className="table-wrap">
               <table>
                 <thead>
@@ -821,7 +860,7 @@ export default function Sales() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sales.map((sale) => (
+                  {historyPager.pageItems.map((sale) => (
                     <tr key={sale.id}>
                       <td><strong>{sale.customer_name}</strong></td>
                       <td>
@@ -891,8 +930,11 @@ export default function Sales() {
                   )}
                 </tbody>
               </table>
+              <Pager page={historyPager.page} pageCount={historyPager.pageCount} onChange={historyPager.setPage} total={historyPager.total} />
             </div>
+            )}
           </div>
+          )}
         </div>
       )}
     </div>

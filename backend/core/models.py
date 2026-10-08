@@ -247,7 +247,7 @@ class Sale(TimeStampedModel):
         PICKUP = "pickup", "Pickup"
         DELIVERY = "delivery", "Home Delivery"
 
-    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="sales", null=True, blank=True)
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="sales", null=True, blank=True)
     location = models.ForeignKey(StockLocation, on_delete=models.PROTECT)
     original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -260,7 +260,7 @@ class Sale(TimeStampedModel):
     delivery_type = models.CharField(max_length=10, choices=DeliveryType.choices, default=DeliveryType.PICKUP)
     delivery_staff = models.CharField(max_length=80, blank=True)
     note = models.CharField(max_length=300, blank=True)
-    sold_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    sold_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     
     objects = models.Manager()
 
@@ -283,11 +283,11 @@ class SaleItem(TimeStampedModel):
 
 
 class Payment(TimeStampedModel):
-    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="payments")
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="payments")
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_mode = models.CharField(max_length=10, choices=Sale.PaymentMode.choices, default=Sale.PaymentMode.CASH)
-    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     note = models.CharField(max_length=200, blank=True)
     empty_collected = models.PositiveIntegerField(default=0)
     
@@ -307,7 +307,7 @@ class Expense(TimeStampedModel):
     category = models.CharField(max_length=20, choices=Category.choices)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     note = models.CharField(max_length=200, blank=True)
-    spent_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    spent_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
 
     objects = models.Manager()
 
@@ -318,7 +318,7 @@ class Expense(TimeStampedModel):
 class ActivityLog(TimeStampedModel):
     action = models.CharField(max_length=80)
     description = models.CharField(max_length=255)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     
     objects = models.Manager()
@@ -368,7 +368,7 @@ class Booking(TimeStampedModel):
 
     objects = models.Manager()
 
-    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="bookings")
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="bookings")
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
     original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -415,7 +415,7 @@ class Delivery(TimeStampedModel):
     objects = models.Manager()
 
     booking = models.OneToOneField(Booking, on_delete=models.CASCADE, related_name="delivery")
-    staff = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="deliveries")
+    staff = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="deliveries")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ASSIGNED)
     rejection_reason = models.CharField(max_length=200, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)

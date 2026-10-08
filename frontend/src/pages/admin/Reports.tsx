@@ -3,7 +3,7 @@ import {
   IndianRupee, WalletCards,
   AlertTriangle, Package, Boxes,
 } from 'lucide-react';
-import { api } from '../../lib/api';
+import { api, extractApiError } from '../../lib/api';
 
 type SaleItem = { cylinder_type_name: string; quantity: number; rate: number };
 type Sale = {
@@ -54,13 +54,16 @@ function money(v: number | string) {
 
 type Tab = 'summary' | 'stock' | 'sales' | 'pending';
 
-function today() { return new Date().toISOString().slice(0, 10); }
+function toLocalISO(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function today() { return toLocalISO(new Date()); }
 function monthStart() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
 }
 function yesterday() {
-  const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10);
+  const d = new Date(); d.setDate(d.getDate() - 1); return toLocalISO(d);
 }
 
 export default function Reports() {
@@ -68,13 +71,22 @@ export default function Reports() {
   const [end, setEnd] = useState(today());
   const [data, setData] = useState<ReportsData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('summary');
 
+  // ISO yyyy-mm-dd strings compare lexicographically.
+  const rangeError = start && end && start > end ? 'From date must be on or before To date.' : '';
+
   function fetchData(s: string, e: string) {
+    if (!s || !e || s > e) return;
     setLoading(true);
+    setError('');
     api.get('/reports/', { params: { start: s, end: e } })
-      .then((r: any) => setData(r.data))
-      .catch(() => undefined)
+      .then((r) => setData(r.data as ReportsData))
+      .catch((err) => {
+        setError(extractApiError(err, [], 'Could not load report.'));
+        setData(null);
+      })
       .finally(() => setLoading(false));
   }
 
@@ -105,15 +117,17 @@ export default function Reports() {
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label style={{ flex: 1, minWidth: '130px' }}>
             <span>From</span>
-            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+            <input type="date" value={start} max={end || undefined} aria-invalid={Boolean(rangeError)} onChange={(e) => setStart(e.target.value)} />
           </label>
           <label style={{ flex: 1, minWidth: '130px' }}>
             <span>To</span>
-            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+            <input type="date" value={end} min={start || undefined} aria-invalid={Boolean(rangeError)} onChange={(e) => setEnd(e.target.value)} />
           </label>
           <button className="btn btn-primary" style={{ width: 'auto', padding: '0 20px' }}
+            disabled={Boolean(rangeError) || loading || !start || !end}
             onClick={() => fetchData(start, end)}>Go</button>
         </div>
+        {rangeError && <p className="form-error" role="alert" style={{ marginTop: '10px' }}>{rangeError}</p>}
         <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
           {[
             { label: 'Today', s: today(), e: today() },
@@ -131,6 +145,13 @@ export default function Reports() {
       </div>
 
       {loading && <p style={{ textAlign: 'center', padding: '24px' }}>Loading…</p>}
+
+      {!loading && error && (
+        <div className="card async-error" role="alert">
+          <p className="async-error-message">{error}</p>
+          <button type="button" className="btn btn-outline async-error-retry" onClick={() => fetchData(start, end)}>Retry</button>
+        </div>
+      )}
 
       {data && (
         <>

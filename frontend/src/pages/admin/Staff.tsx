@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2 } from 'lucide-react';
-import { api } from '../../lib/api';
+import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck } from 'lucide-react';
+import { api, extractApiError, getApiErrorCode, getApiStatus, LIMITS } from '../../lib/api';
+import { ErrorState, LoadingState } from '../../components/AsyncState';
 
 type StaffUser = {
   id: number;
@@ -13,7 +14,10 @@ type StaffUser = {
   email: string;
   address: string;
   staff_image_url?: string | null;
+  is_active?: boolean;
 };
+
+type RowNotice = { id: number; text: string; tone: 'info' | 'error' | 'confirm' };
 
 const ROLE_COLORS: Record<string, string> = {
   admin: 'var(--primary)',
@@ -58,16 +62,37 @@ export default function Staff() {
   const [credMsg, setCredMsg] = useState('');
   const [credSaving, setCredSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [loadStatus, setLoadStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadError, setLoadError] = useState('');
+  const [rolesError, setRolesError] = useState('');
+  const [rowNotice, setRowNotice] = useState<RowNotice | null>(null);
 
   function load() {
-    api.get('/auth/users/').then((r: any) => setUsers(r.data)).catch(() => undefined);
-    api.get('/auth/roles/').then((r: any) => {
-      setAvailableRoles(r.data);
-      if (r.data.length > 0 && !role) setRole(r.data[0].code);
-    }).catch(() => undefined);
+    return Promise.allSettled([
+      api.get('/auth/users/'),
+      api.get('/auth/roles/'),
+    ]).then(([usersResult, rolesResult]) => {
+      if (usersResult.status === 'fulfilled') {
+        const rows = usersResult.value.data;
+        setUsers(Array.isArray(rows) ? rows : (rows?.results ?? []));
+        setLoadError('');
+        setLoadStatus('ready');
+      } else {
+        setLoadError(extractApiError(usersResult.reason, [], 'Could not load users.'));
+        setLoadStatus('error');
+      }
+      if (rolesResult.status === 'fulfilled') {
+        const roles = rolesResult.value.data as { code: string; name: string }[];
+        setAvailableRoles(roles);
+        setRolesError('');
+        if (roles.length > 0 && !role) setRole(roles[0].code);
+      } else {
+        setRolesError(extractApiError(rolesResult.reason, [], 'Could not load roles.'));
+      }
+    });
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { void load(); }, []);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
@@ -98,8 +123,7 @@ export default function Staff() {
         setCredMsg(tempPassword || 'Password securely generated.');
       }
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(detail || 'Failed to create user.');
+      setError(extractApiError(err, ['full_name', 'username', 'phone', 'email', 'address', 'role', 'image'], 'Failed to create user.'));
     } finally {
       setSaving(false);
     }
@@ -130,20 +154,39 @@ export default function Staff() {
       payload.append('phone', editPhone.trim());
       payload.append('email', editEmail.trim());
       payload.append('address', editAddress.trim());
-      if (editIsStaff) {
-        if (editStaffImage) {
-          payload.append('image', editStaffImage);
-        }
-        if (editRemoveStaffImage) {
-          payload.append('remove_staff_image', 'true');
-        }
+      if (editIsStaff && editStaffImage) {
+        payload.append('image', editStaffImage);
       }
-      await api.patch(`/auth/users/${editingId}/`, payload);
-      await load();
+      // Removal applies to any user that has a staff image, not only role=staff.
+      if (editRemoveStaffImage) {
+        payload.append('remove_staff_image', 'true');
+      }
+      const { data } = await api.patch(`/auth/users/${editingId}/`, payload);
+      const updated = data as Partial<StaffUser> | undefined;
+      const imageStillPresent = Boolean(updated?.staff_image_url);
+      setUsers((prev) => prev.map((u) => (u.id === editingId
+        ? {
+          ...u,
+          ...(updated?.first_name !== undefined ? { first_name: updated.first_name } : {}),
+          ...(updated?.last_name !== undefined ? { last_name: updated.last_name } : {}),
+          ...(updated?.phone !== undefined ? { phone: updated.phone } : {}),
+          ...(updated?.email !== undefined ? { email: updated.email } : {}),
+          ...(updated?.address !== undefined ? { address: updated.address } : {}),
+          staff_image_url: updated && 'staff_image_url' in updated ? (updated.staff_image_url ?? null) : u.staff_image_url,
+        }
+        : u)));
+      setEditStaffImageUrl(updated && 'staff_image_url' in updated ? (updated.staff_image_url ?? null) : editStaffImageUrl);
+      setEditStaffImage(null);
+      if (editRemoveStaffImage && imageStillPresent) {
+        setEditRemoveStaffImage(false);
+        setEditError('The image was not removed. Please try again.');
+        return;
+      }
+      setEditRemoveStaffImage(false);
       setEditingId(null);
+      void load();
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setEditError(detail || 'Failed to save. Try again.');
+      setEditError(extractApiError(err, ['full_name', 'name', 'phone', 'email', 'address', 'image'], 'Failed to save. Try again.'));
     } finally {
       setEditSaving(false);
     }
@@ -155,20 +198,72 @@ export default function Staff() {
       const { data } = await api.post(`/auth/users/${userId}/credentials/`, {});
       setCredMsg(data.temporary_password || 'Password reset successfully.');
       load();
-    } catch {
-      setCredMsg('Failed to reset password.');
+    } catch (err) {
+      setCredMsg(extractApiError(err, [], 'Failed to reset password.'));
     } finally {
       setCredSaving(false);
     }
   }
 
+  function applyUserUpdate(id: number, patch: Partial<StaffUser>) {
+    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+  }
+
   async function deleteCredentials(user: StaffUser) {
-    const ok = window.confirm(`PERMANENTLY DELETE user ${fullName(user)}? This will completely destroy all their associated sales, payments, and delivery data. This cannot be undone.`);
+    const ok = window.confirm(`Delete user ${fullName(user)}? Accounts with delivery or transaction history cannot be deleted and can only be deactivated.`);
     if (!ok) return;
     setDeletingId(user.id);
+    setRowNotice(null);
     try {
       await api.delete(`/auth/users/${user.id}/`);
       setUsers((prev) => prev.filter((u) => u.id !== user.id));
+    } catch (err) {
+      const code = getApiErrorCode(err);
+      const detail = extractApiError(err, [], 'Failed to delete user.');
+      if (getApiStatus(err) === 409 && code === 'has_history') {
+        const body = (err as { response?: { data?: { is_active?: boolean } } })?.response?.data;
+        const alreadyInactive = body?.is_active === false || user.is_active === false;
+        if (alreadyInactive) {
+          setRowNotice({
+            id: user.id,
+            text: 'This user has delivery or transaction history and cannot be deleted. The account is already deactivated; history is preserved.',
+            tone: 'info',
+          });
+        } else {
+          setRowNotice({ id: user.id, text: detail, tone: 'confirm' });
+        }
+      } else {
+        setRowNotice({ id: user.id, text: detail, tone: 'error' });
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function deactivateUser(user: StaffUser) {
+    setDeletingId(user.id);
+    try {
+      const { data } = await api.post(`/auth/users/${user.id}/deactivate/`, {});
+      const updated = (data as { user?: Partial<StaffUser> } | undefined)?.user;
+      applyUserUpdate(user.id, { ...(updated ?? {}), is_active: false });
+      setRowNotice({ id: user.id, text: (data as { detail?: string })?.detail || 'User deactivated. History is preserved.', tone: 'info' });
+    } catch (err) {
+      setRowNotice({ id: user.id, text: extractApiError(err, [], 'Failed to deactivate user.'), tone: 'error' });
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function reactivateUser(user: StaffUser) {
+    setDeletingId(user.id);
+    setRowNotice(null);
+    try {
+      const { data } = await api.post(`/auth/users/${user.id}/reactivate/`, {});
+      const updated = (data as { user?: Partial<StaffUser> } | undefined)?.user;
+      applyUserUpdate(user.id, { ...(updated ?? {}), is_active: true });
+      setRowNotice({ id: user.id, text: (data as { detail?: string })?.detail || 'User reactivated.', tone: 'info' });
+    } catch (err) {
+      setRowNotice({ id: user.id, text: extractApiError(err, [], 'Failed to reactivate user.'), tone: 'error' });
     } finally {
       setDeletingId(null);
     }
@@ -182,11 +277,20 @@ export default function Staff() {
           <p>Accounts are created with a one-time temporary password and can be reset securely.</p>
         </div>
         <button className="btn btn-primary" style={{ width: 'auto', padding: '0 16px' }}
+          disabled={Boolean(rolesError) && availableRoles.length === 0}
+          title={rolesError && availableRoles.length === 0 ? 'Roles could not be loaded' : undefined}
           onClick={() => { setShowAdd((v) => !v); setError(''); }}>
           {showAdd ? <X size={18} /> : <UserPlus size={18} />}
           {showAdd ? 'Cancel' : 'Add'}
         </button>
       </div>
+
+      {rolesError && (
+        <p className="form-error" role="alert" style={{ marginBottom: '12px' }}>
+          {rolesError}{' '}
+          <button type="button" className="async-inline-retry" onClick={() => void load()}>Retry</button>
+        </p>
+      )}
 
       {showAdd && (
         <form onSubmit={handleAdd} className="card form-stack" style={{ marginBottom: '16px' }}>
@@ -194,11 +298,11 @@ export default function Staff() {
           <div className="grid-2">
             <label>
               <span>Full Name</span>
-              <input value={fullNameValue} onChange={(e) => setFullNameValue(e.target.value)} placeholder="e.g. Ravi Kumar" required />
+              <input value={fullNameValue} onChange={(e) => setFullNameValue(e.target.value)} placeholder="e.g. Ravi Kumar" maxLength={LIMITS.name} required />
             </label>
             <label>
               <span>Username</span>
-              <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. ravi" required />
+              <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. ravi" maxLength={LIMITS.username} autoComplete="off" required />
             </label>
           </div>
           <div className="grid-2">
@@ -224,11 +328,11 @@ export default function Staff() {
           <div className="grid-2">
             <label>
               <span>Phone *</span>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" placeholder="Required" required />
+              <input value={phone} onChange={(e) => setPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" placeholder="Required" required />
             </label>
             <label>
               <span>Email</span>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Optional" />
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Optional" maxLength={LIMITS.email} />
             </label>
           </div>
           <label>
@@ -245,7 +349,7 @@ export default function Staff() {
               />
             </label>
           )}
-          {error && <p className="form-error">{error}</p>}
+          {error && <p className="form-error" role="alert">{error}</p>}
           <button className="btn btn-primary" type="submit" disabled={saving}>
             <Check size={18} /> {saving ? 'Creating...' : 'Create User'}
           </button>
@@ -254,12 +358,18 @@ export default function Staff() {
 
       {/* No success banner here, it is now shown below the specific user card */}
 
+      {loadStatus === 'error' && <ErrorState message={loadError} onRetry={() => { setLoadStatus('loading'); void load(); }} />}
+
+      {loadStatus !== 'error' && (
       <div className="card" style={{ padding: 0 }}>
-        {users.length === 0 && (
+        {loadStatus === 'loading' && <LoadingState label="Loading users…" />}
+        {loadStatus === 'ready' && users.length === 0 && (
           <p style={{ textAlign: 'center', padding: '24px' }}>No users found.</p>
         )}
         {users.map((u) => {
           const protectedAdmin = isProtectedAdmin(u);
+          const inactive = u.is_active === false;
+          const busy = deletingId === u.id;
           return (
             <div key={u.id}>
               <div style={{
@@ -296,7 +406,8 @@ export default function Staff() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                     <div style={{ minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
-                        <strong style={{ fontSize: '1rem' }}>{fullName(u)}</strong>
+                        <strong style={{ fontSize: '1rem', opacity: inactive ? 0.6 : 1 }}>{fullName(u)}</strong>
+                        {inactive && <span className="badge badge-danger">INACTIVE</span>}
                         <span style={{
                           fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px',
                           borderRadius: '999px', background: (ROLE_COLORS[u.role] || 'var(--text-muted)') + '22',
@@ -339,20 +450,71 @@ export default function Staff() {
                   >
                     <KeyRound size={16} />
                   </button>
+                  {inactive ? (
+                    <button
+                      className="icon-button"
+                      title="Reactivate"
+                      aria-label="Reactivate"
+                      onClick={() => reactivateUser(u)}
+                      disabled={busy}
+                      style={{ color: 'var(--success)', opacity: busy ? 0.3 : 1 }}
+                    >
+                      <UserCheck size={16} />
+                    </button>
+                  ) : (
+                    <button
+                      className="icon-button"
+                      title="Deactivate"
+                      aria-label="Deactivate"
+                      onClick={() => {
+                        if (window.confirm(`Deactivate ${fullName(u)}? They will no longer be able to sign in. History is preserved.`)) void deactivateUser(u);
+                      }}
+                      disabled={busy || protectedAdmin}
+                      style={{ color: 'var(--warning)', opacity: (busy || protectedAdmin) ? 0.3 : 1 }}
+                    >
+                      <UserX size={16} />
+                    </button>
+                  )}
                   <button
                     className="icon-button"
                     title="Delete"
+                    aria-label="Delete"
                     onClick={() => deleteCredentials(u)}
-                    disabled={deletingId === u.id || protectedAdmin}
+                    disabled={busy || protectedAdmin}
                     style={{ 
                       color: 'var(--danger)',
-                      opacity: (deletingId === u.id || protectedAdmin) ? 0.3 : 1
+                      opacity: (busy || protectedAdmin) ? 0.3 : 1
                     }}
                   >
                     <Trash2 size={16} />
                   </button>
                 </div>
               </div>
+
+              {rowNotice?.id === u.id && (
+                <div
+                  role={rowNotice.tone === 'error' ? 'alert' : 'status'}
+                  className={rowNotice.tone === 'error' ? 'form-error' : 'form-note'}
+                  style={{ margin: '0 18px 12px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}
+                >
+                  <span>{rowNotice.text}</span>
+                  <span style={{ display: 'inline-flex', gap: '8px' }}>
+                    {rowNotice.tone === 'confirm' && !inactive && (
+                      <button
+                        type="button"
+                        className="btn btn-compact"
+                        disabled={busy}
+                        onClick={() => {
+                          if (window.confirm(`Deactivate ${fullName(u)} instead? They will no longer be able to sign in. History is preserved.`)) void deactivateUser(u);
+                        }}
+                      >
+                        {busy ? 'Deactivating…' : 'Deactivate instead'}
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-compact" onClick={() => setRowNotice(null)}>Dismiss</button>
+                  </span>
+                </div>
+              )}
 
               {credUserId === u.id && (
                 <div
@@ -482,24 +644,24 @@ export default function Staff() {
                   <div className="grid-2">
                     <label>
                       <span>Name *</span>
-                      <input value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus />
+                      <input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={LIMITS.name} required autoFocus />
                     </label>
                     <label>
                       <span>Phone *</span>
-                      <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" required />
+                      <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" required />
                     </label>
                   </div>
                   <div className="grid-2">
                     <label>
                       <span>Email</span>
-                      <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
+                      <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} maxLength={LIMITS.email} />
                     </label>
                     <label>
                       <span>Address</span>
                       <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
                     </label>
                   </div>
-                  {editIsStaff && (
+                  {(editIsStaff || editStaffImageUrl) && (
                     <>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                         <div>
@@ -532,6 +694,7 @@ export default function Staff() {
                           {editStaffImage ? `Selected: ${editStaffImage.name}` : editStaffImageUrl && !editRemoveStaffImage ? 'Current staff image' : 'No staff image'}
                         </div>
                       </div>
+                      {editIsStaff && (
                       <label>
                         <span>Staff Image</span>
                         <input
@@ -546,6 +709,7 @@ export default function Staff() {
                           }}
                         />
                       </label>
+                      )}
                       {(editStaffImageUrl || editStaffImage) && (
                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <input
@@ -564,7 +728,7 @@ export default function Staff() {
                       )}
                     </>
                   )}
-                  {editError && <p className="form-error">{editError}</p>}
+                  {editError && <p className="form-error" role="alert">{editError}</p>}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button className="btn btn-primary" type="submit" disabled={editSaving}>
                       <Check size={18} /> {editSaving ? 'Saving...' : 'Save Changes'}
@@ -579,6 +743,7 @@ export default function Staff() {
           );
         })}
       </div>
+      )}
     </div>
   );
 }

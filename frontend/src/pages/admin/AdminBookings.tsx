@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Check, ClipboardList, Truck, X } from 'lucide-react';
-import { api } from '../../lib/api';
+import { api, extractApiError, fetchAllPages, LIMITS } from '../../lib/api';
+import { ErrorState, LoadingState } from '../../components/AsyncState';
+import { Pager } from '../../components/Pager';
+import { usePager } from '../../hooks/usePager';
 
 type Booking = {
   id: number;
@@ -22,6 +25,10 @@ type Booking = {
   assigned_staff_name: string | null;
   rejection_reason?: string | null;
   created_at: string;
+  delivery_status?: string | null;
+  delivery_staff_name?: string | null;
+  delivery_rejection_reason?: string | null;
+  needs_reassignment?: boolean;
 };
 
 type Staff = { id: number; username: string; full_name: string; assigned_area: string; user: number };
@@ -47,43 +54,90 @@ export default function AdminBookings() {
   const [staff, setStaff] = useState<Staff[]>([]);
   const [staffByBooking, setStaffByBooking] = useState<Record<number, string>>({});
   const [message, setMessage] = useState('');
-  
+  const [error, setError] = useState('');
+  const [loadStatus, setLoadStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadError, setLoadError] = useState('');
+  const [staffLoadError, setStaffLoadError] = useState('');
+  const [approveBusyId, setApproveBusyId] = useState<number | null>(null);
+
   const [rejectBookingId, setRejectBookingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [rejectError, setRejectError] = useState('');
+  const [rejectBusy, setRejectBusy] = useState(false);
 
-  function load() {
-    const p1 = api.get('/bookings/').then((r) => r.data.results ?? r.data).catch(() => []);
-    const p2 = api.get('/staff-profiles/').then((r) => r.data.results ?? r.data).catch(() => []);
-    Promise.all([p1, p2])
-      .then(([rows, staffRows]) => {
-        setBookings(rows);
-        setStaff(staffRows);
-        setStaffByBooking(Object.fromEntries(rows.map((b: Booking) => [b.id, String(b.assigned_staff || '')])));
-      })
-      .catch(() => undefined);
-  }
+  const { page, pageCount, pageItems, setPage, total } = usePager(bookings);
 
-  useEffect(load, []);
+  const load = useCallback(() => Promise.allSettled([
+    fetchAllPages<Booking>('/bookings/'),
+    fetchAllPages<Staff>('/staff-profiles/'),
+  ]).then(([bookingsResult, staffResult]) => {
+    if (bookingsResult.status === 'fulfilled') {
+      const rows = bookingsResult.value;
+      setBookings(rows);
+      setStaffByBooking(Object.fromEntries(rows.map((b) => [b.id, String(b.assigned_staff || '')])));
+      setLoadError('');
+      setLoadStatus('ready');
+    } else {
+      setLoadError(extractApiError(bookingsResult.reason, [], 'Could not load bookings.'));
+      setLoadStatus('error');
+    }
+    if (staffResult.status === 'fulfilled') {
+      setStaff(staffResult.value);
+      setStaffLoadError('');
+    } else {
+      setStaffLoadError(extractApiError(staffResult.reason, [], 'Could not load the staff list.'));
+    }
+  }), []);
+
+  useEffect(() => { void load(); }, [load]);
 
   async function approve(id: number) {
+    if (approveBusyId !== null) return;
     const assigned_staff = staffByBooking[id];
-    await api.post(`/bookings/${id}/approve/`, { assigned_staff });
-    setMessage('Booking approved and assigned.');
-    load();
+    setMessage('');
+    setError('');
+    const booking = bookings.find((b) => b.id === id);
+    if (booking?.needs_reassignment && !assigned_staff) {
+      setError('Pick a different staff member before reassigning.');
+      return;
+    }
+    setApproveBusyId(id);
+    try {
+      await api.post(`/bookings/${id}/approve/`, { assigned_staff });
+      setMessage('Booking approved and assigned.');
+      await load();
+    } catch (err) {
+      setError(extractApiError(err, ['assigned_staff'], 'Failed to approve booking.'));
+    } finally {
+      setApproveBusyId(null);
+    }
   }
 
   async function reject(id: number) {
-    if (!rejectReason.trim()) {
+    if (rejectBusy) return;
+    const reason = rejectReason.trim();
+    if (!reason) {
       setRejectError('Please provide a reason for rejection.');
       return;
     }
-    await api.post(`/bookings/${id}/reject/`, { reason: rejectReason.trim() });
-    setMessage('Booking rejected.');
-    setRejectBookingId(null);
-    setRejectReason('');
+    if (reason.length > LIMITS.adminReason) {
+      setRejectError(`Reason must be ${LIMITS.adminReason} characters or fewer.`);
+      return;
+    }
+    setRejectBusy(true);
     setRejectError('');
-    load();
+    try {
+      await api.post(`/bookings/${id}/reject/`, { reason });
+      setMessage('Booking rejected.');
+      setError('');
+      setRejectBookingId(null);
+      setRejectReason('');
+      await load();
+    } catch (err) {
+      setRejectError(extractApiError(err, ['reason'], 'Failed to reject booking.'));
+    } finally {
+      setRejectBusy(false);
+    }
   }
 
   return (
@@ -96,12 +150,26 @@ export default function AdminBookings() {
       </div>
 
       {message && <p className="form-note" style={{ marginBottom: 12 }}>{message}</p>}
+      {error && <p className="form-error" role="alert" style={{ marginBottom: 12 }}>{error}</p>}
+      {staffLoadError && (
+        <p className="form-error" role="alert" style={{ marginBottom: 12 }}>
+          {staffLoadError}{' '}
+          <button type="button" className="async-inline-retry" onClick={() => void load()}>Retry</button>
+        </p>
+      )}
 
+      {loadStatus === 'error' && (
+        <ErrorState message={loadError} onRetry={() => { setLoadStatus('loading'); void load(); }} />
+      )}
+
+      {loadStatus !== 'error' && (
       <div className="card">
         <div className="section-head">
           <h2>Requests</h2>
           <ClipboardList />
         </div>
+        {loadStatus === 'loading' && <LoadingState label="Loading bookings…" />}
+        {loadStatus === 'ready' && (
         <div className="table-wrap">
           <table>
             <thead>
@@ -114,7 +182,7 @@ export default function AdminBookings() {
               </tr>
             </thead>
             <tbody>
-              {bookings.map((booking) => (
+              {pageItems.map((booking) => (
                 <tr key={booking.id}>
                   <td>
                     <strong>{booking.customer_name}</strong>
@@ -145,6 +213,24 @@ export default function AdminBookings() {
                     {booking.status === 'rejected' && booking.rejection_reason && (
                       <p style={{ fontSize: '12px', color: '#dc2626', marginTop: 4 }}>Reason: {booking.rejection_reason}</p>
                     )}
+                    {booking.status === 'pending' && booking.needs_reassignment && (
+                      <p style={{ marginTop: 4 }}>
+                        <span className="badge badge-warning" style={{ whiteSpace: 'normal', textAlign: 'left' }}>
+                          Declined by {booking.delivery_staff_name || 'staff'}
+                          {booking.delivery_rejection_reason ? `: ${booking.delivery_rejection_reason}` : ''}
+                        </span>
+                      </p>
+                    )}
+                    {booking.status !== 'pending' && booking.delivery_status && booking.delivery_status !== booking.status && (
+                      <p style={{ marginTop: 4 }}>
+                        <span className={`badge ${
+                          booking.delivery_status === 'accepted' ? 'badge-info' :
+                          booking.delivery_status === 'cancelled' ? 'badge-danger' : 'badge'
+                        }`}>
+                          <Truck size={12} /> {booking.delivery_status.replaceAll('_', ' ')}
+                        </span>
+                      </p>
+                    )}
                   </td>
                   <td>
                     {booking.status === 'pending' ? (
@@ -152,8 +238,16 @@ export default function AdminBookings() {
                         value={staffByBooking[booking.id] || ''}
                         onChange={(e) => setStaffByBooking((prev) => ({ ...prev, [booking.id]: e.target.value }))}
                       >
-                        <option value="">Select staff</option>
-                        {staff.map((s) => <option key={s.id} value={s.user}>{s.full_name || s.username}</option>)}
+                        <option value="">{booking.needs_reassignment ? 'Select staff (required)' : 'Select staff'}</option>
+                        {staff.map((s) => {
+                          const name = s.full_name || s.username;
+                          const declined = Boolean(booking.needs_reassignment && booking.delivery_staff_name && name === booking.delivery_staff_name);
+                          return (
+                            <option key={s.id} value={s.user} disabled={declined}>
+                              {declined ? `${name} (declined)` : name}
+                            </option>
+                          );
+                        })}
                       </select>
                     ) : (
                       booking.assigned_staff_name || '-'
@@ -162,14 +256,27 @@ export default function AdminBookings() {
                   <td style={{ textAlign: 'right' }}>
                     {booking.status === 'pending' ? (
                       <div style={{ display: 'inline-flex', gap: 8 }}>
-                        <button className="icon-button" title="Approve & Assign" onClick={() => approve(booking.id)}>
+                        <button
+                          className="icon-button"
+                          title={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
+                          aria-label={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
+                          disabled={approveBusyId !== null}
+                          aria-busy={approveBusyId === booking.id}
+                          onClick={() => approve(booking.id)}
+                        >
                           <Check size={18} />
                         </button>
-                        <button className="icon-button" title="Reject Booking" onClick={() => {
-                          setRejectBookingId(booking.id);
-                          setRejectReason('');
-                          setRejectError('');
-                        }}>
+                        <button
+                          className="icon-button"
+                          title="Reject Booking"
+                          aria-label="Reject Booking"
+                          disabled={approveBusyId !== null}
+                          onClick={() => {
+                            setRejectBookingId(booking.id);
+                            setRejectReason('');
+                            setRejectError('');
+                          }}
+                        >
                           <X size={18} />
                         </button>
                       </div>
@@ -184,8 +291,11 @@ export default function AdminBookings() {
               )}
             </tbody>
           </table>
+          <Pager page={page} pageCount={pageCount} onChange={setPage} total={total} />
         </div>
+        )}
       </div>
+      )}
 
       {rejectBookingId !== null && (
         <div className="modal" style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)', position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000 }}>
@@ -197,13 +307,20 @@ export default function AdminBookings() {
               placeholder="e.g. Out of stock, outside delivery zone"
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
-              style={{ width: '100%', padding: '8px', marginBottom: '8px' }}
-              maxLength={250}
+              style={{ width: '100%', padding: '8px', marginBottom: '4px' }}
+              maxLength={LIMITS.adminReason}
+              aria-invalid={Boolean(rejectError)}
+              disabled={rejectBusy}
             />
-            {rejectError && <p style={{ color: '#dc2626', fontSize: '12px', marginBottom: '16px' }}>{rejectError}</p>}
+            <small style={{ display: 'block', textAlign: 'right', color: 'var(--text-muted)', marginBottom: '8px' }}>
+              {rejectReason.length}/{LIMITS.adminReason}
+            </small>
+            {rejectError && <p className="form-error" role="alert" style={{ fontSize: '12px', marginBottom: '16px' }}>{rejectError}</p>}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
-              <button className="btn" style={{ background: '#f3f4f6', color: '#374151' }} onClick={() => setRejectBookingId(null)}>Cancel</button>
-              <button className="btn btn-primary" style={{ background: '#dc2626' }} onClick={() => reject(rejectBookingId)}>Reject Order</button>
+              <button className="btn" style={{ background: '#f3f4f6', color: '#374151' }} disabled={rejectBusy} onClick={() => setRejectBookingId(null)}>Cancel</button>
+              <button className="btn btn-primary" style={{ background: '#dc2626' }} disabled={rejectBusy} onClick={() => reject(rejectBookingId)}>
+                {rejectBusy ? 'Rejecting…' : 'Reject Order'}
+              </button>
             </div>
           </div>
         </div>

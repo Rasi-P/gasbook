@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X, IndianRupee, Pencil, Check } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, extractApiError, fetchAllPages } from '../lib/api';
 
 type CylinderType = {
   id: number;
@@ -17,14 +17,29 @@ export default function RatesPanel() {
   const [editing, setEditing] = useState<Record<number, EditRow>>({});
   const [saving, setSaving] = useState<number | null>(null);
   const [saved, setSaved] = useState<number | null>(null);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadError, setLoadError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const requestedRef = useRef(false);
+
+  function loadTypes() {
+    return fetchAllPages<CylinderType>('/cylinder-types/')
+      .then((rows) => { setTypes(rows); setLoadError(''); setStatus('ready'); })
+      .catch((err) => { setLoadError(extractApiError(err, [], 'Could not load cylinder rates.')); setStatus('error'); });
+  }
+
+  function retryLoad() {
+    setStatus('loading');
+    setLoadError('');
+    void loadTypes();
+  }
 
   useEffect(() => {
-    if (open && types.length === 0) {
-      api.get('/cylinder-types/')
-        .then((r) => setTypes(r.data.results ?? r.data))
-        .catch(() => undefined);
+    if (open && !requestedRef.current) {
+      requestedRef.current = true;
+      void loadTypes();
     }
-  }, [open, types.length]);
+  }, [open]);
 
   function startEdit(t: CylinderType) {
     setEditing((prev) => ({
@@ -37,6 +52,7 @@ export default function RatesPanel() {
     const row = editing[t.id];
     if (!row) return;
     setSaving(t.id);
+    setSaveError('');
     try {
       const { data } = await api.patch(`/cylinder-types/${t.id}/`, {
         selling_price: row.selling_price,
@@ -46,8 +62,9 @@ export default function RatesPanel() {
       setEditing((prev) => { const n = { ...prev }; delete n[t.id]; return n; });
       setSaved(t.id);
       setTimeout(() => setSaved(null), 1500);
-    } catch {
+    } catch (err) {
       // keep editing open on error
+      setSaveError(extractApiError(err, ['selling_price', 'refill_rate'], 'Failed to save rates.'));
     } finally {
       setSaving(null);
     }
@@ -114,10 +131,24 @@ export default function RatesPanel() {
 
           {/* Rows */}
           <div style={{ maxHeight: '340px', overflowY: 'auto' }}>
-            {types.length === 0 && (
+            {status === 'loading' && (
               <p style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
                 Loading…
               </p>
+            )}
+            {status === 'error' && (
+              <div role="alert" style={{ textAlign: 'center', padding: '16px', fontSize: '0.88rem' }}>
+                <p style={{ color: 'var(--danger)', marginBottom: '8px' }}>{loadError}</p>
+                <button type="button" className="btn btn-compact" onClick={retryLoad}>Retry</button>
+              </div>
+            )}
+            {status === 'ready' && types.length === 0 && (
+              <p style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
+                No cylinder types yet.
+              </p>
+            )}
+            {saveError && (
+              <p className="form-error" role="alert" style={{ margin: '8px 16px', fontSize: '0.8rem' }}>{saveError}</p>
             )}
             {types.map((t) => {
               const row = editing[t.id];

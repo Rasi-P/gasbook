@@ -1,6 +1,7 @@
 import { Navigate, Routes, Route, NavLink, useLocation } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import type { LucideIcon } from 'lucide-react';
 import { BarChart3, Bell, CalendarDays, Home, LogOut, Package, ShoppingCart, Truck, Users, UserCog } from 'lucide-react';
 import Dashboard from './pages/admin/Dashboard';
 import Stock from './pages/Stock';
@@ -12,8 +13,9 @@ import Staff from './pages/admin/Staff';
 import StaffDashboard from './pages/staff/StaffDashboard';
 import ChangePassword from './pages/ChangePassword';
 import AdminBookings from './pages/admin/AdminBookings';
-import { getRoleHome, isAuthenticated, logout, api } from './lib/api';
+import { getRoleHome, isAuthenticated, logout, api, extractApiError, FORCE_PASSWORD_CHANGE_KEY } from './lib/api';
 import RatesPanel from './components/RatesPanel';
+import { ErrorState } from './components/AsyncState';
 
 function Protected({ children }: { children: ReactNode }) {
   if (!isAuthenticated()) return <Navigate to="/login" replace />;
@@ -31,9 +33,28 @@ export default function App() {
   const isAuthPage = location.pathname === '/login';
   const [role, setRole] = useState('');
   const [userName, setUserName] = useState('');
+  const [mustChange, setMustChange] = useState(() => localStorage.getItem(FORCE_PASSWORD_CHANGE_KEY) === '1');
+  const [meError, setMeError] = useState('');
   const today = new Date();
   const monthLabel = today.toLocaleDateString('en-IN', { month: 'short', day: '2-digit' });
   const yearLabel = today.getFullYear();
+
+  const loadMe = useCallback(() => {
+    setMeError('');
+    api.get('/auth/me/').then((r) => {
+      localStorage.setItem('gasbook_role', r.data.role);
+      localStorage.setItem('gasbook_name', r.data.name);
+      localStorage.setItem('gasbook_vehicle_location', r.data.vehicle_location_name || '');
+      const mc = Boolean(r.data.must_change_password);
+      setMustChange(mc);
+      if (mc) localStorage.setItem(FORCE_PASSWORD_CHANGE_KEY, '1');
+      else localStorage.removeItem(FORCE_PASSWORD_CHANGE_KEY);
+      setRole(r.data.role);
+      setUserName(r.data.name);
+    }).catch((err) => {
+      setMeError(extractApiError(err, [], 'Could not load your account. Please retry or log in again.'));
+    });
+  }, []);
 
   useEffect(() => {
     if (!isAuthPage && isAuthenticated()) {
@@ -45,16 +66,9 @@ export default function App() {
       if (storedName) {
         setUserName(storedName);
       }
-      
-      api.get('/auth/me/').then((r) => {
-        localStorage.setItem('gasbook_role', r.data.role);
-        localStorage.setItem('gasbook_name', r.data.name);
-        localStorage.setItem('gasbook_vehicle_location', r.data.vehicle_location_name || '');
-        setRole(r.data.role);
-        setUserName(r.data.name);
-      }).catch(() => undefined);
+      loadMe();
     }
-  }, [isAuthPage]);
+  }, [isAuthPage, loadMe]);
 
   if (isAuthPage) {
     return (
@@ -69,7 +83,26 @@ export default function App() {
     return <Navigate to="/login" replace />;
   }
 
+  if (mustChange) {
+    return (
+      <Routes>
+        <Route path="/change-password" element={<ChangePassword />} />
+        <Route path="*" element={<Navigate to="/change-password" replace />} />
+      </Routes>
+    );
+  }
+
   if (!role) {
+    if (meError) {
+      return (
+        <div className="page-container">
+          <ErrorState message={meError} onRetry={loadMe} />
+          <button className="btn btn-outline" type="button" style={{ width: 'auto' }} onClick={() => { logout(); window.location.href = '/login'; }}>
+            Logout
+          </button>
+        </div>
+      );
+    }
     return <p style={{ textAlign: 'center', padding: '40px' }}>Loading…</p>;
   }
 
@@ -171,48 +204,39 @@ export default function App() {
   );
 }
 
+type NavEntry = { to: string; label: string; Icon: LucideIcon };
+
+const STAFF_NAV: NavEntry[] = [
+  { to: '/staff-dashboard', label: 'Deliveries', Icon: Truck },
+  { to: '/stock', label: 'Vehicle Stock', Icon: Package },
+  { to: '/customers', label: 'Customers', Icon: Users },
+];
+
+const ADMIN_NAV: NavEntry[] = [
+  { to: '/admin-dashboard', label: 'Home', Icon: Home },
+  { to: '/bookings', label: 'Bookings', Icon: CalendarDays },
+  { to: '/stock', label: 'Stock', Icon: Package },
+  { to: '/sales', label: 'Sales', Icon: ShoppingCart },
+  { to: '/customers', label: 'Customers', Icon: Users },
+  { to: '/staff', label: 'Staff', Icon: UserCog },
+  { to: '/reports', label: 'Reports', Icon: BarChart3 },
+];
+
 function NavItems({ role }: { role: string }) {
-
-  if (role === 'staff') {
-    return (
-      <>
-        <NavLink to="/staff-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <Truck /><span>Deliveries</span>
-        </NavLink>
-        <NavLink to="/stock" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <Package /><span>Vehicle Stock</span>
-        </NavLink>
-        <NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          <Users /><span>Customers</span>
-        </NavLink>
-      </>
-    );
-  }
-
-  // Admin
+  const entries = role === 'staff' ? STAFF_NAV : ADMIN_NAV;
   return (
     <>
-      <NavLink to="/admin-dashboard" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <Home /><span>Home</span>
-      </NavLink>
-      <NavLink to="/bookings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <CalendarDays /><span>Bookings</span>
-      </NavLink>
-      <NavLink to="/stock" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <Package /><span>Stock</span>
-      </NavLink>
-      <NavLink to="/sales" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <ShoppingCart /><span>Sales</span>
-      </NavLink>
-      <NavLink to="/customers" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <Users /><span>Customers</span>
-      </NavLink>
-      <NavLink to="/staff" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <UserCog /><span>Staff</span>
-      </NavLink>
-      <NavLink to="/reports" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-        <BarChart3 /><span>Reports</span>
-      </NavLink>
+      {entries.map(({ to, label, Icon }) => (
+        <NavLink
+          key={to}
+          to={to}
+          title={label}
+          aria-label={label}
+          className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+        >
+          <Icon /><span>{label}</span>
+        </NavLink>
+      ))}
     </>
   );
 }

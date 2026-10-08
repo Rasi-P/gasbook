@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { FormEvent } from 'react';
 import { ArrowDownUp, ArrowRight, Check, ChevronDown, Factory, Plus, Search, Trash2 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, extractApiError, fetchAllPages } from '../lib/api';
+import { ErrorState, LoadingState } from '../components/AsyncState';
+import { Pager } from '../components/Pager';
+import { usePager } from '../hooks/usePager';
 
 type Tab = 'movement' | 'new_load' | 'refuel' | 'history';
 type Location = { id: number; name: string; code: string };
@@ -94,15 +97,24 @@ export default function Stock() {
   const [activeTab, setActiveTab] = useState<Tab>('refuel');
   const [locations, setLocations] = useState<Location[]>([]);
   const [cylinderTypes, setCylinderTypes] = useState<CylinderType[]>([]);
+  const [refStatus, setRefStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [refError, setRefError] = useState('');
 
-  useEffect(() => {
-    Promise.all([api.get('/locations/'), api.get('/cylinder-types/')])
-      .then(([lr, tr]) => {
-        setLocations(lr.data.results ?? lr.data);
-        setCylinderTypes(tr.data.results ?? tr.data);
+  const loadReferenceData = useCallback(() => {
+    Promise.all([fetchAllPages<Location>('/locations/'), fetchAllPages<CylinderType>('/cylinder-types/')])
+      .then(([locs, types]) => {
+        setLocations(locs);
+        setCylinderTypes(types);
+        setRefError('');
+        setRefStatus('ready');
       })
-      .catch(() => undefined);
+      .catch((err) => {
+        setRefError(extractApiError(err, [], 'Could not load locations and cylinder types.'));
+        setRefStatus('error');
+      });
   }, []);
+
+  useEffect(() => { loadReferenceData(); }, [loadReferenceData]);
 
   // ── Movement form ────────────────────────────────────────────────────────
   const [fromLocation, setFromLocation] = useState(0);
@@ -139,20 +151,25 @@ export default function Stock() {
 
   // ── Stock data (for showing available empties) ──────────────────────────
   const [stockData, setStockData] = useState<StockRow[]>([]);
+  const [stockError, setStockError] = useState('');
+  const [supplierPendingError, setSupplierPendingError] = useState('');
 
   const fetchStock = useCallback(() => {
-    api.get('/stock/')
-      .then((r) => {
-        const data = r.data.results ?? r.data;
-        setStockData(Array.isArray(data) ? data : []);
+    fetchAllPages<StockRow>('/stock/')
+      .then((rows) => {
+        setStockData(rows);
+        setStockError('');
       })
-      .catch(() => undefined);
+      .catch((err) => setStockError(extractApiError(err, [], 'Stock levels unavailable.')));
   }, []);
 
   const fetchSupplierPending = useCallback(() => {
     api.get('/movements/supplier_pending/')
-      .then(r => setSupplierPending(r.data))
-      .catch(() => undefined);
+      .then((r) => {
+        setSupplierPending(Array.isArray(r.data) ? r.data : []);
+        setSupplierPendingError('');
+      })
+      .catch((err) => setSupplierPendingError(extractApiError(err, [], 'Pending refuels unavailable.')));
   }, []);
 
   // Fetch stock data on mount and whenever tab/selections change
@@ -167,6 +184,8 @@ export default function Stock() {
 
   // ── History ──────────────────────────────────────────────────────────────
   const [movements, setMovements] = useState<Movement[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [historyError, setHistoryError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [historyFilter, setHistoryFilter] = useState<'all' | 'new_load' | 'refuel_sent' | 'refuel_received'>('all');
 
@@ -253,9 +272,16 @@ export default function Stock() {
   useEffect(() => { if (refuelRecvLoc) localStorage.setItem('lastStockRefuelRecvLoc', String(refuelRecvLoc)); }, [refuelRecvLoc]);
 
   const fetchHistory = useCallback(() => {
-    api.get('/movements/')
-      .then((r) => setMovements(r.data.results ?? r.data))
-      .catch(() => undefined);
+    fetchAllPages<Movement>('/movements/')
+      .then((rows) => {
+        setMovements(rows);
+        setHistoryError('');
+        setHistoryStatus('ready');
+      })
+      .catch((err) => {
+        setHistoryError(extractApiError(err, [], 'Could not load movement history.'));
+        setHistoryStatus('error');
+      });
   }, []);
 
   useEffect(() => {
@@ -293,8 +319,7 @@ export default function Stock() {
       setMoveItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '', status: 'filled' }]);
       fetchStock();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setMoveErr(msg ? JSON.stringify(msg) : 'Movement failed. Check stock levels.');
+      setMoveErr(extractApiError(err, ['quantity', 'cylinder_type', 'from_location', 'to_location', 'status', 'non_field_errors'], 'Movement failed. Check stock levels.'));
     } finally {
       setMoveSaving(false);
     }
@@ -332,8 +357,7 @@ export default function Stock() {
       setLoadItems([{ cylinder_type: cylinderTypes[0]?.id ?? 0, quantity: '' }]);
       fetchStock();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setLoadErr(msg ? JSON.stringify(msg) : 'Failed to save load. Check backend connection.');
+      setLoadErr(extractApiError(err, ['quantity', 'cylinder_type', 'from_location', 'to_location', 'status', 'non_field_errors'], 'Failed to save load. Check backend connection.'));
     } finally {
       setLoadSaving(false);
     }
@@ -373,9 +397,8 @@ export default function Stock() {
       setJustSentItems(validItems);
       fetchStock();
       fetchSupplierPending();
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setRefuelSendErr(detail || 'Failed. Check stock levels.');
+    } catch (err: unknown) {
+      setRefuelSendErr(extractApiError(err, ['quantity', 'cylinder_type', 'from_location', 'to_location', 'non_field_errors'], 'Failed. Check stock levels.'));
     } finally {
       setRefuelSendSaving(false);
     }
@@ -403,9 +426,8 @@ export default function Stock() {
       setJustSentItems(null);
       fetchStock();
       fetchSupplierPending();
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setRefuelRecvErr(detail || 'Failed to record received stock.');
+    } catch (err: unknown) {
+      setRefuelRecvErr(extractApiError(err, ['quantity', 'cylinder_type', 'from_location', 'to_location', 'non_field_errors'], 'Failed to record received stock.'));
     } finally {
       setRefuelRecvSaving(false);
     }
@@ -445,9 +467,8 @@ export default function Stock() {
       setJustSentItems(null);
       fetchStock();
       fetchSupplierPending();
-    } catch (err: any) {
-      const detail = err.response?.data?.detail;
-      setRefuelRecvErr(detail || 'Failed to record received stock.');
+    } catch (err: unknown) {
+      setRefuelRecvErr(extractApiError(err, ['quantity', 'cylinder_type', 'from_location', 'to_location', 'non_field_errors'], 'Failed to record received stock.'));
     } finally {
       setRefuelRecvSaving(false);
     }
@@ -467,6 +488,8 @@ export default function Stock() {
       m.moved_by_name.toLowerCase().includes(q)
     );
   });
+
+  const historyPager = usePager(filtered, 10, `${searchQuery}|${historyFilter}`);
 
   const tabBtn = (tab: Tab, label: string) => (
     <button
@@ -498,8 +521,19 @@ export default function Stock() {
         {tabBtn('history', 'History')}
       </div>
 
+      {refStatus === 'error' && activeTab !== 'history' && (
+        <ErrorState message={refError} onRetry={() => { setRefStatus('loading'); loadReferenceData(); }} />
+      )}
+      {refStatus === 'loading' && activeTab !== 'history' && <LoadingState label="Loading stock setup…" />}
+      {stockError && refStatus === 'ready' && activeTab !== 'history' && (
+        <p className="form-error" role="alert" style={{ marginBottom: '12px' }}>
+          {stockError}{' '}
+          <button type="button" className="async-inline-retry" onClick={fetchStock}>Retry</button>
+        </p>
+      )}
+
       {/* ── Movement ── */}
-      {activeTab === 'movement' && (
+      {activeTab === 'movement' && refStatus === 'ready' && (
         <div className="card form-card">
           <h2 style={{ marginBottom: '4px' }}>Move Cylinders</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
@@ -528,12 +562,8 @@ export default function Stock() {
                 );
                 const available = srcStock?.quantity ?? 0;
                 return (
-                  <div key={idx} style={{
-                    display: 'flex', gap: '10px', alignItems: 'flex-end',
-                    padding: '14px', borderRadius: '10px',
-                    background: 'var(--surface-muted)', border: '1px solid var(--border)',
-                  }}>
-                    <label style={{ flex: 1, minWidth: 0 }}>
+                  <div key={idx} className="stock-item-row">
+                    <label>
                       {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder</span>}
                       <AppSelect
                         ariaLabel="Cylinder type"
@@ -542,7 +572,7 @@ export default function Stock() {
                         onChange={(v) => setMoveItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                       />
                     </label>
-                    <label style={{ flex: 0.8, minWidth: '90px' }}>
+                    <label>
                       {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Status</span>}
                       <AppSelect
                         ariaLabel="Status"
@@ -551,7 +581,7 @@ export default function Stock() {
                         onChange={(v) => setMoveItems(prev => prev.map((it, i) => i === idx ? { ...it, status: String(v) } : it))}
                       />
                     </label>
-                    <label style={{ flex: 0.6, minWidth: '90px' }}>
+                    <label>
                       {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
                       <input
                         type="number" min="1" placeholder="0"
@@ -560,14 +590,14 @@ export default function Stock() {
                         style={{ textAlign: 'center' }}
                       />
                     </label>
-                    <div style={{
-                      flex: '0 0 auto', minWidth: '80px',
+                    <div className="stock-avail" title={stockError ? 'Stock levels unavailable' : undefined} style={{
                       padding: '8px 10px', borderRadius: '8px', textAlign: 'center',
                       fontSize: '0.8rem', fontWeight: 700, marginBottom: '2px',
-                      background: available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
-                      color: available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
+                      background: stockError ? 'var(--surface)' : available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
+                      color: stockError ? 'var(--text-muted)' : available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
+                      border: stockError ? '1px dashed var(--border)' : 'none',
                     }}>
-                      {available > 0 ? `📦 ${available}` : '⚠️ 0'}
+                      {stockError ? 'Stock unavailable' : available > 0 ? `📦 ${available}` : '⚠️ 0'}
                     </div>
                     {moveItems.length > 1 && (
                       <button
@@ -612,7 +642,7 @@ export default function Stock() {
       )}
 
       {/* ── New Load ── */}
-      {activeTab === 'new_load' && (
+      {activeTab === 'new_load' && refStatus === 'ready' && (
         <div className="card form-card">
           <h2 style={{ marginBottom: '4px' }}>Record New Load</h2>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
@@ -627,12 +657,8 @@ export default function Stock() {
             {/* Multi-row items */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {loadItems.map((item, idx) => (
-                <div key={idx} style={{
-                  display: 'flex', gap: '10px', alignItems: 'flex-end',
-                  padding: '14px', borderRadius: '10px',
-                  background: 'var(--surface-muted)', border: '1px solid var(--border)',
-                }}>
-                  <label style={{ flex: 1, minWidth: 0 }}>
+                <div key={idx} className="stock-item-row">
+                  <label>
                     {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
                     <AppSelect
                       ariaLabel="Cylinder size"
@@ -641,7 +667,7 @@ export default function Stock() {
                       onChange={(v) => setLoadItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                     />
                   </label>
-                  <label style={{ flex: 0.6, minWidth: '90px' }}>
+                  <label>
                     {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
                     <input
                       type="number" min="1" placeholder="0"
@@ -689,8 +715,8 @@ export default function Stock() {
       )}
 
       {/* ── Refuel ── */}
-      {activeTab === 'refuel' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+      {activeTab === 'refuel' && refStatus === 'ready' && (
+        <div className="refuel-grid">
           
           {/* Send Empties */}
           <div className="card form-card">
@@ -716,6 +742,7 @@ export default function Stock() {
                   </div>
                 );
               }
+              if (stockError) return null;
               return (
                 <div style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--success)' }}>
                   ✓ No empty cylinders at this location.
@@ -736,12 +763,8 @@ export default function Stock() {
                   );
                   const available = emptyStock?.quantity ?? 0;
                   return (
-                    <div key={idx} style={{
-                      display: 'flex', gap: '10px', alignItems: 'flex-end',
-                      padding: '10px', borderRadius: '10px',
-                      background: 'var(--surface-muted)', border: '1px solid var(--border)',
-                    }}>
-                      <label style={{ flex: 1, minWidth: 0 }}>
+                    <div key={idx} className="stock-item-row">
+                      <label>
                         {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
                         <AppSelect
                           ariaLabel="Cylinder type"
@@ -750,7 +773,7 @@ export default function Stock() {
                           onChange={(v) => setRefuelSendItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                         />
                       </label>
-                      <label style={{ flex: 0.6, minWidth: '70px' }}>
+                      <label>
                         {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
                         <input
                           type="number" min="1" placeholder="0"
@@ -759,14 +782,14 @@ export default function Stock() {
                           style={{ textAlign: 'center' }}
                         />
                       </label>
-                      <div style={{
-                        flex: '0 0 auto', minWidth: '60px',
+                      <div className="stock-avail" title={stockError ? 'Stock levels unavailable' : undefined} style={{
                         padding: '8px', borderRadius: '8px', textAlign: 'center',
                         fontSize: '0.75rem', fontWeight: 700, marginBottom: '2px',
-                        background: available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
-                        color: available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
+                        background: stockError ? 'var(--surface)' : available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
+                        color: stockError ? 'var(--text-muted)' : available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
+                        border: stockError ? '1px dashed var(--border)' : 'none',
                       }}>
-                        📦 {available}
+                        {stockError ? 'Stock unavailable' : `📦 ${available}`}
                       </div>
                       {refuelSendItems.length > 1 && (
                         <button
@@ -828,7 +851,13 @@ export default function Stock() {
                 ))}
               </div>
             )}
-            {supplierPending.length === 0 && (
+            {supplierPendingError && (
+              <div role="alert" style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--danger)' }}>
+                {supplierPendingError}{' '}
+                <button type="button" className="async-inline-retry" onClick={fetchSupplierPending}>Retry</button>
+              </div>
+            )}
+            {!supplierPendingError && supplierPending.length === 0 && (
               <div style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--success)' }}>
                 ✓ No pending refuels from supplier.
               </div>
@@ -859,12 +888,8 @@ export default function Stock() {
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {refuelRecvItems.map((item, idx) => (
-                  <div key={idx} style={{
-                    display: 'flex', gap: '10px', alignItems: 'flex-end',
-                    padding: '10px', borderRadius: '10px',
-                    background: 'var(--surface-muted)', border: '1px solid var(--border)',
-                  }}>
-                    <label style={{ flex: 1, minWidth: 0 }}>
+                  <div key={idx} className="stock-item-row">
+                    <label>
                       {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
                       <AppSelect
                         ariaLabel="Cylinder size"
@@ -873,7 +898,7 @@ export default function Stock() {
                         onChange={(v) => setRefuelRecvItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                       />
                     </label>
-                    <label style={{ flex: 0.6, minWidth: '70px' }}>
+                    <label>
                       {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
                       <input
                         type="number" min="1" placeholder="0"
@@ -950,11 +975,14 @@ export default function Stock() {
               <option value="refuel_received">Refuel Received</option>
             </select>
           </div>
+          {historyStatus === 'loading' && <LoadingState label="Loading movements…" />}
+          {historyStatus === 'error' && <ErrorState message={historyError} onRetry={() => { setHistoryStatus('loading'); fetchHistory(); }} compact />}
+          {historyStatus === 'ready' && (
           <div className="ledger-list">
             {filtered.length === 0 && (
               <p style={{ textAlign: 'center', padding: '24px' }}>No movements found.</p>
             )}
-            {filtered.map((m) => (
+            {historyPager.pageItems.map((m) => (
               <div className="ledger-row" key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
@@ -994,7 +1022,9 @@ export default function Stock() {
                 <span className="badge">{m.moved_by_name}</span>
               </div>
             ))}
+            <Pager page={historyPager.page} pageCount={historyPager.pageCount} onChange={historyPager.setPage} total={historyPager.total} />
           </div>
+          )}
         </div>
       )}
     </div>
