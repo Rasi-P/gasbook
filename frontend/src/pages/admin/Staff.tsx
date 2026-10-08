@@ -1,7 +1,16 @@
 import { useEffect, useState } from 'react';
-import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck } from 'lucide-react';
+import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck, Users } from 'lucide-react';
 import { api, extractApiError, getApiErrorCode, getApiStatus, LIMITS } from '../../lib/api';
-import { ErrorState, LoadingState } from '../../components/AsyncState';
+import { ErrorState } from '../../components/AsyncState';
+import { Alert } from '../../components/ui/Alert';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { Card } from '../../components/ui/Card';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { Field, Input, Select } from '../../components/ui/Field';
+import { IconButton } from '../../components/ui/IconButton';
+import { PageHeader } from '../../components/ui/PageHeader';
+import { SkeletonRows } from '../../components/ui/Skeleton';
 
 type StaffUser = {
   id: number;
@@ -18,11 +27,6 @@ type StaffUser = {
 };
 
 type RowNotice = { id: number; text: string; tone: 'info' | 'error' | 'confirm' };
-
-const ROLE_COLORS: Record<string, string> = {
-  admin: 'var(--primary)',
-  staff: 'var(--success)',
-};
 
 function fullName(user: StaffUser) {
   return user.first_name || user.last_name ? `${user.first_name} ${user.last_name}`.trim() : user.username;
@@ -271,48 +275,51 @@ export default function Staff() {
 
   return (
     <div>
-      <div className="page-title">
-        <div>
-          <h1>Staff & Users</h1>
-          <p>Accounts are created with a one-time temporary password and can be reset securely.</p>
-        </div>
-        <button className="btn btn-primary" style={{ width: 'auto', padding: '0 16px' }}
-          disabled={Boolean(rolesError) && availableRoles.length === 0}
-          title={rolesError && availableRoles.length === 0 ? 'Roles could not be loaded' : undefined}
-          onClick={() => { setShowAdd((v) => !v); setError(''); }}>
-          {showAdd ? <X size={18} /> : <UserPlus size={18} />}
-          {showAdd ? 'Cancel' : 'Add'}
-        </button>
-      </div>
+      <PageHeader
+        title="Staff & Users"
+        description="Accounts are created with a one-time temporary password and can be reset securely."
+        actions={(
+          <Button
+            type="button"
+            variant={showAdd ? 'secondary' : 'primary'}
+            icon={showAdd ? <X /> : <UserPlus />}
+            disabled={Boolean(rolesError) && availableRoles.length === 0}
+            title={rolesError && availableRoles.length === 0 ? 'Roles could not be loaded' : undefined}
+            onClick={() => { setShowAdd((v) => !v); setError(''); }}
+          >
+            {showAdd ? 'Cancel' : 'Add'}
+          </Button>
+        )}
+      />
 
       {rolesError && (
-        <p className="form-error" role="alert" style={{ marginBottom: '12px' }}>
-          {rolesError}{' '}
-          <button type="button" className="async-inline-retry" onClick={() => void load()}>Retry</button>
-        </p>
+        <Alert
+          tone="danger"
+          role="alert"
+          className="ui-alert--block-sm"
+          actions={<Button type="button" variant="link" size="sm" onClick={() => void load()}>Retry</Button>}
+        >
+          {rolesError}
+        </Alert>
       )}
 
       {showAdd && (
-        <form onSubmit={handleAdd} className="card form-stack" style={{ marginBottom: '16px' }}>
-          <h2>New User</h2>
+        <form onSubmit={handleAdd} className="ui-card ui-card--pad-md form-stack staff-add">
+          <h2 className="ui-card__title">New User</h2>
           <div className="grid-2">
-            <label>
-              <span>Full Name</span>
-              <input value={fullNameValue} onChange={(e) => setFullNameValue(e.target.value)} placeholder="e.g. Ravi Kumar" maxLength={LIMITS.name} required />
-            </label>
-            <label>
-              <span>Username</span>
-              <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. ravi" maxLength={LIMITS.username} autoComplete="off" required />
-            </label>
+            <Field label="Full Name">
+              <Input value={fullNameValue} onChange={(e) => setFullNameValue(e.target.value)} placeholder="e.g. Ravi Kumar" maxLength={LIMITS.name} required />
+            </Field>
+            <Field label="Username">
+              <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="e.g. ravi" maxLength={LIMITS.username} autoComplete="off" required />
+            </Field>
           </div>
           <div className="grid-2">
-            <label>
-              <span>Password</span>
-              <input value="Auto-generated on create" disabled />
-            </label>
-            <label>
-              <span>Role</span>
-              <select value={role} onChange={(e) => {
+            <Field label="Password">
+              <Input value="Auto-generated on create" disabled />
+            </Field>
+            <Field label="Role">
+              <Select value={role} onChange={(e) => {
                 const nextRole = e.target.value;
                 setRole(nextRole);
                 if (nextRole !== 'staff') {
@@ -322,37 +329,35 @@ export default function Staff() {
                 {availableRoles.map(r => (
                   <option key={r.code} value={r.code}>{r.name}</option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
           </div>
           <div className="grid-2">
-            <label>
-              <span>Phone *</span>
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" placeholder="Required" required />
-            </label>
-            <label>
-              <span>Email</span>
-              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Optional" maxLength={LIMITS.email} />
-            </label>
+            <Field label="Phone *">
+              <Input value={phone} onChange={(e) => setPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" placeholder="Required" required />
+            </Field>
+            <Field label="Email">
+              <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Optional" maxLength={LIMITS.email} />
+            </Field>
           </div>
-          <label>
-            <span>Address</span>
-            <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
-          </label>
+          <Field label="Address">
+            <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
+          </Field>
           {role === 'staff' && (
-            <label>
-              <span>Staff Image</span>
-              <input
+            <Field label="Staff Image">
+              <Input
                 type="file"
                 accept="image/*"
                 onChange={(e) => setStaffImage(e.target.files?.[0] || null)}
               />
-            </label>
+            </Field>
           )}
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="btn btn-primary" type="submit" disabled={saving}>
-            <Check size={18} /> {saving ? 'Creating...' : 'Create User'}
-          </button>
+          {error && <Alert tone="danger" role="alert">{error}</Alert>}
+          <div className="form-actions-row">
+            <Button type="submit" disabled={saving} icon={<Check />}>
+              {saving ? 'Creating...' : 'Create User'}
+            </Button>
+          </div>
         </form>
       )}
 
@@ -361,10 +366,12 @@ export default function Staff() {
       {loadStatus === 'error' && <ErrorState message={loadError} onRetry={() => { setLoadStatus('loading'); void load(); }} />}
 
       {loadStatus !== 'error' && (
-      <div className="card" style={{ padding: 0 }}>
-        {loadStatus === 'loading' && <LoadingState label="Loading users…" />}
+      <Card padding="none" className="ui-list">
+        {loadStatus === 'loading' && (
+          <div className="ui-card__skeleton"><SkeletonRows rows={6} columns={3} label="Loading users…" /></div>
+        )}
         {loadStatus === 'ready' && users.length === 0 && (
-          <p style={{ textAlign: 'center', padding: '24px' }}>No users found.</p>
+          <EmptyState icon={<Users size={24} />} title="No users found." />
         )}
         {users.map((u) => {
           const protectedAdmin = isProtectedAdmin(u);
@@ -372,197 +379,147 @@ export default function Staff() {
           const busy = deletingId === u.id;
           return (
             <div key={u.id}>
-              <div style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '14px 18px', borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)', gap: '12px',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, minWidth: 0 }}>
-                  <div style={{ flexShrink: 0 }}>
-                    {u.staff_image_url ? (
-                      <img
-                        src={u.staff_image_url}
-                        alt={fullName(u)}
-                        style={{ width: '44px', height: '44px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border)' }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          width: '44px',
-                          height: '44px',
-                          borderRadius: '50%',
-                          border: '1px solid var(--border)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          background: 'var(--surface-muted)',
-                          fontWeight: 700,
-                          color: 'var(--text-muted)',
-                        }}
-                      >
-                        {fullName(u).charAt(0).toUpperCase()}
-                      </div>
-                    )}
+              <div className={`ui-list-row${inactive ? ' ui-list-row--muted' : ''}`}>
+                <div className="ui-list-row__lead">
+                  {u.staff_image_url ? (
+                    <img className="staff-avatar" src={u.staff_image_url} alt={fullName(u)} />
+                  ) : (
+                    <span className="staff-avatar staff-avatar--initial" aria-hidden="true">
+                      {fullName(u).charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                </div>
+                <div className="ui-list-row__main">
+                  <div className="ui-list-row__title">
+                    <span className="ui-list-row__name">{fullName(u)}</span>
+                    {inactive && <Badge variant="outline" size="sm">INACTIVE</Badge>}
+                    <Badge variant="outline" size="sm" tone={u.role === 'admin' ? 'primary' : 'neutral'} className="staff-role">
+                      {u.role.toUpperCase()}
+                    </Badge>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
-                        <strong style={{ fontSize: '1rem', opacity: inactive ? 0.6 : 1 }}>{fullName(u)}</strong>
-                        {inactive && <span className="badge badge-danger">INACTIVE</span>}
-                        <span style={{
-                          fontSize: '0.72rem', fontWeight: 800, padding: '2px 8px',
-                          borderRadius: '999px', background: (ROLE_COLORS[u.role] || 'var(--text-muted)') + '22',
-                          color: ROLE_COLORS[u.role] || 'var(--text-muted)',
-                        }}>
-                          {u.role.toUpperCase()}
-                        </span>
-                      </div>
-                      <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap', wordBreak: 'break-word' }}>
-                        <span>{u.username}</span>
-                        {u.phone && <span>{u.phone}</span>}
-                        {u.email && <span>{u.email}</span>}
-                        {u.address && <span>{u.address}</span>}
-                      </div>
-                    </div>
+                  <div className="ui-list-row__meta">
+                    <span>{u.username}</span>
+                    {u.phone && <span>{u.phone}</span>}
+                    {u.email && <span>{u.email}</span>}
+                    {u.address && <span>{u.address}</span>}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-                  <button
-                    className="icon-button"
-                    title="Edit"
+                <div className="ui-list-row__actions staff-actions">
+                  <IconButton
+                    label="Edit"
+                    active={editingId === u.id}
                     onClick={() => editingId === u.id ? setEditingId(null) : startEdit(u)}
-                    style={editingId === u.id ? { color: 'var(--primary)' } : {}}
                   >
                     {editingId === u.id ? <X size={16} /> : <Pencil size={16} />}
-                  </button>
-                  <button
-                    className="icon-button"
-                    title="Password"
+                  </IconButton>
+                  <IconButton
+                    label="Password"
+                    active={credUserId === u.id}
                     onClick={() => {
                       if (protectedAdmin) return;
                       setEditingId(null);
                       setCredUserId(credUserId === u.id ? null : u.id); setCredMsg('');
                     }}
                     disabled={protectedAdmin}
-                    style={{
-                      ...(credUserId === u.id ? { color: 'var(--primary)' } : {}),
-                      opacity: protectedAdmin ? 0.3 : 1
-                    }}
                   >
                     <KeyRound size={16} />
-                  </button>
+                  </IconButton>
                   {inactive ? (
-                    <button
-                      className="icon-button"
-                      title="Reactivate"
-                      aria-label="Reactivate"
+                    <IconButton
+                      label="Reactivate"
+                      tone="primary"
                       onClick={() => reactivateUser(u)}
                       disabled={busy}
-                      style={{ color: 'var(--success)', opacity: busy ? 0.3 : 1 }}
                     >
                       <UserCheck size={16} />
-                    </button>
+                    </IconButton>
                   ) : (
-                    <button
-                      className="icon-button"
-                      title="Deactivate"
-                      aria-label="Deactivate"
+                    <IconButton
+                      label="Deactivate"
+                      tone="danger"
                       onClick={() => {
                         if (window.confirm(`Deactivate ${fullName(u)}? They will no longer be able to sign in. History is preserved.`)) void deactivateUser(u);
                       }}
                       disabled={busy || protectedAdmin}
-                      style={{ color: 'var(--warning)', opacity: (busy || protectedAdmin) ? 0.3 : 1 }}
                     >
                       <UserX size={16} />
-                    </button>
+                    </IconButton>
                   )}
-                  <button
-                    className="icon-button"
-                    title="Delete"
-                    aria-label="Delete"
+                  <IconButton
+                    label="Delete"
+                    tone="danger"
                     onClick={() => deleteCredentials(u)}
                     disabled={busy || protectedAdmin}
-                    style={{ 
-                      color: 'var(--danger)',
-                      opacity: (busy || protectedAdmin) ? 0.3 : 1
-                    }}
                   >
                     <Trash2 size={16} />
-                  </button>
+                  </IconButton>
                 </div>
               </div>
 
               {rowNotice?.id === u.id && (
-                <div
-                  role={rowNotice.tone === 'error' ? 'alert' : 'status'}
-                  className={rowNotice.tone === 'error' ? 'form-error' : 'form-note'}
-                  style={{ margin: '0 18px 12px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}
-                >
-                  <span>{rowNotice.text}</span>
-                  <span style={{ display: 'inline-flex', gap: '8px' }}>
-                    {rowNotice.tone === 'confirm' && !inactive && (
-                      <button
-                        type="button"
-                        className="btn btn-compact"
-                        disabled={busy}
-                        onClick={() => {
-                          if (window.confirm(`Deactivate ${fullName(u)} instead? They will no longer be able to sign in. History is preserved.`)) void deactivateUser(u);
-                        }}
-                      >
-                        {busy ? 'Deactivating…' : 'Deactivate instead'}
-                      </button>
+                <div className="ui-list-notice">
+                  <Alert
+                    compact
+                    tone={rowNotice.tone === 'error' ? 'danger' : rowNotice.tone === 'confirm' ? 'warning' : 'info'}
+                    role={rowNotice.tone === 'error' ? 'alert' : 'status'}
+                    actions={(
+                      <>
+                        {rowNotice.tone === 'confirm' && !inactive && (
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => {
+                              if (window.confirm(`Deactivate ${fullName(u)} instead? They will no longer be able to sign in. History is preserved.`)) void deactivateUser(u);
+                            }}
+                          >
+                            {busy ? 'Deactivating…' : 'Deactivate instead'}
+                          </Button>
+                        )}
+                        <Button type="button" variant="ghost" size="sm" onClick={() => setRowNotice(null)}>Dismiss</Button>
+                      </>
                     )}
-                    <button type="button" className="btn btn-compact" onClick={() => setRowNotice(null)}>Dismiss</button>
-                  </span>
+                  >
+                    {rowNotice.text}
+                  </Alert>
                 </div>
               )}
 
               {credUserId === u.id && (
-                <div
-                  style={{
-                    padding: '12px 18px',
-                    borderBottom: editingId === u.id ? 'none' : '1px solid var(--border)',
-                    background: 'var(--surface-muted)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    flexWrap: 'wrap',
-                    gap: '16px'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <KeyRound size={16} style={{ color: 'var(--primary)' }} />
-                    <span style={{ fontSize: '0.95rem', fontWeight: 500 }}>Login Credentials</span>
+                <div className="ui-list-panel cred-panel">
+                  <div className="cred-panel__title">
+                    <KeyRound size={16} />
+                    <span>Login Credentials</span>
                   </div>
 
-                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px', flex: 1, justifyContent: 'flex-end' }}>
+                  <div className="cred-panel__body">
                     {!credMsg ? (
-                      <button
-                        className="btn btn-primary"
+                      <Button
                         type="button"
+                        size="sm"
+                        icon={<Check />}
                         onClick={() => resetPassword(u.id)}
                         disabled={credSaving}
-                        style={{ padding: '6px 16px', fontSize: '0.85rem', width: 'auto', margin: 0 }}
                       >
-                        <Check size={14} style={{ marginRight: '6px' }} /> {credSaving ? 'Generating...' : 'Generate Temporary Password'}
-                      </button>
+                        {credSaving ? 'Generating...' : 'Generate Temporary Password'}
+                      </Button>
                     ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-                        {/* USERNAME */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>USERNAME</span>
-                          <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem' }}>{u.username}</span>
+                      <div className="cred-panel__values">
+                        <div className="cred-panel__pair">
+                          <span className="cred-panel__label">USERNAME</span>
+                          <span className="cred-panel__value">{u.username}</span>
                         </div>
-                        
-                        {/* TEMPORARY PASSWORD */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>TEMPORARY PASSWORD</span>
-                          <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem', letterSpacing: '0.5px' }}>{credMsg}</span>
-                          
-                          <div style={{ display: 'flex', gap: '6px' }}>
-                            <button 
-                              className="icon-button" 
-                              style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
-                              title="Copy Details"
+
+                        <div className="cred-panel__pair">
+                          <span className="cred-panel__label">TEMPORARY PASSWORD</span>
+                          <span className="cred-panel__value cred-panel__value--mono">{credMsg}</span>
+
+                          <div className="cred-panel__tools">
+                            <IconButton
+                              size="sm"
+                              variant="outline"
+                              label="Copy Details"
                               onClick={() => {
                                 const msg = `Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
                                 navigator.clipboard.writeText(msg);
@@ -570,25 +527,12 @@ export default function Staff() {
                               }}
                             >
                               <Copy size={14} />
-                            </button>
+                            </IconButton>
                             <a
                               href={u.email ? `mailto:${u.email}?subject=${encodeURIComponent('Your GasBook Account Details')}&body=${encodeURIComponent(`Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.\n\nBest regards,\nGasBook Admin`)}` : '#'}
-                              className="icon-button"
+                              className={`ui-iconbtn ui-iconbtn--outline ui-iconbtn--sm${u.email ? '' : ' cred-panel__link--disabled'}`}
                               title={u.email ? "Email Details" : "No email saved"}
-                              style={{ 
-                                display: 'flex', 
-                                alignItems: 'center', 
-                                justifyContent: 'center', 
-                                textDecoration: 'none', 
-                                color: 'inherit', 
-                                background: 'var(--surface)', 
-                                border: '1px solid var(--border)', 
-                                width: '28px', 
-                                height: '28px', 
-                                borderRadius: '6px',
-                                opacity: u.email ? 1 : 0.5,
-                                pointerEvents: u.email ? 'auto' : 'none'
-                              }}
+                              aria-label={u.email ? "Email Details" : "No email saved"}
                               onClick={(e) => {
                                 if (!u.email) {
                                   e.preventDefault();
@@ -598,11 +542,11 @@ export default function Staff() {
                             >
                               <Mail size={14} />
                             </a>
-                            <button 
-                              className="icon-button" 
+                            <IconButton
                               type="button"
-                              style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
-                              title="Share Details"
+                              size="sm"
+                              variant="outline"
+                              label="Share Details"
                               onClick={async () => {
                                 const msg = `Hello ${u.first_name},\n\nHere are your GasBook login details:\n\nUsername: ${u.username}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
                                 if (navigator.share) {
@@ -621,83 +565,60 @@ export default function Staff() {
                               }}
                             >
                               <Share2 size={14} />
-                            </button>
+                            </IconButton>
                           </div>
                         </div>
                       </div>
                     )}
-                    
-                    <button 
-                      className="icon-button" 
+
+                    <IconButton
+                      size="sm"
+                      variant="outline"
+                      label="Close"
                       onClick={() => { setCredUserId(null); setCredMsg(''); }}
-                      style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', marginLeft: '4px', borderRadius: '6px' }}
                     >
                       <X size={14} />
-                    </button>
+                    </IconButton>
                   </div>
                 </div>
               )}
 
               {editingId === u.id && (
-                <form onSubmit={handleEdit} className="form-stack" style={{ padding: '0 18px 16px 18px', borderBottom: '1px solid var(--border)' }}>
-                  <h2>Edit User</h2>
+                <form onSubmit={handleEdit} className="ui-list-panel form-stack">
+                  <h3>Edit User</h3>
                   <div className="grid-2">
-                    <label>
-                      <span>Name *</span>
-                      <input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={LIMITS.name} required autoFocus />
-                    </label>
-                    <label>
-                      <span>Phone *</span>
-                      <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" required />
-                    </label>
+                    <Field label="Name *">
+                      <Input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={LIMITS.name} required autoFocus />
+                    </Field>
+                    <Field label="Phone *">
+                      <Input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" required />
+                    </Field>
                   </div>
                   <div className="grid-2">
-                    <label>
-                      <span>Email</span>
-                      <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} maxLength={LIMITS.email} />
-                    </label>
-                    <label>
-                      <span>Address</span>
-                      <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
-                    </label>
+                    <Field label="Email">
+                      <Input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} maxLength={LIMITS.email} />
+                    </Field>
+                    <Field label="Address">
+                      <Input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
+                    </Field>
                   </div>
                   {(editIsStaff || editStaffImageUrl) && (
                     <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                        <div>
-                          {editStaffImageUrl && !editRemoveStaffImage ? (
-                            <img
-                              src={editStaffImageUrl}
-                              alt={editName || 'Staff image'}
-                              style={{ width: '56px', height: '56px', borderRadius: '50%', objectFit: 'cover', border: '1px solid var(--border)' }}
-                            />
-                          ) : (
-                            <div
-                              style={{
-                                width: '56px',
-                                height: '56px',
-                                borderRadius: '50%',
-                                border: '1px solid var(--border)',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                background: 'var(--surface-muted)',
-                                color: 'var(--text-muted)',
-                                fontWeight: 700,
-                              }}
-                            >
-                              {(editName.trim().charAt(0) || 'S').toUpperCase()}
-                            </div>
-                          )}
-                        </div>
-                        <div style={{ color: 'var(--text-muted)', fontSize: '0.86rem' }}>
+                      <div className="staff-image-row">
+                        {editStaffImageUrl && !editRemoveStaffImage ? (
+                          <img className="staff-avatar staff-avatar--lg" src={editStaffImageUrl} alt={editName || 'Staff image'} />
+                        ) : (
+                          <span className="staff-avatar staff-avatar--lg staff-avatar--initial" aria-hidden="true">
+                            {(editName.trim().charAt(0) || 'S').toUpperCase()}
+                          </span>
+                        )}
+                        <span className="ui-field__hint">
                           {editStaffImage ? `Selected: ${editStaffImage.name}` : editStaffImageUrl && !editRemoveStaffImage ? 'Current staff image' : 'No staff image'}
-                        </div>
+                        </span>
                       </div>
                       {editIsStaff && (
-                      <label>
-                        <span>Staff Image</span>
-                        <input
+                      <Field label="Staff Image">
+                        <Input
                           type="file"
                           accept="image/*"
                           onChange={(e) => {
@@ -708,10 +629,10 @@ export default function Staff() {
                             }
                           }}
                         />
-                      </label>
+                      </Field>
                       )}
                       {(editStaffImageUrl || editStaffImage) && (
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <label className="staff-check">
                           <input
                             type="checkbox"
                             checked={editRemoveStaffImage}
@@ -728,21 +649,21 @@ export default function Staff() {
                       )}
                     </>
                   )}
-                  {editError && <p className="form-error" role="alert">{editError}</p>}
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn btn-primary" type="submit" disabled={editSaving}>
-                      <Check size={18} /> {editSaving ? 'Saving...' : 'Save Changes'}
-                    </button>
-                    <button className="btn btn-secondary" type="button" onClick={() => setEditingId(null)} disabled={editSaving}>
+                  {editError && <Alert tone="danger" role="alert">{editError}</Alert>}
+                  <div className="form-actions-row">
+                    <Button type="button" variant="secondary" onClick={() => setEditingId(null)} disabled={editSaving}>
                       Cancel
-                    </button>
+                    </Button>
+                    <Button type="submit" disabled={editSaving} icon={<Check />}>
+                      {editSaving ? 'Saving...' : 'Save Changes'}
+                    </Button>
                   </div>
                 </form>
               )}
             </div>
           );
         })}
-      </div>
+      </Card>
       )}
     </div>
   );

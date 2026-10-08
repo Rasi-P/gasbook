@@ -1,0 +1,333 @@
+/* Sales page (pages/Sales.tsx). History tab only in Phase 6; the New Sale form is restyled in Phase 7.
+   The history table and item-cell classes are also used by Reports → Sales. */
+.sales-history-table {
+  min-width: 860px;
+}
+
+.sales-history-table td {
+  vertical-align: top;
+}
+
+.sh-customer {
+  display: block;
+  max-width: 200px;
+  overflow-wrap: anywhere;
+}
+
+.sh-nowrap {
+  white-space: nowrap;
+}
+
+.sh-meta {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.sh-mode {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
+/* Item lines (shared SaleItemsCell, also used by Reports → Sales) */
+.sale-items {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.sale-items__line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+  gap: 4px 8px;
+}
+
+/* ── New Sale form ── */
+.sale-form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.sale-card__row {
+  margin-top: var(--space-3);
+}
+
+.sale-card__title {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.sale-card__title svg {
+  color: var(--primary);
+}
+
+.sale-card--dues {
+  border-color: var(--warning-border);
+}
+
+.sale-card--dues .sale-card__title svg {
+  color: var(--warning-text);
+}
+
+.sale-hint {
+  padding: var(--space-1) 0;
+}
+
+/* Customer search + suggestions */
+.sale-search {
+  position: relative;
+}
+
+.sale-search .dropdown-list {
+  margin-top: 4px;
+  padding: 4px;
+  z-index: var(--z-dropdown);
+}
+
+.suggest-item {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 8px 10px;
+  text-align: left;
+  transition: background-color var(--dur-fast) var(--ease-out);
+  width: 100%;
+}
+
+.suggest-item:hover,
+.suggest-item:focus-visible {
+  background: var(--primary-light);
+}
+
+.suggest-item__main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.suggest-item__main strong {
+  font-size: var(--text-sm);
+}
+
+.suggest-item__phone,
+.suggest-item__address {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* Selected customer summary */
+.sale-summary {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(0, 1fr);
+  margin-top: var(--space-4);
+}
+
+.sale-summary__due {
+  color: var(--danger-text);
+}
+
+.sale-summary__ok {
+  color: var(--success-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.sale-summary__muted {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.sale-summary__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Item rows */
+.sale-rows {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.sale-item {
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+.sale-item__head {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+  justify-content: space-between;
+}
+
+.sale-item__title {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.sale-dot {
+  background: currentColor;
+  border-radius: var(--radius-full);
+  display: block;
+  height: 6px;
+  width: 6px;
+}
+
+.sale-item__grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sale-item__cylinder {
+  grid-column: 1 / -1;
+}
+
+.sale-num {
+  text-align: center;
+}
+
+.sale-item__foot {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  justify-content: space-between;
+}
+
+.sale-item__total {
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Return rows */
+.sale-return-row {
+  align-items: flex-end;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+.sale-total-line {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: space-between;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+}
+
+.sale-total-line span {
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+
+/* Payment */
+.sale-pay-modes {
+  --chips-cols: 5;
+}
+
+.sale-total {
+  background: var(--surface-muted);
+  border-radius: var(--radius-lg);
+  display: grid;
+  gap: 2px;
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+}
+
+.sale-total__label {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sale-total__value {
+  color: var(--text);
+  font-size: var(--text-4xl);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+}
+
+.sale-total__pending {
+  color: var(--danger-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.sale-total__paid {
+  align-items: center;
+  color: var(--success-text);
+  display: inline-flex;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  gap: 4px;
+}
+
+.sale-submit {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 479px) {
+  .sale-pay-modes {
+    --chips-cols: 3;
+  }
+
+  .sale-return-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .sale-return-row__type {
+    grid-column: 1 / -1;
+  }
+
+  .sale-submit > * {
+    flex: 1 1 100%;
+  }
+}
+
+@media (min-width: 480px) {
+  .sale-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+
+@media (min-width: 760px) {
+  .sale-item__grid {
+    grid-template-columns: 1.3fr 1fr 1fr 0.8fr 0.9fr;
+  }
+
+  .sale-item__cylinder {
+    grid-column: auto;
+  }
+}

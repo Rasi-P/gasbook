@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, ClipboardList, Truck, X } from 'lucide-react';
 import { api, extractApiError, fetchAllPages, LIMITS } from '../../lib/api';
-import { ErrorState, LoadingState } from '../../components/AsyncState';
+import { ErrorState } from '../../components/AsyncState';
 import { Pager } from '../../components/Pager';
 import { usePager } from '../../hooks/usePager';
+import { bookingStatusTone, deliveryStatusTone } from '../../components/bookingStatus';
+import { Alert } from '../../components/ui/Alert';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { Card, CardFooter, CardHeader } from '../../components/ui/Card';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { Field, Input, Select } from '../../components/ui/Field';
+import { IconButton } from '../../components/ui/IconButton';
+import { Modal } from '../../components/ui/Modal';
+import { PageHeader } from '../../components/ui/PageHeader';
+import { SkeletonRows } from '../../components/ui/Skeleton';
+import { Table, TableWrap, Td, Th } from '../../components/ui/Table';
 
 type Booking = {
   id: number;
@@ -142,20 +154,22 @@ export default function AdminBookings() {
 
   return (
     <div>
-      <div className="page-title">
-        <div>
-          <h1>Booking Control</h1>
-          <p>Approve customer requests, assign delivery staff, and watch status move through delivery.</p>
-        </div>
-      </div>
+      <PageHeader
+        title="Booking Control"
+        description="Approve customer requests, assign delivery staff, and watch status move through delivery."
+      />
 
-      {message && <p className="form-note" style={{ marginBottom: 12 }}>{message}</p>}
-      {error && <p className="form-error" role="alert" style={{ marginBottom: 12 }}>{error}</p>}
+      {message && <Alert tone="success" className="ui-alert--block-sm">{message}</Alert>}
+      {error && <Alert tone="danger" role="alert" className="ui-alert--block-sm">{error}</Alert>}
       {staffLoadError && (
-        <p className="form-error" role="alert" style={{ marginBottom: 12 }}>
-          {staffLoadError}{' '}
-          <button type="button" className="async-inline-retry" onClick={() => void load()}>Retry</button>
-        </p>
+        <Alert
+          tone="danger"
+          role="alert"
+          className="ui-alert--block-sm"
+          actions={<Button type="button" variant="link" size="sm" onClick={() => void load()}>Retry</Button>}
+        >
+          {staffLoadError}
+        </Alert>
       )}
 
       {loadStatus === 'error' && (
@@ -163,78 +177,74 @@ export default function AdminBookings() {
       )}
 
       {loadStatus !== 'error' && (
-      <div className="card">
-        <div className="section-head">
-          <h2>Requests</h2>
-          <ClipboardList />
-        </div>
-        {loadStatus === 'loading' && <LoadingState label="Loading bookings…" />}
-        {loadStatus === 'ready' && (
-        <div className="table-wrap">
-          <table>
+      <Card padding="none">
+        <CardHeader
+          title="Requests"
+          meta={loadStatus === 'ready'
+            ? <Badge>{total} total</Badge>
+            : <ClipboardList size={18} className="ui-card-icon" aria-hidden="true" />}
+        />
+        {loadStatus === 'loading' && (
+          <div className="ui-card__skeleton"><SkeletonRows rows={6} columns={5} label="Loading bookings…" /></div>
+        )}
+        {loadStatus === 'ready' && bookings.length === 0 && (
+          <EmptyState icon={<ClipboardList size={24} />} title="No bookings yet." />
+        )}
+        {loadStatus === 'ready' && bookings.length > 0 && (
+        <TableWrap>
+          <Table cards className="bookings-table">
             <thead>
               <tr>
-                <th>Customer</th>
-                <th>Cylinder</th>
-                <th>Status</th>
-                <th>Staff</th>
-                <th style={{ textAlign: 'right' }}>Actions</th>
+                <Th className="bk-col-customer">Customer</Th>
+                <Th className="bk-col-cylinder">Cylinder</Th>
+                <Th className="bk-col-status">Status</Th>
+                <Th className="bk-col-staff">Staff</Th>
+                <Th align="right" className="bk-col-actions">Actions</Th>
               </tr>
             </thead>
             <tbody>
               {pageItems.map((booking) => (
                 <tr key={booking.id}>
-                  <td>
-                    <strong>{booking.customer_name}</strong>
-                    <p>{booking.customer_phone || booking.customer_area}</p>
-                    <p>{booking.customer_address}</p>
-                  </td>
-                  <td>
+                  <Td label="Customer">
+                    <strong className="bk-name">{booking.customer_name}</strong>
+                    <span className="ui-cell-sub">{booking.customer_phone || booking.customer_area}</span>
+                    <span className="ui-cell-sub">{booking.customer_address}</span>
+                  </Td>
+                  <Td label="Cylinder">
                     <strong>{booking.quantity} x {booking.cylinder_type_name}</strong>
-                    <p>{money(booking.rate)} each</p>
+                    <span className="ui-cell-sub">{money(booking.rate)} each</span>
                     {discountAmount(booking) > 0 && (
-                      <p style={{ marginTop: 4 }}>
-                        <span style={{ textDecoration: 'line-through', color: '#94a3b8', marginRight: 8 }}>{money(originalAmount(booking))}</span>
-                        <strong style={{ color: '#16a34a' }}>{money(finalAmount(booking))}</strong>
-                      </p>
+                      <span className="bk-price">
+                        <s>{money(originalAmount(booking))}</s>
+                        <strong>{money(finalAmount(booking))}</strong>
+                      </span>
                     )}
-                    {booking.note && <p>{booking.note}</p>}
-                  </td>
-                  <td>
-                    <span className={`badge ${
-                      booking.status === 'pending' ? 'badge-warning' :
-                      booking.status === 'approved' ? 'badge-info' :
-                      booking.status === 'accepted' ? 'badge-info' :
-                      booking.status === 'out_for_delivery' ? 'badge-warning' :
-                      booking.status === 'delivered' ? 'badge-success' : 'badge'
-                    }`}>
-                      {booking.status.replaceAll('_', ' ')}
-                    </span>
-                    {booking.status === 'rejected' && booking.rejection_reason && (
-                      <p style={{ fontSize: '12px', color: '#dc2626', marginTop: 4 }}>Reason: {booking.rejection_reason}</p>
-                    )}
-                    {booking.status === 'pending' && booking.needs_reassignment && (
-                      <p style={{ marginTop: 4 }}>
-                        <span className="badge badge-warning" style={{ whiteSpace: 'normal', textAlign: 'left' }}>
+                    {booking.note && <span className="ui-cell-sub bk-note">{booking.note}</span>}
+                  </Td>
+                  <Td label="Status">
+                    <div className="bk-status">
+                      <Badge tone={bookingStatusTone(booking.status)}>{booking.status.replaceAll('_', ' ')}</Badge>
+                      {booking.status === 'rejected' && booking.rejection_reason && (
+                        <span className="bk-reason">Reason: {booking.rejection_reason}</span>
+                      )}
+                      {booking.status === 'pending' && booking.needs_reassignment && (
+                        <Badge tone="warning" square className="ui-badge--wrap">
                           Declined by {booking.delivery_staff_name || 'staff'}
                           {booking.delivery_rejection_reason ? `: ${booking.delivery_rejection_reason}` : ''}
-                        </span>
-                      </p>
-                    )}
-                    {booking.status !== 'pending' && booking.delivery_status && booking.delivery_status !== booking.status && (
-                      <p style={{ marginTop: 4 }}>
-                        <span className={`badge ${
-                          booking.delivery_status === 'accepted' ? 'badge-info' :
-                          booking.delivery_status === 'cancelled' ? 'badge-danger' : 'badge'
-                        }`}>
-                          <Truck size={12} /> {booking.delivery_status.replaceAll('_', ' ')}
-                        </span>
-                      </p>
-                    )}
-                  </td>
-                  <td>
+                        </Badge>
+                      )}
+                      {booking.status !== 'pending' && booking.delivery_status && booking.delivery_status !== booking.status && (
+                        <Badge variant="outline" tone={deliveryStatusTone(booking.delivery_status)} icon={<Truck />}>
+                          {booking.delivery_status.replaceAll('_', ' ')}
+                        </Badge>
+                      )}
+                    </div>
+                  </Td>
+                  <Td label="Staff">
                     {booking.status === 'pending' ? (
-                      <select
+                      <Select
+                        selectSize="sm"
+                        aria-label="Assign staff"
                         value={staffByBooking[booking.id] || ''}
                         onChange={(e) => setStaffByBooking((prev) => ({ ...prev, [booking.id]: e.target.value }))}
                       >
@@ -248,28 +258,28 @@ export default function AdminBookings() {
                             </option>
                           );
                         })}
-                      </select>
+                      </Select>
                     ) : (
                       booking.assigned_staff_name || '-'
                     )}
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
+                  </Td>
+                  <Td label="Actions" align="right">
                     {booking.status === 'pending' ? (
-                      <div style={{ display: 'inline-flex', gap: 8 }}>
-                        <button
-                          className="icon-button"
-                          title={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
-                          aria-label={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
+                      <div className="bk-actions">
+                        <IconButton
+                          variant="outline"
+                          tone="primary"
+                          label={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
                           disabled={approveBusyId !== null}
                           aria-busy={approveBusyId === booking.id}
                           onClick={() => approve(booking.id)}
                         >
                           <Check size={18} />
-                        </button>
-                        <button
-                          className="icon-button"
-                          title="Reject Booking"
-                          aria-label="Reject Booking"
+                        </IconButton>
+                        <IconButton
+                          variant="outline"
+                          tone="danger"
+                          label="Reject Booking"
                           disabled={approveBusyId !== null}
                           onClick={() => {
                             setRejectBookingId(booking.id);
@@ -278,53 +288,61 @@ export default function AdminBookings() {
                           }}
                         >
                           <X size={18} />
-                        </button>
+                        </IconButton>
                       </div>
                     ) : (
-                      <span className="badge"><Truck size={12} /> {booking.status.replaceAll('_', ' ')}</span>
+                      <Badge icon={<Truck />}>{booking.status.replaceAll('_', ' ')}</Badge>
                     )}
-                  </td>
+                  </Td>
                 </tr>
               ))}
-              {bookings.length === 0 && (
-                <tr><td colSpan={5} style={{ textAlign: 'center', padding: 24 }}>No bookings yet.</td></tr>
-              )}
             </tbody>
-          </table>
-          <Pager page={page} pageCount={pageCount} onChange={setPage} total={total} />
-        </div>
+          </Table>
+        </TableWrap>
         )}
-      </div>
+        {loadStatus === 'ready' && pageCount > 1 && (
+          <CardFooter>
+            <Pager page={page} pageCount={pageCount} onChange={setPage} total={total} />
+          </CardFooter>
+        )}
+      </Card>
       )}
 
-      {rejectBookingId !== null && (
-        <div className="modal" style={{ display: 'block', backgroundColor: 'rgba(0,0,0,0.5)', position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000 }}>
-          <div className="modal-content" style={{ backgroundColor: '#fff', margin: '15% auto', padding: '24px', borderRadius: '8px', maxWidth: '400px' }}>
-            <h3>Reject Booking</h3>
-            <p style={{ marginBottom: '16px' }}>Please provide a reason for rejecting this order.</p>
-            <input
+      <Modal
+        open={rejectBookingId !== null}
+        size="sm"
+        title="Reject Booking"
+        description="Please provide a reason for rejecting this order."
+        footer={(
+          <>
+            <Button type="button" variant="secondary" disabled={rejectBusy} onClick={() => setRejectBookingId(null)}>Cancel</Button>
+            <Button
+              type="button"
+              variant="danger"
+              disabled={rejectBusy}
+              onClick={() => { if (rejectBookingId !== null) void reject(rejectBookingId); }}
+            >
+              {rejectBusy ? 'Rejecting…' : 'Reject Order'}
+            </Button>
+          </>
+        )}
+      >
+        <div className="form-stack">
+          <Field as="div" hint={`${rejectReason.length}/${LIMITS.adminReason}`}>
+            <Input
               type="text"
+              aria-label="Rejection reason"
               placeholder="e.g. Out of stock, outside delivery zone"
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
-              style={{ width: '100%', padding: '8px', marginBottom: '4px' }}
               maxLength={LIMITS.adminReason}
               aria-invalid={Boolean(rejectError)}
               disabled={rejectBusy}
             />
-            <small style={{ display: 'block', textAlign: 'right', color: 'var(--text-muted)', marginBottom: '8px' }}>
-              {rejectReason.length}/{LIMITS.adminReason}
-            </small>
-            {rejectError && <p className="form-error" role="alert" style={{ fontSize: '12px', marginBottom: '16px' }}>{rejectError}</p>}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
-              <button className="btn" style={{ background: '#f3f4f6', color: '#374151' }} disabled={rejectBusy} onClick={() => setRejectBookingId(null)}>Cancel</button>
-              <button className="btn btn-primary" style={{ background: '#dc2626' }} disabled={rejectBusy} onClick={() => reject(rejectBookingId)}>
-                {rejectBusy ? 'Rejecting…' : 'Reject Order'}
-              </button>
-            </div>
-          </div>
+          </Field>
+          {rejectError && <Alert tone="danger" role="alert" compact>{rejectError}</Alert>}
         </div>
-      )}
+      </Modal>
     </div>
   );
 }

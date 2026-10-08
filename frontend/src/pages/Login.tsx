@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'react';
 import type { FormEvent } from 'react';
+import { Eye, EyeOff, Lock, User } from 'lucide-react';
 import { login, api, getRoleHome, logout, extractApiError, getApiStatus, getApiErrorCode, FORCE_PASSWORD_CHANGE_KEY } from '../lib/api';
+import { AuthHeader, AuthLayout } from '../components/AuthLayout';
+import { Alert } from '../components/ui/Alert';
+import { Button } from '../components/ui/Button';
+import { Field, Input } from '../components/ui/Field';
+import { IconButton } from '../components/ui/IconButton';
 import sabcoLogo from '../assets/sabco_logo.png';
 import splashBg from '../assets/splash_bg.png';
 import splashCylinder from '../assets/splash_cylinder.png';
@@ -26,53 +32,6 @@ function buildSupportWhatsappLink(username: string) {
     ` I will change it immediately after login.`;
 
   return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
-}
-
-function UserIcon() {
-  return (
-    <svg className="field-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  );
-}
-
-function LockIcon() {
-  return (
-    <svg className="field-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-    </svg>
-  );
-}
-
-function EyeIcon({ open }: { open: boolean }) {
-  if (open) {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20">
-        <path
-          d="M3 3l18 18m-9.57-3C6.98 18 4 12 4 12a14.6 14.6 0 0 1 3.27-4.19M9.88 9.88A3 3 0 0 0 12 15a3 3 0 0 0 2.12-.88M14.12 14.12 9.88 9.88m4.45-4.1C18.44 7.1 20 12 20 12s-1.54 4.9-5.67 6.22M12 6c-1.05 0-2.04.2-2.95.56"
-          fill="none"
-          stroke="currentColor"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="1.8"
-        />
-      </svg>
-    );
-  }
-
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" width="20" height="20">
-      <path
-        d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-    </svg>
-  );
 }
 
 export default function Login() {
@@ -190,152 +149,124 @@ export default function Login() {
 
   if (view === 'forgot-password') {
     return (
-      <div className="legacy-auth-shell">
-        <div className="login-screen">
-          <div className="login-header">
-            <img src={sabcoLogo} className="login-brand-logo" alt="Sabco logo" />
+      <AuthLayout>
+        <AuthHeader title="Request Password Reset" subtitle="Only admin can send a temporary password for your account." />
+
+        <div className="auth-form">
+          <Field label="Username" htmlFor="forgot-username">
+            <Input
+              id="forgot-username"
+              type="text"
+              placeholder="Enter your username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              required
+            />
+          </Field>
+
+          <Alert tone="info" title="Important">
+            <p>
+              Admin should send only a temporary password on WhatsApp. After you log in with that password, you must
+              change it immediately.
+            </p>
+          </Alert>
+
+          <div className="auth-steps">
+            <p>1. Confirm your username.</p>
+            <p>2. Tap the WhatsApp button to request a temporary password from {SUPPORT_CONTACT_NAME}.</p>
+            <p>3. Log in with the temporary password.</p>
+            <p>4. Change your password on the next screen.</p>
           </div>
 
-          <div className="login-card">
-            <div className="login-card-header">
-              <h2>Request Password Reset</h2>
-              <p>Only admin can send a temporary password for your account.</p>
-            </div>
+          {!supportWhatsappAvailable ? (
+            <Alert tone="danger" compact>
+              Admin WhatsApp contact is not available right now. Please contact the distributor directly.
+            </Alert>
+          ) : null}
 
-            <div className="login-form">
-              <div className="form-group">
-                <label htmlFor="forgot-username">Username</label>
-                <div className="input-wrapper input-wrapper--plain">
-                  <input
-                    id="forgot-username"
-                    type="text"
-                    placeholder="Enter your username"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    autoComplete="username"
-                    required
-                  />
-                </div>
-              </div>
+          <div className="auth-actions">
+            <Button type="button" size="lg" block disabled={!supportWhatsappLink} onClick={handleOpenSupportWhatsapp}>
+              REQUEST ON WHATSAPP
+            </Button>
 
-              <div className="request-note">
-                <p className="request-note__title">Important</p>
-                <p>
-                  Admin should send only a temporary password on WhatsApp. After you log in with that password, you must
-                  change it immediately.
-                </p>
-              </div>
-
-              <div className="request-steps">
-                <p>1. Confirm your username.</p>
-                <p>2. Tap the WhatsApp button to request a temporary password from {SUPPORT_CONTACT_NAME}.</p>
-                <p>3. Log in with the temporary password.</p>
-                <p>4. Change your password on the next screen.</p>
-              </div>
-
-              {!supportWhatsappAvailable ? (
-                <p className="form-feedback form-feedback--error">
-                  Admin WhatsApp contact is not available right now. Please contact the distributor directly.
-                </p>
-              ) : null}
-
-              <button type="button" className="btn-primary" disabled={!supportWhatsappLink} onClick={handleOpenSupportWhatsapp}>
-                REQUEST ON WHATSAPP
-              </button>
-
-              <button type="button" className="btn-secondary" onClick={() => setView('login')}>
-                BACK TO LOGIN
-              </button>
-            </div>
+            <Button type="button" variant="secondary" size="lg" block onClick={() => setView('login')}>
+              BACK TO LOGIN
+            </Button>
           </div>
         </div>
-      </div>
+      </AuthLayout>
     );
   }
 
   return (
-    <div className="legacy-auth-shell">
-      <div className="login-screen">
-        <div className="login-header">
-          <img src={sabcoLogo} className="login-brand-logo" alt="Sabco logo" />
+    <AuthLayout>
+      <AuthHeader title="Welcome Back 👋" subtitle="Please login to continue" />
+
+      <form className="auth-form" onSubmit={handleLogin}>
+        <Field label="Username" htmlFor="username">
+          <Input
+            id="username"
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            required
+            leadingIcon={<User size={18} />}
+          />
+        </Field>
+
+        <Field label="Password" htmlFor="login-password">
+          <Input
+            id="login-password"
+            type={showPassword ? 'text' : 'password'}
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+            leadingIcon={<Lock size={18} />}
+            trailing={
+              <IconButton
+                type="button"
+                size="sm"
+                label={showPassword ? 'Hide password' : 'Show password'}
+                onClick={() => setShowPassword(!showPassword)}
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </IconButton>
+            }
+          />
+        </Field>
+
+        <div className="auth-row">
+          <label className="auth-check">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+            />
+            <span>Remember me</span>
+          </label>
+          <Button type="button" variant="link" onClick={handleOpenForgotPassword}>
+            Forgot Password?
+          </Button>
         </div>
 
-        <div className="login-card">
-          <div className="login-card-header">
-            <h2>Welcome Back 👋</h2>
-            <p>Please login to continue</p>
-          </div>
+        {loginError ? <Alert tone="danger" compact>{loginError}</Alert> : null}
 
-          <form className="login-form" onSubmit={handleLogin}>
-            <div className="form-group">
-              <label htmlFor="username">Username</label>
-              <div className="input-wrapper">
-                <UserIcon />
-                <input
-                  id="username"
-                  type="text"
-                  placeholder="Username"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  autoComplete="username"
-                  required
-                />
-              </div>
-            </div>
+        <Button type="submit" size="lg" block disabled={isSubmitting} loading={isSubmitting}>
+          {isSubmitting ? 'SIGNING IN...' : 'LOGIN'}
+        </Button>
+      </form>
 
-            <div className="form-group">
-              <label htmlFor="login-password">Password</label>
-              <div className="input-wrapper">
-                <LockIcon />
-                <input
-                  id="login-password"
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="current-password"
-                  required
-                />
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() => setShowPassword(!showPassword)}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                >
-                  <EyeIcon open={!showPassword} />
-                </button>
-              </div>
-            </div>
-
-            <div className="form-actions">
-              <label className="remember-me">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                />
-                <span>Remember me</span>
-              </label>
-              <button type="button" className="forgot-link" onClick={handleOpenForgotPassword}>
-                Forgot Password?
-              </button>
-            </div>
-
-            {loginError ? <p className="form-feedback form-feedback--error">{loginError}</p> : null}
-
-            <button type="submit" className="btn-primary" disabled={isSubmitting}>
-              {isSubmitting ? 'SIGNING IN...' : 'LOGIN'}
-            </button>
-          </form>
-
-          <div className="login-footer">
-            <p>Need Help?</p>
-            <button type="button" className="contact-link" onClick={handleOpenForgotPassword}>
-              Distributor Contact
-            </button>
-          </div>
-        </div>
+      <div className="auth-help">
+        <p>Need Help?</p>
+        <Button type="button" variant="link" onClick={handleOpenForgotPassword}>
+          Distributor Contact
+        </Button>
       </div>
-    </div>
+    </AuthLayout>
   );
 }

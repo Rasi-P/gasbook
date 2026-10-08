@@ -1,0 +1,151 @@
+/* Stock page (pages/Stock.tsx). History tab only in Phase 6; the movement / load / refuel forms are restyled in Phase 7. */
+.stock-status {
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stock-route {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.stock-history__error {
+  padding-bottom: var(--space-4);
+  padding-top: var(--space-4);
+}
+
+.stock-history__error .ui-alert--block {
+  margin-bottom: 0;
+}
+
+/* ── Refuel / Movement / New Load forms ── */
+.stock-card {
+  min-width: 0;
+}
+
+.stock-card__title {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.stock-card__title svg {
+  color: var(--primary);
+}
+
+.refuel-grid {
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.move-grid {
+  align-items: end;
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.move-grid .swap-button {
+  justify-self: center;
+}
+
+.stock-rows {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.stock-item-row {
+  align-items: flex-end;
+  background: var(--surface-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.stock-item-row > .ui-field {
+  flex: 1 1 90px;
+  min-width: 0;
+}
+
+.stock-item-row > .ui-field:first-child {
+  flex: 1 1 100%;
+}
+
+.stock-item-row .stock-avail {
+  flex: 0 0 auto;
+  justify-content: center;
+  min-height: 40px;
+  min-width: 64px;
+  padding: 0 10px;
+}
+
+.stock-item-row__remove {
+  flex: 0 0 auto;
+  margin-bottom: 2px;
+}
+
+.stock-num {
+  text-align: center;
+}
+
+.stock-chips {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: var(--space-4);
+}
+
+.stock-chips__label {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.stock-ok {
+  align-items: center;
+  color: var(--success-text);
+  display: flex;
+  gap: 6px;
+  margin-bottom: var(--space-4);
+}
+
+.stock-quick .ui-alert__actions {
+  margin-left: 0;
+  width: 100%;
+}
+
+.stock-quick {
+  flex-wrap: wrap;
+}
+
+.stock-submit {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 479px) {
+  .stock-submit > * {
+    flex: 1 1 100%;
+  }
+}
+
+@media (min-width: 680px) {
+  .move-grid {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .stock-item-row > .ui-field:first-child {
+    flex: 2 1 160px;
+  }
+}
+
+@media (min-width: 900px) {
+  .refuel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
