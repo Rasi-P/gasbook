@@ -1,0 +1,136 @@
+/*
+ * Design tokens for the GasBook management UI.
+ * Single source of truth for colour, typography, spacing, radius, shadow, motion and layering.
+ * The "legacy aliases" block keeps the old variable names working until every reference is migrated.
+ */
+:root {
+  /* ── Brand (hue taken from the Sabco logo purple, desaturated for UI surfaces) ── */
+  --primary: #6F39C6;
+  --primary-hover: #5D30A6;
+  --primary-active: #50298E;
+  --primary-light: #F2EBFF;
+  --primary-light-hover: #E8DDFB;
+  --primary-ring: rgba(111, 57, 198, 0.28);
+  --on-primary: #FFFFFF;
+
+  /* ── Surfaces ── */
+  --bg: #F7F8FC;
+  --surface: #FFFFFF;
+  --surface-muted: #F3F5F9;
+  --border: #E6EAF2;
+  --border-strong: #CBD5E1;
+  --overlay: rgba(15, 23, 42, 0.45);
+
+  /* ── Text ── */
+  --text: #1F2937;
+  --text-body: #334155;
+  --text-secondary: #64748B;
+  --text-placeholder: #94A3B8; /* placeholders, disabled, timestamps only (fails AA for content) */
+  --text-inverse: #FFFFFF;
+
+  /* ── Semantic (fill / text-on-tint / tint / tint-border) ── */
+  --success: #10B981;
+  --success-text: #047857;
+  --success-tint: #ECFDF5;
+  --success-border: #A7F3D0;
+
+  --warning: #F59E0B;
+  --warning-text: #B45309;
+  --warning-tint: #FFFBEB;
+  --warning-border: #FDE68A;
+
+  --danger: #EF4444;
+  --danger-strong: #DC2626; /* the only semantic colour allowed as a button fill with white text */
+  --danger-text: #B91C1C;
+  --danger-tint: #FEF2F2;
+  --danger-border: #FECACA;
+
+  --info: #3B82F6;
+  --info-text: #1D4ED8;
+  --info-tint: #EFF6FF;
+  --info-border: #BFDBFE;
+
+  /* ── Typography ── */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 22px;
+  --text-3xl: 24px;
+  --text-4xl: 28px;
+  --leading-tight: 1.2;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ── Spacing (4px base) ── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ── Radius ── */
+  --radius-sm: 6px;   /* tags, chips, inner tiles */
+  --radius-md: 8px;   /* buttons, inputs, icon buttons */
+  --radius-lg: 12px;  /* cards, menus, panels, alerts */
+  --radius-xl: 16px;  /* modals, sheets, auth card */
+  --radius-full: 999px;
+
+  /* ── Shadows ── */
+  --shadow-xs: 0 1px 2px rgb(15 23 42 / 0.05);
+  --shadow-sm: 0 2px 6px rgb(15 23 42 / 0.06);
+  --shadow-md: 0 8px 24px rgb(15 23 42 / 0.10);
+  --shadow-lg: 0 24px 48px rgb(15 23 42 / 0.18);
+  --shadow-focus: 0 0 0 3px var(--primary-ring);
+
+  /* ── Motion ── */
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* ── Layering ── */
+  --z-header: 20;
+  --z-sidebar: 30;
+  --z-fab: 50;
+  --z-dropdown: 60;
+  --z-modal: 100;
+  --z-toast: 110;
+
+  /* ── Legacy aliases (remove once the last reference is migrated) ── */
+  --primary-dark: var(--primary-hover);
+  --primary-soft: var(--primary-light);
+  --text-muted: var(--text-secondary);
+  --success-soft: var(--success-tint);
+  --danger-soft: var(--danger-tint);
+  --warning-soft: var(--warning-tint);
+  --info-soft: var(--info-tint);
+  --purple: var(--primary);          /* deprecated: dashboard metric-card theme */
+  --purple-soft: var(--primary-light);
+  --cyan: var(--info);               /* deprecated: badge-cyan / metric-card theme */
+  --cyan-soft: var(--info-tint);
+  --radius: var(--radius-md);
+
+  font-family: var(--font-sans);
+}
+
+/* Reduced motion: every transition/animation built on the motion tokens becomes effectively instant.
+   State changes still apply; only the interpolation is removed. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur-base: 0ms;
+    --dur-slow: 0ms;
+  }
+}

@@ -1,8 +1,11 @@
 import { RefreshCw } from 'lucide-react';
+import { Alert } from './ui/Alert';
+import { Button } from './ui/Button';
 
 export function LoadingState({ label = 'Loading…' }: { label?: string }) {
   return (
-    <p className="async-loading" role="status" aria-live="polite">
+    <p className="ui-loading" role="status" aria-live="polite">
+      <span className="ui-spinner" aria-hidden="true" />
       {label}
     </p>
   );
@@ -20,28 +23,37 @@ export function ErrorState({
   compact?: boolean;
 }) {
   return (
-    <div className={`card async-error${compact ? ' async-error--compact' : ''}`} role="alert">
-      <p className="async-error-message">{message}</p>
-      {onRetry && (
-        <button type="button" className="btn btn-outline async-error-retry" onClick={onRetry}>
-          <RefreshCw size={16} />
+    <Alert
+      tone="danger"
+      role="alert"
+      compact={compact}
+      className="ui-alert--block"
+      actions={onRetry && (
+        <Button type="button" variant="secondary" size="sm" icon={<RefreshCw size={14} />} onClick={onRetry}>
           {retryLabel}
-        </button>
+        </Button>
       )}
-    </div>
+    >
+      {message}
+    </Alert>
   );
 }
 
 /** Small inline warning (e.g. stale data kept after a refresh failure). */
 export function InlineWarning({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
-    <p className="async-inline-warning" role="alert">
-      <span>{message}</span>
-      {onRetry && (
-        <button type="button" className="async-inline-retry" onClick={onRetry}>
+    <Alert
+      tone="warning"
+      role="alert"
+      compact
+      className="ui-alert--block-sm"
+      actions={onRetry && (
+        <Button type="button" variant="link" size="sm" onClick={onRetry}>
           Retry
-        </button>
+        </Button>
       )}
-    </p>
+    >
+      {message}
+    </Alert>
   );
 }

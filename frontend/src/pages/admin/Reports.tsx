@@ -1,9 +1,24 @@
 import { useEffect, useState } from 'react';
 import {
   IndianRupee, WalletCards,
-  AlertTriangle, Package, Boxes,
+  AlertTriangle, Package, Boxes, CheckCircle2, Receipt, Truck, Users,
 } from 'lucide-react';
 import { api, extractApiError } from '../../lib/api';
+import { ErrorState, LoadingState } from '../../components/AsyncState';
+import { FilledEmpty } from '../../components/FilledEmpty';
+import { SaleItemsCell } from '../../components/SaleItemsCell';
+import { Alert } from '../../components/ui/Alert';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { Card, CardHeader } from '../../components/ui/Card';
+import { ChoiceChips } from '../../components/ui/ChoiceChips';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { Field, Input } from '../../components/ui/Field';
+import { PageHeader } from '../../components/ui/PageHeader';
+import { SkeletonRows, SkeletonStatGrid } from '../../components/ui/Skeleton';
+import { StatCard } from '../../components/ui/StatCard';
+import { Table, TableWrap, Td, Th } from '../../components/ui/Table';
+import { Tabs } from '../../components/ui/Tabs';
 
 type SaleItem = { cylinder_type_name: string; quantity: number; rate: number };
 type Sale = {
@@ -103,189 +118,107 @@ export default function Reports() {
     { key: 'pending', label: 'Pending' },
   ];
 
+  const quickRanges = [
+    { label: 'Today', s: today(), e: today() },
+    { label: 'Yesterday', s: yesterday(), e: yesterday() },
+    { label: 'This Month', s: monthStart(), e: today() },
+  ];
+  const activeRange = quickRanges.find((r) => start === r.s && end === r.e)?.label ?? null;
+
   return (
     <div>
-      <div className="page-title">
-        <div>
-          <h1>Reports</h1>
-          <p>Full business flow — load, stock, sales, collections, pending.</p>
-        </div>
-      </div>
+      <PageHeader title="Reports" description="Full business flow — load, stock, sales, collections, pending." />
 
       {/* Date range */}
-      <div className="card" style={{ padding: '14px 18px', marginBottom: '12px' }}>
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <label style={{ flex: 1, minWidth: '130px' }}>
-            <span>From</span>
-            <input type="date" value={start} max={end || undefined} aria-invalid={Boolean(rangeError)} onChange={(e) => setStart(e.target.value)} />
-          </label>
-          <label style={{ flex: 1, minWidth: '130px' }}>
-            <span>To</span>
-            <input type="date" value={end} min={start || undefined} aria-invalid={Boolean(rangeError)} onChange={(e) => setEnd(e.target.value)} />
-          </label>
-          <button className="btn btn-primary" style={{ width: 'auto', padding: '0 20px' }}
+      <Card className="rp-range">
+        <div className="rp-range__row">
+          <Field label="From" className="rp-range__field">
+            <Input type="date" value={start} max={end || undefined} aria-invalid={Boolean(rangeError)} onChange={(e) => setStart(e.target.value)} />
+          </Field>
+          <Field label="To" className="rp-range__field">
+            <Input type="date" value={end} min={start || undefined} aria-invalid={Boolean(rangeError)} onChange={(e) => setEnd(e.target.value)} />
+          </Field>
+          <Button
+            type="button"
+            className="rp-range__go"
             disabled={Boolean(rangeError) || loading || !start || !end}
-            onClick={() => fetchData(start, end)}>Go</button>
+            onClick={() => fetchData(start, end)}
+          >
+            Go
+          </Button>
         </div>
-        {rangeError && <p className="form-error" role="alert" style={{ marginTop: '10px' }}>{rangeError}</p>}
-        <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
-          {[
-            { label: 'Today', s: today(), e: today() },
-            { label: 'Yesterday', s: yesterday(), e: yesterday() },
-            { label: 'This Month', s: monthStart(), e: today() },
-          ].map(({ label, s, e }) => (
-            <button key={label} onClick={() => applyRange(s, e)} style={{
-              padding: '6px 14px', border: '1px solid var(--border)', borderRadius: '6px',
-              background: start === s && end === e ? 'var(--primary)' : 'var(--surface)',
-              color: start === s && end === e ? 'white' : 'var(--text-muted)',
-              fontWeight: 700, fontSize: '0.82rem',
-            }}>{label}</button>
-          ))}
-        </div>
-      </div>
+        {rangeError && <Alert tone="danger" role="alert" compact className="rp-range__error">{rangeError}</Alert>}
+        <ChoiceChips
+          ariaLabel="Quick ranges"
+          size="sm"
+          className="rp-range__chips"
+          value={activeRange}
+          onChange={(label) => {
+            const r = quickRanges.find((x) => x.label === label);
+            if (r) applyRange(r.s, r.e);
+          }}
+          options={quickRanges.map((r) => ({ value: r.label, label: r.label }))}
+        />
+      </Card>
 
-      {loading && <p style={{ textAlign: 'center', padding: '24px' }}>Loading…</p>}
+      {loading && !data && (
+        <div aria-busy="true">
+          <div className="rp-section"><SkeletonStatGrid count={3} label="Loading report" /></div>
+          <Card padding="none"><div className="ui-card__skeleton"><SkeletonRows rows={4} columns={4} /></div></Card>
+        </div>
+      )}
+      {loading && data && <LoadingState label="Loading…" />}
 
       {!loading && error && (
-        <div className="card async-error" role="alert">
-          <p className="async-error-message">{error}</p>
-          <button type="button" className="btn btn-outline async-error-retry" onClick={() => fetchData(start, end)}>Retry</button>
-        </div>
+        <ErrorState message={error} onRetry={() => fetchData(start, end)} />
       )}
 
       {data && (
         <>
           {/* Tab switcher */}
-          <div style={{ display: 'flex', gap: '4px', background: 'var(--border)', borderRadius: '8px', padding: '4px', marginBottom: '16px', overflowX: 'auto' }}>
-            {tabs.map((t) => (
-              <button key={t.key} onClick={() => setTab(t.key)} style={{
-                flex: 1, padding: '9px 6px', border: 'none', borderRadius: '6px', whiteSpace: 'nowrap',
-                background: tab === t.key ? 'var(--surface)' : 'transparent',
-                fontWeight: 600, fontSize: '0.82rem',
-                color: tab === t.key ? 'var(--text)' : 'var(--text-muted)',
-              }}>{t.label}</button>
-            ))}
-          </div>
+          <Tabs
+            ariaLabel="Report sections"
+            variant="tabs"
+            className="page-tabs"
+            value={tab}
+            onChange={setTab}
+            items={tabs.map((t) => ({ value: t.key, label: t.label }))}
+          />
 
           {/* SUMMARY TAB */}
           {tab === 'summary' && (
             <>
-              <section className="stat-grid">
-                <div className="metric-card strong purple">
-                  <IndianRupee />
-                  <span>Sales</span>
-                  <strong>{money(data.summary.sales)}</strong>
-                </div>
-                <div className="metric-card blue">
-                  <WalletCards />
-                  <span>Collection</span>
-                  <strong>{money(data.summary.collection)}</strong>
-                </div>
-                <div className="metric-card orange">
-                  <AlertTriangle />
-                  <span>Pending Dues</span>
-                  <strong>{money(data.summary.pending)}</strong>
-                </div>
+              <section className="rp-stats">
+                <StatCard label="Sales" value={money(data.summary.sales)} icon={<IndianRupee />} />
+                <StatCard label="Collection" value={money(data.summary.collection)} icon={<WalletCards />} />
+                <StatCard label="Pending Dues" value={money(data.summary.pending)} icon={<AlertTriangle />} />
               </section>
 
               {data.cylinder_sales.length > 0 && (
-                <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                  <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
-                    <h2>Cylinder-wise Sales</h2>
-                    <Package size={18} style={{ color: 'var(--primary)' }} />
-                  </div>
-                  <div className="table-wrap">
-                    {(() => {
-                      const saleGroups = data.cylinder_sales.reduce((acc, curr) => {
-                        const cyl = curr.cylinder_type__name;
-                        const loc = curr.sale__location__name || 'Unknown';
-                        const colKey = loc;
-                        
-                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
-                        if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
-                        
-                        acc[cyl][colKey].qty += curr.total_qty;
-                        acc[cyl][colKey].amount += curr.total_amount;
-                        
-                        acc[cyl].total_qty += curr.total_qty;
-                        acc[cyl].total_amount += curr.total_amount;
-                        return acc;
-                      }, {} as Record<string, any>);
-
-                      const colKeys = Array.from(new Set(data.cylinder_sales.map(s => {
-                        return s.sale__location__name || 'Unknown';
-                      }))).sort();
-
-                      return (
-                        <table style={{ minWidth: '100%', margin: 0 }}>
-                          <thead style={{ background: 'var(--surface-muted)' }}>
-                            <tr>
-                              <th style={{ padding: '12px 18px' }}>Cylinder</th>
-                              {colKeys.map((col) => (
-                                <th key={col} style={{ textAlign: 'center', borderLeft: '1px dashed var(--border)' }}>{col}</th>
-                              ))}
-                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Qty</th>
-                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Amount</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {Object.entries(saleGroups).sort(([cylA], [cylB]) => parseFloat(cylA) - parseFloat(cylB)).map(([cyl, dataObj]) => (
-                              <tr key={cyl} style={{ borderTop: '1px solid var(--border)' }}>
-                                <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
-                                {colKeys.map((col) => (
-                                  <td key={col} style={{ textAlign: 'center', fontWeight: 700, borderLeft: '1px dashed var(--border)', background: 'var(--surface)' }}>
-                                    {dataObj[col] ? (
-                                      <span style={{ background: 'var(--info-soft)', color: 'var(--info)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
-                                        {dataObj[col].qty}
-                                      </span>
-                                    ) : (
-                                      <span style={{ color: 'var(--border)' }}>-</span>
-                                    )}
-                                  </td>
-                                ))}
-                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
-                                  <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: '1rem' }}>
-                                    {dataObj.total_qty}
-                                  </span>
-                                </td>
-                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
-                                  <span style={{ fontWeight: 800, color: 'var(--text)', fontSize: '1.05rem' }}>
-                                    {money(dataObj.total_amount)}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      );
-                    })()}
-                  </div>
-                </div>
+                <Card padding="none" className="rp-section">
+                  <CardHeader title="Cylinder-wise Sales" meta={<Package size={18} className="ui-card-icon" aria-hidden="true" />} />
+                  <CylinderSalesTable rows={data.cylinder_sales} />
+                </Card>
               )}
 
-              <div className="card">
-                <div className="section-head">
-                  <h2>This Month</h2>
+              <Card className="rp-section">
+                <CardHeader title="This Month" />
+                <div className="ui-tiles">
+                  <div className="ui-tile"><span className="ui-tile__label">Sales</span><strong className="ui-tile__value">{money(data.monthly.sales)}</strong></div>
+                  <div className="ui-tile"><span className="ui-tile__label">Collection</span><strong className="ui-tile__value">{money(data.monthly.collection)}</strong></div>
                 </div>
-                <div className="summary-grid">
-                  <p><span>Sales</span><strong>{money(data.monthly.sales)}</strong></p>
-                  <p><span>Collection</span><strong>{money(data.monthly.collection)}</strong></p>
-                </div>
-              </div>
+              </Card>
             </>
           )}
 
           {/* STOCK TAB — full flow */}
           {tab === 'stock' && (
-            <div style={{ display: 'grid', gap: '16px' }}>
+            <div className="rp-stack">
               {/* Loads received in range */}
-              <div className="card" style={{ padding: 0 }}>
-                <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
-                  <h2>New Cylinders Purchased (Loads)</h2>
-                  <span className="badge">Supplier → Location</span>
-                </div>
+              <Card padding="none">
+                <CardHeader title="New Cylinders Purchased (Loads)" meta={<Badge variant="outline">Supplier → Location</Badge>} />
                 {data.load_summary.length === 0
-                  ? <p style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No loads in this range.</p>
+                  ? <EmptyState compact icon={<Truck size={24} />} title="No loads in this range." />
                   : (() => {
                       const loadGroups = data.load_summary.reduce((acc, curr) => {
                         const cyl = curr.cylinder_type__name;
@@ -295,326 +228,263 @@ export default function Reports() {
                         return acc;
                       }, {} as Record<string, any>);
                       const locs = Array.from(new Set(data.load_summary.map(l => l.to_location__name))).sort();
-                      
+
                       return (
-                        <div className="table-wrap">
-                          <table style={{ minWidth: '100%', margin: 0 }}>
-                            <thead style={{ background: 'var(--surface-muted)' }}>
+                        <TableWrap fade>
+                          <Table stickyFirst className="rp-table">
+                            <thead>
                               <tr>
-                                <th style={{ padding: '12px 18px' }}>Cylinder</th>
-                                {locs.map((loc, idx) => (
-                                  <th key={loc} style={{ textAlign: 'center', borderLeft: idx >= 0 ? '1px dashed var(--border)' : 'none' }}>{loc}</th>
+                                <Th>Cylinder</Th>
+                                {locs.map((loc) => (
+                                  <Th key={loc} align="right">{loc}</Th>
                                 ))}
-                                <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Added</th>
+                                <Th align="right">Total Added</Th>
                               </tr>
                             </thead>
                             <tbody>
                               {Object.entries(loadGroups).sort(([cylA], [cylB]) => parseFloat(cylA) - parseFloat(cylB)).map(([cyl, locData]) => (
-                                <tr key={cyl} style={{ borderTop: '1px solid var(--border)' }}>
-                                  <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
-                                  {locs.map((loc, idx) => (
-                                    <td key={loc} style={{ textAlign: 'center', fontWeight: 700, borderLeft: idx >= 0 ? '1px dashed var(--border)' : 'none', background: 'var(--surface)' }}>
-                                      {locData[loc] ? (
-                                        <span style={{ background: 'var(--primary-soft)', color: 'var(--primary)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
-                                          {locData[loc]}
-                                        </span>
-                                      ) : (
-                                        <span style={{ color: 'var(--border)' }}>-</span>
-                                      )}
-                                    </td>
+                                <tr key={cyl}>
+                                  <Td><strong>{cyl}</strong></Td>
+                                  {locs.map((loc) => (
+                                    <Td key={loc} numeric>
+                                      {locData[loc] ? <span className="ui-num-strong">{locData[loc]}</span> : <span className="ui-num-placeholder">-</span>}
+                                    </Td>
                                   ))}
-                                  <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
-                                    <span className="badge badge-success" style={{ fontSize: '0.95rem', padding: '6px 12px' }}>
-                                      +{locData.total}
-                                    </span>
-                                  </td>
+                                  <Td numeric>
+                                    <Badge tone="success">+{locData.total}</Badge>
+                                  </Td>
                                 </tr>
                               ))}
                             </tbody>
-                          </table>
-                        </div>
+                          </Table>
+                        </TableWrap>
                       );
                   })()
                 }
-              </div>
+              </Card>
 
               {/* Supplier Balance */}
-              <div className="card" style={{ padding: 0 }}>
-                <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
-                  <h2>Supplier Balance (All Time)</h2>
-                  <span className="badge">Pending to Receive</span>
-                </div>
+              <Card padding="none" className="ui-list">
+                <CardHeader title="Supplier Balance (All Time)" meta={<Badge variant="outline">Pending to Receive</Badge>} />
                 {(data as any).supplier_balance && (data as any).supplier_balance.length === 0
-                  ? <p style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No supplier records found.</p>
+                  ? <EmptyState compact title="No supplier records found." />
                   : (
                     <div>
                       {data.supplier_balance && [...data.supplier_balance].sort((a: any, b: any) => parseFloat(a.type) - parseFloat(b.type)).map((b: any, i: number) => (
-                        <div key={i} style={{ 
-                          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                          padding: '14px 18px', borderTop: '1px solid var(--border)'
-                        }}>
-                          <strong style={{ fontSize: '1.05rem', color: 'var(--text)' }}>{b.type}</strong>
-                          <span className={`badge ${b.pending > 0 ? 'badge-warning' : 'badge-success'}`} style={{ fontSize: '0.95rem', padding: '6px 12px' }}>
-                            {b.pending > 0 ? `${b.pending} Pending` : 'Settled'}
-                          </span>
+                        <div key={i} className="ui-list-row">
+                          <div className="ui-list-row__main">
+                            <span className="ui-list-row__name">{b.type}</span>
+                          </div>
+                          <div className="ui-list-row__actions">
+                            <Badge tone={b.pending > 0 ? 'warning' : 'success'}>
+                              {b.pending > 0 ? `${b.pending} Pending` : 'Settled'}
+                            </Badge>
+                          </div>
                         </div>
                       ))}
                     </div>
                   )}
-              </div>
+              </Card>
 
               {/* Current stock snapshot */}
-              <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
-                  <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Boxes size={18} style={{ color: 'var(--primary)' }} />
-                    Current Stock Snapshot
-                  </h2>
-                </div>
-                <div className="table-wrap">
-                  <table style={{ minWidth: '600px', margin: 0 }}>
-                    <thead style={{ background: 'var(--surface-muted)' }}>
+              <Card padding="none">
+                <CardHeader title="Current Stock Snapshot" meta={<Boxes size={18} className="ui-card-icon" aria-hidden="true" />} />
+                <TableWrap fade>
+                  <Table stickyFirst className="rp-table rp-table--wide">
+                    <thead>
                       <tr>
-                        <th style={{ padding: '12px 18px' }}>Type</th>
-                        <th style={{ textAlign: 'center' }}>Shop (F/E)</th>
-                        <th style={{ textAlign: 'center' }}>Kandam (F/E)</th>
-                        <th style={{ textAlign: 'center' }}>With Customers</th>
-                        <th style={{ textAlign: 'center' }}>Extras From Customers</th>
-                        <th style={{ textAlign: 'center', padding: '12px 18px' }}>Supplier Stock<br/><span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>(Base)</span></th>
-                        <th style={{ textAlign: 'right', padding: '12px 18px' }}>Total Physical<br/><span style={{ fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-muted)' }}>(Shop + Kandam)</span></th>
+                        <Th>Type</Th>
+                        <Th align="center">Shop (F/E)</Th>
+                        <Th align="center">Kandam (F/E)</Th>
+                        <Th align="right">With Customers</Th>
+                        <Th align="right">Extras From Customers</Th>
+                        <Th align="right">Supplier Stock<span className="ui-cell-sub">(Base)</span></Th>
+                        <Th align="right">Total Physical<span className="ui-cell-sub">(Shop + Kandam)</span></Th>
                       </tr>
                     </thead>
                     <tbody>
                       {[...data.stock_snapshot].sort((a, b) => parseFloat(a.type) - parseFloat(b.type)).map((r) => (
                         <tr key={r.type}>
-                          <td style={{ padding: '14px 18px' }}><strong>{r.type}</strong></td>
-                          <td style={{ textAlign: 'center' }}>
-                            <span style={{ color: 'var(--success)', fontWeight: 600 }}>{r.shop_filled}</span>
-                            <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>/</span>
-                            <span style={{ color: 'var(--danger)' }}>{r.shop_empty}</span>
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
-                            <span style={{ color: 'var(--success)', fontWeight: 600 }}>{r.kandam_filled}</span>
-                            <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>/</span>
-                            <span style={{ color: 'var(--danger)' }}>{r.kandam_empty}</span>
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
+                          <Td><strong>{r.type}</strong></Td>
+                          <Td align="center"><FilledEmpty filled={r.shop_filled} empty={r.shop_empty} /></Td>
+                          <Td align="center"><FilledEmpty filled={r.kandam_filled} empty={r.kandam_empty} /></Td>
+                          <Td numeric>
                             {r.with_customers > 0
-                              ? <span style={{ color: 'var(--danger)', fontWeight: 700 }}>{r.with_customers}</span>
-                              : <span style={{ color: 'var(--text-muted)' }}>—</span>}
-                          </td>
-                          <td style={{ textAlign: 'center' }}>
+                              ? <span className="ui-num-warning">{r.with_customers}</span>
+                              : <span className="ui-num-placeholder">—</span>}
+                          </Td>
+                          <Td numeric>
                             {r.customer_credits > 0
-                              ? <span style={{ color: 'var(--success)', fontWeight: 700 }}>{r.customer_credits}</span>
-                              : <span style={{ color: 'var(--text-muted)' }}>—</span>}
-                          </td>
-                          <td style={{ textAlign: 'center', padding: '14px 18px' }}>{r.supplier_stock}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 'bold', padding: '14px 18px' }}>{r.physical_stock}</td>
+                              ? <span className="ui-num-success">{r.customer_credits}</span>
+                              : <span className="ui-num-placeholder">—</span>}
+                          </Td>
+                          <Td numeric>{r.supplier_stock}</Td>
+                          <Td numeric><strong>{r.physical_stock}</strong></Td>
                         </tr>
                       ))}
                     </tbody>
-                  </table>
-                </div>
-              </div>
+                  </Table>
+                </TableWrap>
+              </Card>
 
               {/* Cylinder-wise sold in range */}
               {data.cylinder_sales.length > 0 && (
-                <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                  <div className="section-head" style={{ padding: '18px 18px 0', marginBottom: '14px' }}>
-                    <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Package size={18} style={{ color: 'var(--primary)' }} />
-                      Sold in Range
-                    </h2>
-                  </div>
-                  <div className="table-wrap">
-                    {(() => {
-                      const saleGroups = data.cylinder_sales.reduce((acc, curr) => {
-                        const cyl = curr.cylinder_type__name;
-                        const loc = curr.sale__location__name || 'Unknown';
-                        const colKey = loc;
-                        
-                        if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
-                        if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
-                        
-                        acc[cyl][colKey].qty += curr.total_qty;
-                        acc[cyl][colKey].amount += curr.total_amount;
-                        
-                        acc[cyl].total_qty += curr.total_qty;
-                        acc[cyl].total_amount += curr.total_amount;
-                        return acc;
-                      }, {} as Record<string, any>);
-
-                      const colKeys = Array.from(new Set(data.cylinder_sales.map(s => {
-                        return s.sale__location__name || 'Unknown';
-                      }))).sort();
-
-                      return (
-                        <table style={{ minWidth: '100%', margin: 0 }}>
-                          <thead style={{ background: 'var(--surface-muted)' }}>
-                            <tr>
-                              <th style={{ padding: '12px 18px' }}>Cylinder</th>
-                              {colKeys.map((col) => (
-                                <th key={col} style={{ textAlign: 'center', borderLeft: '1px dashed var(--border)' }}>{col}</th>
-                              ))}
-                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Qty</th>
-                              <th style={{ textAlign: 'right', padding: '12px 18px', borderLeft: '1px dashed var(--border)' }}>Total Amount</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {Object.entries(saleGroups).sort(([cylA], [cylB]) => parseFloat(cylA) - parseFloat(cylB)).map(([cyl, dataObj]) => (
-                              <tr key={cyl} style={{ borderTop: '1px solid var(--border)' }}>
-                                <td style={{ padding: '14px 18px' }}><strong>{cyl}</strong></td>
-                                {colKeys.map((col) => (
-                                  <td key={col} style={{ textAlign: 'center', fontWeight: 700, borderLeft: '1px dashed var(--border)', background: 'var(--surface)' }}>
-                                    {dataObj[col] ? (
-                                      <span style={{ background: 'var(--info-soft)', color: 'var(--info)', padding: '4px 10px', borderRadius: '6px', fontSize: '0.95rem' }}>
-                                        {dataObj[col].qty}
-                                      </span>
-                                    ) : (
-                                      <span style={{ color: 'var(--border)' }}>-</span>
-                                    )}
-                                  </td>
-                                ))}
-                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
-                                  <span style={{ fontWeight: 700, color: 'var(--text)', fontSize: '1rem' }}>
-                                    {dataObj.total_qty}
-                                  </span>
-                                </td>
-                                <td style={{ textAlign: 'right', padding: '14px 18px', borderLeft: '1px dashed var(--border)', background: 'var(--surface-muted)' }}>
-                                  <span style={{ fontWeight: 800, color: 'var(--text)', fontSize: '1.05rem' }}>
-                                    {money(dataObj.total_amount)}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      );
-                    })()}
-                  </div>
-                </div>
+                <Card padding="none">
+                  <CardHeader title="Sold in Range" meta={<Package size={18} className="ui-card-icon" aria-hidden="true" />} />
+                  <CylinderSalesTable rows={data.cylinder_sales} />
+                </Card>
               )}
             </div>
           )}
 
           {/* SALES TAB */}
           {tab === 'sales' && (
-            <div className="card" style={{ padding: 0 }}>
-              <div className="table-wrap">
-                <table style={{ minWidth: '100%', margin: 0 }}>
-                  <thead style={{ background: 'var(--surface-muted)' }}>
+            <Card padding="none">
+              {data.sales_list.length === 0 ? (
+                <EmptyState icon={<Receipt size={24} />} title="No sales found in this range." />
+              ) : (
+              <TableWrap fade>
+                <Table stickyFirst className="sales-history-table">
+                  <thead>
                     <tr>
-                      <th style={{ padding: '12px 18px' }}>Customer</th>
-                      <th style={{ padding: '12px 18px' }}>Items</th>
-                      <th style={{ textAlign: 'right', padding: '12px 18px' }}>Total</th>
-                      <th style={{ textAlign: 'right', padding: '12px 18px' }}>Balance</th>
-                      <th style={{ padding: '12px 18px' }}>Mode</th>
-                      <th style={{ padding: '12px 18px' }}>Staff</th>
-                      <th style={{ padding: '12px 18px' }}>Date</th>
+                      <Th>Customer</Th>
+                      <Th>Items</Th>
+                      <Th align="right">Total</Th>
+                      <Th align="right">Balance</Th>
+                      <Th>Mode</Th>
+                      <Th>Staff</Th>
+                      <Th>Date</Th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.sales_list.map((sale) => (
-                      <tr key={sale.id} style={{ borderTop: '1px solid var(--border)' }}>
-                        <td style={{ padding: '14px 18px' }}><strong>{sale.customer_name || 'Walk-in'}</strong></td>
-                        <td style={{ padding: '14px 18px' }}>
-                          {sale.items.map((item, i) => (
-                            <span key={i} style={{ display: 'block', fontSize: '0.82rem', marginBottom: '2px' }}>
-                              {item.quantity > 0 && <span>{item.quantity}×{item.cylinder_type_name} @ {money(item.rate)}</span>}
-                              {/* Assuming 'empty_returned' exists on item, but let's safely fall back if not */}
-                              {(item as any).empty_returned > 0 ? (
-                                <span style={{ 
-                                  color: (!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger)' : 'var(--text-muted)', 
-                                  marginLeft: item.quantity > 0 ? '6px' : '0',
-                                  background: (!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger-soft, #fee2e2)' : 'var(--surface)',
-                                  padding: '1px 6px',
-                                  borderRadius: '4px',
-                                  border: `1px solid ${(!sale.customer_name && item.quantity > 0 && (item as any).empty_returned < item.quantity) ? 'var(--danger)' : 'var(--border)'}`
-                                }}>
-                                  🔄 Returned {(item as any).empty_returned} × {item.cylinder_type_name} empties
-                                </span>
-                              ) : (
-                                !sale.customer_name && item.quantity > 0 && (
-                                  <span style={{ 
-                                    color: 'var(--danger)', 
-                                    marginLeft: '6px',
-                                    background: 'var(--danger-soft, #fee2e2)',
-                                    padding: '1px 6px',
-                                    borderRadius: '4px',
-                                    border: '1px solid var(--danger)'
-                                  }}>
-                                    ⚠️ 0 empties returned
-                                  </span>
-                                )
-                              )}
-                            </span>
-                          ))}
-                        </td>
-                        <td style={{ textAlign: 'right', padding: '14px 18px' }}>
-                          {(sale as any).note === 'Empty cylinders returned' ? '-' : money(sale.total_amount)}
-                        </td>
-                        <td style={{ textAlign: 'right', padding: '14px 18px' }}>
-                          {(sale as any).note === 'Empty cylinders returned' ? '-' : (
+                    {data.sales_list.map((sale) => {
+                      const isReturn = (sale as any).note === 'Empty cylinders returned';
+                      return (
+                      <tr key={sale.id}>
+                        <Td><strong className="sh-customer">{sale.customer_name || 'Walk-in'}</strong></Td>
+                        <Td><SaleItemsCell customerName={sale.customer_name} items={sale.items} /></Td>
+                        <Td numeric>
+                          {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
+                        </Td>
+                        <Td align="right">
+                          {isReturn ? <span className="ui-num-placeholder">-</span> : (
                             Number(sale.balance_due) > 0
-                              ? <span className="badge badge-warning">{money(sale.balance_due)}</span>
-                              : <span className="badge badge-success">Paid</span>
+                              ? <Badge tone="warning">{money(sale.balance_due)}</Badge>
+                              : <Badge tone="success">Paid</Badge>
                           )}
-                        </td>
-                        <td style={{ whiteSpace: 'nowrap', padding: '14px 18px' }}>
-                          {(sale as any).note === 'Empty cylinders returned' ? (
-                            <span className="badge" style={{ background: 'var(--surface)', color: 'var(--text-muted)' }}>Return</span>
+                        </Td>
+                        <Td className="sh-nowrap">
+                          {isReturn ? (
+                            <Badge variant="outline">Return</Badge>
                           ) : (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <span className="badge">{sale.payment_mode}</span>
+                            <div className="sh-mode">
+                              <Badge variant="outline">{sale.payment_mode}</Badge>
                               {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && sale.payments && sale.payments.length > 0 && (
-                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                <span className="ui-cell-sub">
                                   {sale.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
                                 </span>
                               )}
                             </div>
                           )}
-                        </td>
-                        <td style={{ fontSize: '0.82rem', padding: '14px 18px' }}>{sale.sold_by_name}</td>
-                        <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)', padding: '14px 18px' }}>
+                        </Td>
+                        <Td className="sh-meta">{sale.sold_by_name}</Td>
+                        <Td className="sh-meta sh-nowrap">
                           {new Date(sale.created_at).toLocaleDateString('en-IN')}
-                        </td>
+                        </Td>
                       </tr>
-                    ))}
-                    {data.sales_list.length === 0 && (
-                      <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px' }}>No sales found in this range.</td></tr>
-                    )}
+                      );
+                    })}
                   </tbody>
-                </table>
-              </div>
-            </div>
+                </Table>
+              </TableWrap>
+              )}
+            </Card>
           )}
 
           {/* PENDING TAB */}
           {tab === 'pending' && (
-            <div className="card" style={{ padding: 0 }}>
+            <Card padding="none" className="ui-list">
               {data.pending_dues.length === 0 && (
-                <p style={{ textAlign: 'center', padding: '24px', color: 'var(--success)' }}>✓ No pending dues!</p>
+                <EmptyState icon={<CheckCircle2 size={24} />} title="No pending dues!" />
               )}
               {data.pending_dues.map((d, i) => {
                 const fullName = `${d.customer__user__first_name || ''} ${d.customer__user__last_name || ''}`.trim();
                 return (
-                  <div key={i} style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    padding: '14px 18px', borderBottom: '1px solid var(--border)',
-                  }}>
-                    <div>
-                      <strong>{fullName || 'Walk-in'}</strong>
-                      {d.customer__user__phone && <p style={{ fontSize: '0.82rem', marginTop: '2px' }}>{d.customer__user__phone}</p>}
-                      <p style={{ fontSize: '0.82rem' }}>{d.sale_count} sale{d.sale_count !== 1 ? 's' : ''} pending</p>
+                  <div key={i} className="ui-list-row">
+                    <div className="ui-list-row__lead">
+                      <span className="rp-avatar" aria-hidden="true"><Users size={16} /></span>
                     </div>
-                    <span className="badge badge-warning" style={{ fontSize: '0.9rem' }}>{money(d.total_due)}</span>
+                    <div className="ui-list-row__main">
+                      <span className="ui-list-row__name">{fullName || 'Walk-in'}</span>
+                      <div className="ui-list-row__meta">
+                        {d.customer__user__phone && <span>{d.customer__user__phone}</span>}
+                        <span>{d.sale_count} sale{d.sale_count !== 1 ? 's' : ''} pending</span>
+                      </div>
+                    </div>
+                    <div className="ui-list-row__actions">
+                      <Badge tone="warning">{money(d.total_due)}</Badge>
+                    </div>
                   </div>
                 );
               })}
-            </div>
+            </Card>
           )}
         </>
       )}
     </div>
+  );
+}
+
+/** Cylinder × location quantity table (Summary → Cylinder-wise Sales and Stock → Sold in Range). Aggregation unchanged. */
+function CylinderSalesTable({ rows }: { rows: CylinderSale[] }) {
+  const saleGroups = rows.reduce((acc, curr) => {
+    const cyl = curr.cylinder_type__name;
+    const loc = curr.sale__location__name || 'Unknown';
+    const colKey = loc;
+
+    if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
+    if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
+
+    acc[cyl][colKey].qty += curr.total_qty;
+    acc[cyl][colKey].amount += curr.total_amount;
+
+    acc[cyl].total_qty += curr.total_qty;
+    acc[cyl].total_amount += curr.total_amount;
+    return acc;
+  }, {} as Record<string, any>);
+
+  const colKeys = Array.from(new Set(rows.map(s => {
+    return s.sale__location__name || 'Unknown';
+  }))).sort();
+
+  return (
+    <TableWrap fade>
+      <Table stickyFirst className="rp-table">
+        <thead>
+          <tr>
+            <Th>Cylinder</Th>
+            {colKeys.map((col) => (
+              <Th key={col} align="right">{col}</Th>
+            ))}
+            <Th align="right">Total Qty</Th>
+            <Th align="right">Total Amount</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {Object.entries(saleGroups).sort(([cylA], [cylB]) => parseFloat(cylA) - parseFloat(cylB)).map(([cyl, dataObj]) => (
+            <tr key={cyl}>
+              <Td><strong>{cyl}</strong></Td>
+              {colKeys.map((col) => (
+                <Td key={col} numeric>
+                  {dataObj[col] ? <span>{dataObj[col].qty}</span> : <span className="ui-num-placeholder">-</span>}
+                </Td>
+              ))}
+              <Td numeric><span className="ui-num-strong">{dataObj.total_qty}</span></Td>
+              <Td numeric><strong>{money(dataObj.total_amount)}</strong></Td>
+            </tr>
+          ))}
+        </tbody>
+      </Table>
+    </TableWrap>
   );
 }

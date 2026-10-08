@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, IndianRupee, Pencil, Check } from 'lucide-react';
 import { api, extractApiError, fetchAllPages } from '../lib/api';
+import { Alert } from './ui/Alert';
+import { Button } from './ui/Button';
+import { EmptyState } from './ui/EmptyState';
+import { Input } from './ui/Field';
+import { IconButton } from './ui/IconButton';
+import { LoadingState } from './AsyncState';
 
 type CylinderType = {
   id: number;
@@ -11,8 +17,12 @@ type CylinderType = {
 
 type EditRow = { selling_price: string; refill_rate: string };
 
-export default function RatesPanel() {
-  const [open, setOpen] = useState(false);
+/**
+ * Today's gas rates editor. Fetch, edit and PATCH logic is unchanged; the open/closed state now
+ * lives in the AppShell so the trigger can sit in the header on phones and float on desktop.
+ * Renders as a bottom sheet below 980px and as a popover above the floating button on desktop.
+ */
+export default function RatesPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [types, setTypes] = useState<CylinderType[]>([]);
   const [editing, setEditing] = useState<Record<number, EditRow>>({});
   const [saving, setSaving] = useState<number | null>(null);
@@ -74,138 +84,105 @@ export default function RatesPanel() {
     setEditing((prev) => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
   }
 
+  if (!open) return null;
+
   return (
     <>
-      {/* Floating button */}
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title="Today's Gas Rates"
-        className="rates-fab"
-        style={{
-          position: 'fixed', bottom: '80px', right: '18px', zIndex: 50,
-          background: 'var(--primary)', color: 'white',
-          border: 'none', borderRadius: '50%',
-          width: '52px', height: '52px',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 4px 16px rgb(249 115 22 / 0.45)',
-          cursor: 'pointer',
-        }}
-      >
-        <IndianRupee size={22} />
-      </button>
-
-      {/* Panel */}
-      {open && (
-        <div
-          className="rates-panel"
-          style={{
-          position: 'fixed', bottom: '144px', right: '18px', zIndex: 50,
-          width: '320px', background: 'var(--surface)',
-          border: '1px solid var(--border)', borderRadius: '12px',
-          boxShadow: '0 8px 32px rgb(15 23 42 / 0.15)',
-          overflow: 'hidden',
-        }}>
-          {/* Header */}
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            padding: '14px 16px', background: 'var(--primary)', color: 'white',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700 }}>
-              <IndianRupee size={18} />
-              Today's Gas Rates
-            </div>
-            <button onClick={() => setOpen(false)}
-              style={{ background: 'none', border: 'none', color: 'white', cursor: 'pointer', padding: '2px' }}>
-              <X size={18} />
-            </button>
+      <div className="rates-scrim" onClick={onClose} aria-hidden="true" />
+      <div className="rates-panel" role="dialog" aria-label="Today's Gas Rates">
+        <div className="rates-panel__header">
+          <div className="rates-panel__title">
+            <IndianRupee size={18} />
+            Today's Gas Rates
           </div>
-
-          {/* Column headers */}
-          <div style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 30px',
-            padding: '8px 16px', background: 'var(--surface-muted)',
-            fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', gap: '8px',
-          }}>
-            <span>Size</span><span>Sale (Rs.)</span><span>Refill (Rs.)</span><span />
-          </div>
-
-          {/* Rows */}
-          <div style={{ maxHeight: '340px', overflowY: 'auto' }}>
-            {status === 'loading' && (
-              <p style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
-                Loading…
-              </p>
-            )}
-            {status === 'error' && (
-              <div role="alert" style={{ textAlign: 'center', padding: '16px', fontSize: '0.88rem' }}>
-                <p style={{ color: 'var(--danger)', marginBottom: '8px' }}>{loadError}</p>
-                <button type="button" className="btn btn-compact" onClick={retryLoad}>Retry</button>
-              </div>
-            )}
-            {status === 'ready' && types.length === 0 && (
-              <p style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)', fontSize: '0.88rem' }}>
-                No cylinder types yet.
-              </p>
-            )}
-            {saveError && (
-              <p className="form-error" role="alert" style={{ margin: '8px 16px', fontSize: '0.8rem' }}>{saveError}</p>
-            )}
-            {types.map((t) => {
-              const row = editing[t.id];
-              const isSaved = saved === t.id;
-              return (
-                <div key={t.id} style={{
-                  display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 30px',
-                  alignItems: 'center', gap: '8px',
-                  padding: '10px 16px', borderBottom: '1px solid var(--border)',
-                }}>
-                  <strong style={{ fontSize: '0.95rem' }}>{t.name}</strong>
-
-                  {row ? (
-                    <>
-                      <input type="number" min="0" value={row.selling_price}
-                        onChange={(e) => patch(t.id, 'selling_price', e.target.value)}
-                        style={{ minHeight: '34px', padding: '0 6px', fontSize: '0.85rem' }} />
-                      <input type="number" min="0" value={row.refill_rate}
-                        onChange={(e) => patch(t.id, 'refill_rate', e.target.value)}
-                        style={{ minHeight: '34px', padding: '0 6px', fontSize: '0.85rem' }} />
-                      <button onClick={() => saveEdit(t)} disabled={saving === t.id}
-                        style={{
-                          background: 'var(--success)', border: 'none', borderRadius: '6px',
-                          color: 'white', width: '30px', height: '30px',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                        }}>
-                        <Check size={15} />
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span style={{ fontSize: '0.9rem', fontWeight: 600, color: isSaved ? 'var(--success)' : 'var(--text)' }}>
-                        {Number(t.selling_price).toLocaleString('en-IN')}
-                      </span>
-                      <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                        {Number(t.refill_rate).toLocaleString('en-IN')}
-                      </span>
-                      <button onClick={() => startEdit(t)}
-                        style={{
-                          background: 'var(--surface-muted)', border: 'none', borderRadius: '6px',
-                          color: 'var(--text-muted)', width: '30px', height: '30px',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-                        }}>
-                        <Pencil size={13} />
-                      </button>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          <div style={{ padding: '10px 16px', fontSize: '0.75rem', color: 'var(--text-muted)', background: 'var(--surface-muted)' }}>
-            Tap ✏️ to edit · Changes apply to all new sales
-          </div>
+          <IconButton type="button" label="Close" size="sm" onClick={onClose}>
+            <X size={16} />
+          </IconButton>
         </div>
-      )}
+
+        <div className="rates-panel__columns" aria-hidden="true">
+          <span>Size</span><span>Sale (Rs.)</span><span>Refill (Rs.)</span><span />
+        </div>
+
+        <div className="rates-panel__rows">
+          {status === 'loading' && <LoadingState label="Loading…" />}
+          {status === 'error' && (
+            <div className="rates-panel__status">
+              <Alert
+                tone="danger"
+                compact
+                actions={<Button type="button" variant="secondary" size="sm" onClick={retryLoad}>Retry</Button>}
+              >
+                {loadError}
+              </Alert>
+            </div>
+          )}
+          {status === 'ready' && types.length === 0 && (
+            <EmptyState compact title="No cylinder types yet." />
+          )}
+          {saveError && (
+            <div className="rates-panel__status">
+              <Alert tone="danger" compact role="alert">{saveError}</Alert>
+            </div>
+          )}
+          {types.map((t) => {
+            const row = editing[t.id];
+            const isSaved = saved === t.id;
+            return (
+              <div key={t.id} className="rates-row">
+                <strong className="rates-row__name">{t.name}</strong>
+
+                {row ? (
+                  <>
+                    <Input
+                      type="number"
+                      min="0"
+                      inputSize="sm"
+                      aria-label={`${t.name} sale price`}
+                      value={row.selling_price}
+                      onChange={(e) => patch(t.id, 'selling_price', e.target.value)}
+                    />
+                    <Input
+                      type="number"
+                      min="0"
+                      inputSize="sm"
+                      aria-label={`${t.name} refill rate`}
+                      value={row.refill_rate}
+                      onChange={(e) => patch(t.id, 'refill_rate', e.target.value)}
+                    />
+                    <IconButton
+                      label="Save"
+                      size="sm"
+                      variant="outline"
+                      tone="primary"
+                      onClick={() => saveEdit(t)}
+                      disabled={saving === t.id}
+                    >
+                      <Check size={14} />
+                    </IconButton>
+                  </>
+                ) : (
+                  <>
+                    <span className={`rates-row__value${isSaved ? ' rates-row__value--saved' : ''}`}>
+                      {Number(t.selling_price).toLocaleString('en-IN')}
+                    </span>
+                    <span className="rates-row__value rates-row__value--muted">
+                      {Number(t.refill_rate).toLocaleString('en-IN')}
+                    </span>
+                    <IconButton label="Edit" size="sm" onClick={() => startEdit(t)}>
+                      <Pencil size={14} />
+                    </IconButton>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="rates-panel__footer">
+          Tap the pencil to edit · Changes apply to all new sales
+        </div>
+      </div>
     </>
   );
 }

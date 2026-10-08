@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
+  AlertTriangle,
+  Banknote,
   Bell,
   CalendarDays,
   CheckCircle2,
@@ -12,11 +14,25 @@ import {
   ChevronRight,
   History,
   Check,
+  LogOut,
   Pencil,
-  RefreshCw
+  RefreshCw,
+  X
 } from 'lucide-react';
 import { api, logout, extractApiError, fetchAllPages, getApiErrorCode, LIMITS } from '../../lib/api';
 import cylinderImg from '../../assets/splash_cylinder.png';
+import { LoadingState } from '../../components/AsyncState';
+import { Alert } from '../../components/ui/Alert';
+import { Badge, type BadgeTone } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { buttonClassName } from '../../components/ui/buttonClass';
+import { Card } from '../../components/ui/Card';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { Field, Input, Select, Textarea } from '../../components/ui/Field';
+import { IconButton } from '../../components/ui/IconButton';
+import { Modal } from '../../components/ui/Modal';
+import { SectionHeader } from '../../components/ui/SectionHeader';
+import { Tabs } from '../../components/ui/Tabs';
 
 type Delivery = {
   id: number;
@@ -90,26 +106,39 @@ function finalAmount(delivery: Delivery) {
 
 // Staff see the struck-through original while picking up and delivering, so the
 // amount they collect is unambiguous. History shows the settled amount only.
+type AmountTone = 'primary' | 'success' | 'warning' | 'neutral';
+
 function AmountToCollect({
   delivery,
   showOriginal,
-  valueStyle,
+  tone = 'primary',
 }: {
   delivery: Delivery;
   showOriginal: boolean;
-  valueStyle: React.CSSProperties;
+  tone?: AmountTone;
 }) {
   const isDiscounted = showOriginal && discountAmount(delivery) > 0;
   return (
-    <div style={{ textAlign: 'right' }}>
+    <div className="sa-amount">
       {isDiscounted && (
-        <div style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through', lineHeight: 1.3 }}>
+        <div className="sa-amount__original">
           {money(originalAmount(delivery))}
         </div>
       )}
-      <span style={valueStyle}>{money(finalAmount(delivery))}</span>
+      <span className={`sa-amount__value sa-amount__value--${tone}`}>{money(finalAmount(delivery))}</span>
     </div>
   );
+}
+
+const STATUS_TONE: Record<string, BadgeTone> = {
+  assigned: 'warning',
+  accepted: 'primary',
+  out_for_delivery: 'primary',
+  delivered: 'success',
+};
+
+function statusTone(status: string): BadgeTone {
+  return STATUS_TONE[status] || 'neutral';
 }
 
 function formatJoinDate(value?: string) {
@@ -336,11 +365,11 @@ export default function StaffMobileLayout() {
     .slice(0, 2)
     .toUpperCase();
   const profileRows = [
-    { icon: <User size={17} />, label: 'Full Name', value: staffProfile?.name || userName || 'Not available' },
-    { icon: <Phone size={17} />, label: 'Phone Number', value: staffProfile?.phone || 'Not available' },
-    { icon: <Mail size={17} />, label: 'Email Address', value: staffProfile?.email || 'Not available' },
-    { icon: <MapPin size={17} />, label: 'Address', value: staffProfile?.address || 'Not available' },
-    { icon: <CalendarDays size={17} />, label: 'Member Since', value: formatJoinDate(staffProfile?.date_joined) },
+    { icon: <User size={16} />, label: 'Full Name', value: staffProfile?.name || userName || 'Not available' },
+    { icon: <Phone size={16} />, label: 'Phone Number', value: staffProfile?.phone || 'Not available' },
+    { icon: <Mail size={16} />, label: 'Email Address', value: staffProfile?.email || 'Not available' },
+    { icon: <MapPin size={16} />, label: 'Address', value: staffProfile?.address || 'Not available' },
+    { icon: <CalendarDays size={16} />, label: 'Member Since', value: formatJoinDate(staffProfile?.date_joined) },
   ];
 
   function openEditProfile() {
@@ -394,305 +423,255 @@ export default function StaffMobileLayout() {
     return true;
   });
 
+
+  const navItems = [
+    { tab: 'home' as const, label: 'Home', icon: <Truck size={20} /> },
+    { tab: 'deliveries' as const, label: 'Deliveries', icon: <Navigation size={20} /> },
+    { tab: 'history' as const, label: 'History', icon: <History size={20} /> },
+    { tab: 'profile' as const, label: 'Profile', icon: <User size={20} /> },
+  ];
+
   return (
-    <div style={{ background: '#F7F9FC', minHeight: '100vh', width: '100%', fontFamily: '"SF Pro Display", "Segoe UI", sans-serif' }}>
-      <div style={{ width: '100%', maxWidth: '430px', margin: '0 auto', background: '#F7F9FC', paddingBottom: '90px', minHeight: '100vh', position: 'relative', overflowX: 'hidden' }}>
-        
-        {/* ================================================== */}
-        {/* 1. STAFF HEADER */}
-        {/* ================================================== */}
-        <div style={{ padding: '20px 20px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#132B4F', margin: 0, letterSpacing: '-0.02em' }}>
+    <div className="sa">
+      <div className="sa__column">
+
+        {/* Header */}
+        <header className="sa-header">
+          <div className="sa-header__text">
+            <h2>
               {getGreeting()}, {userName.split(' ')[0] || userName} 👋
             </h2>
             {vehicleLocation ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px', color: '#1457B8', fontSize: '13px', fontWeight: 600 }}>
-                <MapPin size={14} color="#1457B8" />
+              <div className="sa-header__location">
+                <MapPin size={14} aria-hidden="true" />
                 <span>{vehicleLocation}</span>
               </div>
             ) : null}
           </div>
 
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button
-              onClick={() => setShowNotifications(true)}
-              style={{ position: 'relative', width: '42px', height: '42px', borderRadius: '50%', background: '#FFFFFF', border: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#132B4F', cursor: 'pointer', boxShadow: '0 4px 12px rgba(0,0,0,0.04)' }}
-            >
+          <span className="sa-bell">
+            <IconButton type="button" variant="outline" size="lg" label="Notifications" onClick={() => setShowNotifications(true)}>
               <Bell size={20} />
-              {unreadNotifCount > 0 && (
-                <span style={{ position: 'absolute', top: '8px', right: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#FF6F00', border: '2px solid #FFFFFF' }} />
-              )}
-            </button>
-          </div>
-        </div>
+            </IconButton>
+            {unreadNotifCount > 0 && <span className="sa-bell__dot" aria-hidden="true" />}
+          </span>
+        </header>
 
         {message && (
-          <div
-            role={messageTone === 'error' ? 'alert' : 'status'}
-            style={{
-              margin: '0 20px 16px',
-              background: messageTone === 'error' ? '#FEF2F2' : '#EFF6FF',
-              border: messageTone === 'error' ? '1px solid #FECACA' : '1px solid #BFDBFE',
-              color: messageTone === 'error' ? '#B91C1C' : '#1457B8',
-              padding: '10px 14px', borderRadius: '12px', fontSize: '13px', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
-            }}
+          <Alert
+            tone={messageTone === 'error' ? 'danger' : 'info'}
+            actions={
+              <IconButton type="button" size="sm" label="Dismiss" onClick={() => setMessage('')}>
+                <X size={16} />
+              </IconButton>
+            }
           >
             <span>{message}</span>
-            <button onClick={() => setMessage('')} aria-label="Dismiss" style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontWeight: 700 }}>✕</button>
-          </div>
+          </Alert>
         )}
 
-        {/* LOADING STATE */}
+        {/* Loading */}
         {isLoading ? (
-          <div style={{ padding: '20px', textAlign: 'center', color: '#718096' }}>
-            <div style={{ fontSize: '14px', fontWeight: 600 }}>Loading staff schedule...</div>
-          </div>
+          <Card className="sa-state">
+            <LoadingState label="Loading staff schedule..." />
+          </Card>
         ) : null}
 
-        {/* LOAD ERROR STATE */}
+        {/* Load error */}
         {!isLoading && loadError && activeTab !== 'profile' ? (
-          <div role="alert" style={{ margin: '0 20px', background: '#FFFFFF', borderRadius: '20px', padding: '28px 20px', textAlign: 'center', border: '1px solid #FECACA' }}>
-            <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#B91C1C', margin: 0 }}>Could not load deliveries</h4>
-            <p style={{ fontSize: '13px', color: '#718096', marginTop: '6px' }}>{loadError}</p>
-            <button
-              type="button"
-              onClick={load}
-              style={{ marginTop: '14px', padding: '10px 18px', background: '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '8px' }}
-            >
-              <RefreshCw size={16} /> Retry
-            </button>
-          </div>
+          <Card className="sa-state sa-state--error" role="alert">
+            <EmptyState
+              icon={<AlertTriangle size={24} />}
+              title="Could not load deliveries"
+              hint={loadError}
+              action={
+                <Button type="button" icon={<RefreshCw size={16} />} onClick={load}>
+                  Retry
+                </Button>
+              }
+            />
+          </Card>
         ) : null}
 
-        {/* ================================================== */}
-        {/* MAIN TAB CONTENT */}
-        {/* ================================================== */}
+        {/* ── Home ── */}
         {activeTab === 'home' && !isLoading && !loadError && (
-          <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <div className="sa-stack">
 
-            {/* ================================================== */}
-            {/* 2. STAFF HERO / SUMMARY CARD */}
-            {/* ================================================== */}
-            <div
-              style={{
-                background: 'linear-gradient(135deg, #132B4F 0%, #1457B8 100%)',
-                borderRadius: '24px',
-                padding: '22px 20px',
-                color: '#FFFFFF',
-                boxShadow: '0 12px 28px rgba(20, 87, 184, 0.25)',
-                position: 'relative',
-                overflow: 'hidden'
-              }}
-            >
-              <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#93C5FD', marginBottom: '8px' }}>
-                TODAY'S OPERATIONS
-              </div>
-              <h3 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', letterSpacing: '-0.01em' }}>
-                Delivery Summary
-              </h3>
-
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(8px)', borderRadius: '16px', padding: '12px' }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#FFFFFF' }}>{assignedCount}</div>
-                  <div style={{ fontSize: '11px', color: '#DBEAFE', fontWeight: 600 }}>Assigned</div>
+            {/* Summary */}
+            <section className="sa-hero">
+              <div className="sa-hero__eyebrow">TODAY'S OPERATIONS</div>
+              <h3 className="sa-hero__title">Delivery Summary</h3>
+              <div className="sa-hero__stats">
+                <div className="sa-hero__stat">
+                  <div className="sa-hero__value">{assignedCount}</div>
+                  <div className="sa-hero__label">Assigned</div>
                 </div>
-                <div style={{ textAlign: 'center', borderLeft: '1px solid rgba(255,255,255,0.15)', borderRight: '1px solid rgba(255,255,255,0.15)' }}>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#FF9E43' }}>{activeCount}</div>
-                  <div style={{ fontSize: '11px', color: '#DBEAFE', fontWeight: 600 }}>Active</div>
+                <div className="sa-hero__stat">
+                  <div className="sa-hero__value sa-hero__value--active">{activeCount}</div>
+                  <div className="sa-hero__label">Active</div>
                 </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#4ADE80' }}>{completedCount}</div>
-                  <div style={{ fontSize: '11px', color: '#DBEAFE', fontWeight: 600 }}>Completed</div>
+                <div className="sa-hero__stat">
+                  <div className="sa-hero__value sa-hero__value--done">{completedCount}</div>
+                  <div className="sa-hero__label">Completed</div>
                 </div>
               </div>
-            </div>
+            </section>
 
-            {/* ================================================== */}
-            {/* 3. QUICK ACTIONS */}
-            {/* ================================================== */}
-            <div>
-              <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: '0 0 12px' }}>Quick Actions</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
-                {/* 1. My Tasks */}
-                <div
-                  onClick={() => { setActiveTab('deliveries'); setFilterTab('assigned'); }}
-                  style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px 10px', textAlign: 'center', border: '1px solid #EDF2F7', boxShadow: '0 4px 14px rgba(19, 43, 79, 0.04)', cursor: 'pointer' }}
-                >
-                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 8px', color: '#1457B8' }}>
-                    <Truck size={22} />
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#132B4F' }}>My Tasks</div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginTop: '2px' }}>{assignedCount} assigned</div>
-                </div>
+            {/* Quick actions */}
+            <section>
+              <SectionHeader as="h3" title="Quick Actions" className="sa-section-head" />
+              <div className="sa-quick">
+                <button type="button" className="sa-quick__tile" onClick={() => { setActiveTab('deliveries'); setFilterTab('assigned'); }}>
+                  <span className="sa-quick__icon sa-quick__icon--primary" aria-hidden="true"><Truck size={20} /></span>
+                  <span className="sa-quick__title">My Tasks</span>
+                  <span className="sa-quick__sub">{assignedCount} assigned</span>
+                </button>
 
-                {/* 2. Active Delivery */}
-                <div
-                  onClick={() => { setActiveTab('deliveries'); setFilterTab('active'); }}
-                  style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px 10px', textAlign: 'center', border: '1px solid #EDF2F7', boxShadow: '0 4px 14px rgba(19, 43, 79, 0.04)', cursor: 'pointer' }}
-                >
-                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: '#FFF7ED', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 8px', color: '#FF6F00' }}>
-                    <Navigation size={22} />
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#132B4F' }}>Active Order</div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginTop: '2px' }}>{activeCount} in progress</div>
-                </div>
+                <button type="button" className="sa-quick__tile" onClick={() => { setActiveTab('deliveries'); setFilterTab('active'); }}>
+                  <span className="sa-quick__icon sa-quick__icon--warning" aria-hidden="true"><Navigation size={20} /></span>
+                  <span className="sa-quick__title">Active Order</span>
+                  <span className="sa-quick__sub">{activeCount} in progress</span>
+                </button>
 
-                {/* 3. History */}
-                <div
-                  onClick={() => setActiveTab('history')}
-                  style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px 10px', textAlign: 'center', border: '1px solid #EDF2F7', boxShadow: '0 4px 14px rgba(19, 43, 79, 0.04)', cursor: 'pointer' }}
-                >
-                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: '#F0FDF4', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 8px', color: '#22A06B' }}>
-                    <History size={22} />
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#132B4F' }}>History</div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginTop: '2px' }}>Past orders</div>
-                </div>
+                <button type="button" className="sa-quick__tile" onClick={() => setActiveTab('history')}>
+                  <span className="sa-quick__icon sa-quick__icon--success" aria-hidden="true"><History size={20} /></span>
+                  <span className="sa-quick__title">History</span>
+                  <span className="sa-quick__sub">Past orders</span>
+                </button>
               </div>
-            </div>
+            </section>
 
-            {/* ================================================== */}
-            {/* 4. PENDING ASSIGNMENTS */}
-            {/* ================================================== */}
+            {/* Pending assignments */}
             {pendingAssignments.length > 0 ? (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: 0 }}>New Assignment</h4>
-                  <span style={{ fontSize: '12px', background: '#FFF3EB', color: '#FF6F00', padding: '2px 8px', borderRadius: '10px', fontWeight: 700 }}>
-                    {pendingAssignments.length} Pending
-                  </span>
-                </div>
+              <section>
+                <SectionHeader
+                  as="h3"
+                  title="New Assignment"
+                  className="sa-section-head"
+                  meta={<Badge tone="warning">{pendingAssignments.length} Pending</Badge>}
+                />
 
                 {pendingAssignments.slice(0, 1).map((order) => {
                   const isOnline = order.booking_payment_method === 'ONLINE' || order.booking_payment_status === 'PAID';
 
                   return (
-                    <div key={order.id} style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 6px 18px rgba(19, 43, 79, 0.06)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(order)}</span>
-                        <span style={{ fontSize: '12px', color: isOnline ? '#22A06B' : '#FF6F00', fontWeight: 700, background: isOnline ? '#E6F4EA' : '#FFF3EB', padding: '2px 8px', borderRadius: '8px' }}>
-                          {isOnline ? '✓ Paid Online' : '💵 COD'}
-                        </span>
+                    <Card key={order.id} className="sa-order">
+                      <div className="sa-order__top">
+                        <strong className="sa-order__ref">Order #{orderRef(order)}</strong>
+                        <Badge tone={isOnline ? 'success' : 'warning'} icon={isOnline ? <Check size={12} /> : <Banknote size={12} />}>
+                          {isOnline ? 'Paid Online' : 'COD'}
+                        </Badge>
                       </div>
 
-                      <div style={{ fontSize: '15px', fontWeight: 700, color: '#132B4F' }}>
+                      <div className="sa-order__item">
                         {order.quantity} x {order.cylinder_type_name}
                       </div>
 
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', background: '#F8FAFC', padding: '10px 12px', borderRadius: '12px', margin: '10px 0' }}>
-                        <MapPin size={15} color="#718096" style={{ marginTop: '2px', flexShrink: 0 }} />
-                        <span style={{ fontSize: '13px', color: '#2D3748', lineHeight: 1.4 }}>{order.customer_address || 'No address provided'}</span>
+                      <div className="sa-address">
+                        <MapPin size={16} aria-hidden="true" />
+                        <span>{order.customer_address || 'No address provided'}</span>
                       </div>
 
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                        <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>Amount to Collect:</span>
-                        <AmountToCollect
-                          delivery={order}
-                          showOriginal
-                          valueStyle={{ fontSize: '15px', fontWeight: 800, color: '#1457B8' }}
-                        />
+                      <div className="sa-amount-row">
+                        <span className="sa-amount-row__label">Amount to Collect:</span>
+                        <AmountToCollect delivery={order} showOriginal />
                       </div>
 
                       {rejectingId === order.id ? (
-                        <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', padding: '12px', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          <select
+                        <div className="sa-reject">
+                          <Select
                             value={rejectReason}
                             onChange={(e) => setRejectReason(e.target.value)}
                             disabled={rejectBusy}
                             aria-label="Decline reason"
-                            style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #FCA5A5', fontSize: '13px' }}
                           >
                             <option value="Too far">Too far</option>
                             <option value="Unavailable">Unavailable</option>
                             <option value="Vehicle issue">Vehicle issue</option>
-                          </select>
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <button onClick={() => reject(order.id)} disabled={rejectBusy} style={{ flex: 1, padding: '8px', background: rejectBusy ? '#FDA4AF' : '#E11D48', color: '#FFF', border: 'none', borderRadius: '8px', fontWeight: 700, cursor: rejectBusy ? 'not-allowed' : 'pointer' }}>{rejectBusy ? 'Declining…' : 'Confirm Reject'}</button>
-                            <button onClick={() => setRejectingId(null)} disabled={rejectBusy} style={{ padding: '8px 12px', background: '#FFF', border: '1px solid #CBD5E1', borderRadius: '8px', fontWeight: 600, cursor: rejectBusy ? 'not-allowed' : 'pointer' }}>Cancel</button>
+                          </Select>
+                          <div className="sa-reject__actions">
+                            <Button type="button" variant="danger" onClick={() => reject(order.id)} disabled={rejectBusy} loading={rejectBusy}>
+                              {rejectBusy ? 'Declining…' : 'Confirm Reject'}
+                            </Button>
+                            <Button type="button" variant="secondary" onClick={() => setRejectingId(null)} disabled={rejectBusy}>
+                              Cancel
+                            </Button>
                           </div>
                         </div>
                       ) : (
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '10px' }}>
-                          <button onClick={() => setRejectingId(order.id)} disabled={actionBusyId !== null} style={{ padding: '12px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer' }}>
+                        <div className="sa-order__actions">
+                          <Button type="button" variant="secondary" size="lg" onClick={() => setRejectingId(order.id)} disabled={actionBusyId !== null}>
                             Reject
-                          </button>
-                          <button onClick={() => accept(order.id)} disabled={actionBusyId !== null} style={{ padding: '12px', background: actionBusyId === order.id ? '#93C5FD' : '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: actionBusyId !== null ? 'not-allowed' : 'pointer' }}>
+                          </Button>
+                          <Button type="button" size="lg" onClick={() => accept(order.id)} disabled={actionBusyId !== null} loading={actionBusyId === order.id}>
                             {actionBusyId === order.id ? 'Accepting…' : 'Accept Assignment'}
-                          </button>
+                          </Button>
                         </div>
                       )}
-                    </div>
+                    </Card>
                   );
                 })}
-              </div>
+              </section>
             ) : null}
 
-            {/* ================================================== */}
-            {/* 5. ACTIVE DELIVERY */}
-            {/* ================================================== */}
+            {/* Active delivery */}
             {activeDelivery ? (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: 0 }}>Your Active Delivery</h4>
-                  <span style={{ fontSize: '12px', color: '#1457B8', fontWeight: 700 }}>In Progress</span>
-                </div>
+              <section>
+                <SectionHeader
+                  as="h3"
+                  title="Your Active Delivery"
+                  className="sa-section-head"
+                  meta={<span className="sa-section-head__note">In Progress</span>}
+                />
 
                 {(() => {
                   const isOnline = activeDelivery.booking_payment_method === 'ONLINE' || activeDelivery.booking_payment_status === 'PAID';
                   const totalAmt = finalAmount(activeDelivery);
+                  const completeBlocked = (!isOnline && !codConfirmed[activeDelivery.id]) || actionBusyId !== null;
 
                   return (
-                    <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 8px 24px rgba(19, 43, 79, 0.08)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                        <span style={{ fontSize: '15px', fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(activeDelivery)}</span>
-                        <span style={{ background: '#E0E7FF', color: '#1457B8', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 700 }}>
-                          {activeDelivery.status.replaceAll('_', ' ')}
-                        </span>
+                    <Card className="sa-order sa-order--active">
+                      <div className="sa-order__top">
+                        <strong className="sa-order__ref">Order #{orderRef(activeDelivery)}</strong>
+                        <Badge tone="primary">{activeDelivery.status.replaceAll('_', ' ')}</Badge>
                       </div>
 
-                      <div style={{ display: 'flex', gap: '14px', alignItems: 'center', marginBottom: '14px' }}>
-                        <img src={cylinderImg} style={{ width: '48px', height: '48px', objectFit: 'contain' }} alt="Cylinder" />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: '15px', fontWeight: 700, color: '#132B4F' }}>{activeDelivery.cylinder_type_name}</div>
-                          <div style={{ fontSize: '12px', color: '#718096' }}>Qty: {activeDelivery.quantity}</div>
+                      <div className="sa-cylinder">
+                        <img src={cylinderImg} className="sa-cylinder__img" alt="Cylinder" />
+                        <div className="sa-cylinder__text">
+                          <div className="sa-cylinder__type">{activeDelivery.cylinder_type_name}</div>
+                          <div className="sa-cylinder__qty">Qty: {activeDelivery.quantity}</div>
                         </div>
                         {activeDelivery.customer_phone ? (
-                          <a
-                            href={`tel:${activeDelivery.customer_phone}`}
-                            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', borderRadius: '20px', border: '1px solid #1457B8', color: '#1457B8', textDecoration: 'none', fontSize: '13px', fontWeight: 700 }}
-                          >
-                            <Phone size={14} /> Call
+                          <a href={`tel:${activeDelivery.customer_phone}`} className={buttonClassName({ variant: 'secondary', size: 'sm' })}>
+                            <span className="ui-btn__icon" aria-hidden="true"><Phone size={14} /></span>
+                            <span className="ui-btn__label">Call</span>
                           </a>
                         ) : null}
                       </div>
 
-                      <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '12px', marginBottom: '14px' }}>
-                        <div style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>CUSTOMER &amp; ADDRESS</div>
-                        <div style={{ fontSize: '14px', fontWeight: 700, color: '#132B4F', marginTop: '2px' }}>{activeDelivery.customer_name}</div>
-                        <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '2px' }}>{activeDelivery.customer_address}</div>
+                      <div className="sa-block">
+                        <div className="sa-block__eyebrow">CUSTOMER &amp; ADDRESS</div>
+                        <div className="sa-block__name">{activeDelivery.customer_name}</div>
+                        <div className="sa-block__text">{activeDelivery.customer_address}</div>
                       </div>
 
-                      {/* PAYMENT INFO CASE 1 & CASE 2 */}
-                      <div style={{ background: isOnline ? '#F0FDF4' : '#FFF7ED', padding: '12px', borderRadius: '12px', marginBottom: '14px', border: isOnline ? '1px solid #DCFCE7' : '1px solid #FFEDD5' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <div style={{ fontSize: '12px', fontWeight: 700, color: isOnline ? '#15803D' : '#C2410C' }}>
-                              {isOnline ? '✓ Paid Online — No Cash Needed' : '💵 Cash on Delivery'}
+                      <div className={`sa-pay ${isOnline ? 'sa-pay--online' : 'sa-pay--cod'}`}>
+                        <div className="sa-pay__row">
+                          <div className="sa-pay__text">
+                            <div className="sa-pay__title">
+                              {isOnline ? <CheckCircle2 size={14} aria-hidden="true" /> : <Banknote size={14} aria-hidden="true" />}
+                              <span>{isOnline ? 'Paid Online — No Cash Needed' : 'Cash on Delivery'}</span>
                             </div>
-                            <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '2px' }}>
+                            <div className="sa-pay__sub">
                               {isOnline ? 'Payment verified by system' : 'Collect cash upon delivery'}
                             </div>
                           </div>
-                          <AmountToCollect
-                            delivery={activeDelivery}
-                            showOriginal
-                            valueStyle={{ fontSize: '16px', fontWeight: 800, color: isOnline ? '#15803D' : '#C2410C' }}
-                          />
+                          <AmountToCollect delivery={activeDelivery} showOriginal tone={isOnline ? 'success' : 'warning'} />
                         </div>
 
                         {!isOnline ? (
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontSize: '12px', fontWeight: 700, color: '#132B4F', cursor: 'pointer' }}>
+                          <label className="sa-check">
                             <input
                               type="checkbox"
                               checked={!!codConfirmed[activeDelivery.id]}
@@ -703,395 +682,288 @@ export default function StaffMobileLayout() {
                         ) : null}
                       </div>
 
-                      {/* WORKFLOW ACTIONS */}
                       {activeDelivery.status === 'accepted' && (
-                        <button
+                        <Button
+                          type="button"
+                          size="lg"
+                          block
+                          icon={<Navigation size={18} />}
                           onClick={() => start(activeDelivery.id)}
                           disabled={actionBusyId !== null}
-                          style={{ width: '100%', padding: '14px', background: actionBusyId !== null ? '#93C5FD' : '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '14px', fontWeight: 700, fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}
+                          loading={actionBusyId === activeDelivery.id}
                         >
-                          <Navigation size={18} /> Start Delivery &amp; Notify Customer
-                        </button>
+                          Start Delivery &amp; Notify Customer
+                        </Button>
                       )}
 
                       {activeDelivery.status === 'out_for_delivery' && (
-                        <button
+                        <Button
+                          type="button"
+                          size="lg"
+                          block
+                          icon={<CheckCircle2 size={18} />}
                           onClick={() => complete(activeDelivery.id, !isOnline, totalAmt)}
-                          disabled={(!isOnline && !codConfirmed[activeDelivery.id]) || actionBusyId !== null}
-                          style={{
-                            width: '100%',
-                            padding: '14px',
-                            background: ((!isOnline && !codConfirmed[activeDelivery.id]) || actionBusyId !== null) ? '#A0AEC0' : '#22A06B',
-                            color: '#FFFFFF',
-                            border: 'none',
-                            borderRadius: '14px',
-                            fontWeight: 700,
-                            fontSize: '14px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '8px',
-                            cursor: (!isOnline && !codConfirmed[activeDelivery.id]) ? 'not-allowed' : 'pointer'
-                          }}
+                          disabled={completeBlocked}
+                          loading={actionBusyId === activeDelivery.id}
                         >
-                          <CheckCircle2 size={18} /> {actionBusyId === activeDelivery.id ? 'Completing…' : 'Complete Delivery'}
-                        </button>
+                          {actionBusyId === activeDelivery.id ? 'Completing…' : 'Complete Delivery'}
+                        </Button>
                       )}
-                    </div>
+                    </Card>
                   );
                 })()}
-              </div>
+              </section>
             ) : null}
 
-            {/* ================================================== */}
-            {/* 10. NO ACTIVE DELIVERY STATE */}
-            {/* ================================================== */}
+            {/* Nothing to do */}
             {!activeDelivery && pendingAssignments.length === 0 ? (
-              <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '32px 20px', textAlign: 'center', border: '1px solid #E2E8F0' }}>
-                <div style={{ width: '56px', height: '56px', borderRadius: '50%', background: '#F1F5F9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px', color: '#94A3B8' }}>
-                  <Check size={28} />
-                </div>
-                <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: 0 }}>No active deliveries</h4>
-                <p style={{ fontSize: '13px', color: '#718096', marginTop: '4px' }}>You're all caught up! New assignments will appear here.</p>
-              </div>
+              <Card>
+                <EmptyState
+                  icon={<Check size={24} />}
+                  title="No active deliveries"
+                  hint="You're all caught up! New assignments will appear here."
+                />
+              </Card>
             ) : null}
 
-            {/* ================================================== */}
-            {/* 11. COMPLETED / RECENT DELIVERY */}
-            {/* ================================================== */}
+            {/* Most recent completed */}
             {!activeDelivery && recentCompleted ? (
-              <div>
-                <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: '0 0 12px' }}>Recent Delivery</h4>
-                <div style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px', border: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <section>
+                <SectionHeader as="h3" title="Recent Delivery" className="sa-section-head" />
+                <Card padding="sm" className="sa-recent">
                   <div>
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#132B4F' }}>Order #{orderRef(recentCompleted)}</div>
-                    <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>{recentCompleted.cylinder_type_name}</div>
+                    <div className="sa-order__ref">Order #{orderRef(recentCompleted)}</div>
+                    <div className="sa-muted">{recentCompleted.cylinder_type_name}</div>
                   </div>
-                  <span style={{ fontSize: '12px', background: '#E6F4EA', color: '#22A06B', padding: '4px 10px', borderRadius: '12px', fontWeight: 700 }}>
-                    ✓ Delivered
-                  </span>
-                </div>
-              </div>
+                  <Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>
+                </Card>
+              </section>
             ) : null}
           </div>
         )}
 
-        {/* TAB 2: DELIVERIES ALL LIST */}
+        {/* ── All deliveries ── */}
         {activeTab === 'deliveries' && !isLoading && !loadError && (
-          <div style={{ padding: '0 20px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#132B4F', marginBottom: '14px' }}>All Deliveries</h3>
-            <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '12px', marginBottom: '12px' }}>
-              <button onClick={() => setFilterTab('all')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'all' ? '#1457B8' : '#E2E8F0', color: filterTab === 'all' ? '#FFF' : '#475569' }}>All</button>
-              <button onClick={() => setFilterTab('assigned')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'assigned' ? '#1457B8' : '#E2E8F0', color: filterTab === 'assigned' ? '#FFF' : '#475569' }}>Assigned ({assignedCount})</button>
-              <button onClick={() => setFilterTab('active')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'active' ? '#1457B8' : '#E2E8F0', color: filterTab === 'active' ? '#FFF' : '#475569' }}>Active ({activeCount})</button>
-              <button onClick={() => setFilterTab('completed')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'completed' ? '#1457B8' : '#E2E8F0', color: filterTab === 'completed' ? '#FFF' : '#475569' }}>Completed ({completedCount})</button>
+          <section className="sa-stack sa-stack--tight">
+            <h3 className="sa-page-title">All Deliveries</h3>
+            <div className="sa-filters">
+              <Tabs
+                ariaLabel="Delivery filter"
+                size="sm"
+                value={filterTab}
+                onChange={setFilterTab}
+                items={[
+                  { value: 'all', label: 'All' },
+                  { value: 'assigned', label: `Assigned (${assignedCount})` },
+                  { value: 'active', label: `Active (${activeCount})` },
+                  { value: 'completed', label: `Completed (${completedCount})` },
+                ]}
+              />
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div className="sa-list">
               {activeDeliveriesList.map((d) => (
-                <div key={d.id} style={{ background: '#FFFFFF', borderRadius: '16px', padding: '16px', border: '1px solid #E2E8F0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(d)}</span>
-                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#1457B8' }}>{d.status.replaceAll('_', ' ')}</span>
+                <Card key={d.id} padding="sm" className="sa-list-card">
+                  <div className="sa-order__top">
+                    <strong className="sa-order__ref">Order #{orderRef(d)}</strong>
+                    <Badge tone={statusTone(d.status)}>{d.status.replaceAll('_', ' ')}</Badge>
                   </div>
-                  <div style={{ fontSize: '13px', color: '#4A5568' }}>{d.customer_name} — {d.customer_address}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #F1F5F9' }}>
-                    <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>
+                  <div className="sa-list-card__text">{d.customer_name} — {d.customer_address}</div>
+                  <div className="sa-amount-row sa-amount-row--footer">
+                    <span className="sa-amount-row__label">
                       {d.status === 'delivered' ? 'Amount Collected:' : 'Amount to Collect:'}
                     </span>
-                    <AmountToCollect
-                      delivery={d}
-                      showOriginal={d.status !== 'delivered'}
-                      valueStyle={{ fontSize: '14px', fontWeight: 800, color: '#1457B8' }}
-                    />
+                    <AmountToCollect delivery={d} showOriginal={d.status !== 'delivered'} />
                   </div>
-                </div>
+                </Card>
               ))}
-              {activeDeliveriesList.length === 0 && <div style={{ textAlign: 'center', color: '#718096', padding: '30px' }}>No deliveries found for filter.</div>}
+              {activeDeliveriesList.length === 0 && (
+                <Card><EmptyState compact title="No deliveries found for filter." /></Card>
+              )}
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 3: HISTORY */}
+        {/* ── History ── */}
         {activeTab === 'history' && !isLoading && !loadError && (
-          <div style={{ padding: '0 20px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#132B4F', marginBottom: '14px' }}>Delivery History</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <section className="sa-stack sa-stack--tight">
+            <h3 className="sa-page-title">Delivery History</h3>
+            <div className="sa-list">
               {completedDeliveries.map((d) => (
-                <div key={d.id} style={{ background: '#FFFFFF', borderRadius: '16px', padding: '16px', border: '1px solid #E2E8F0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #{orderRef(d)}</span>
-                    <span style={{ fontSize: '12px', background: '#E6F4EA', color: '#22A06B', padding: '2px 8px', borderRadius: '8px', fontWeight: 700 }}>✓ Delivered</span>
+                <Card key={d.id} padding="sm" className="sa-list-card">
+                  <div className="sa-order__top">
+                    <strong className="sa-order__ref">Order #{orderRef(d)}</strong>
+                    <Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>
                   </div>
-                  <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '4px' }}>{d.cylinder_type_name} ({d.quantity} qty)</div>
-                  <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>{d.customer_name}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #F1F5F9' }}>
-                    <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>Amount Collected:</span>
-                    <AmountToCollect
-                      delivery={d}
-                      showOriginal={false}
-                      valueStyle={{ fontSize: '14px', fontWeight: 800, color: '#132B4F' }}
-                    />
+                  <div className="sa-list-card__text">{d.cylinder_type_name} ({d.quantity} qty)</div>
+                  <div className="sa-muted">{d.customer_name}</div>
+                  <div className="sa-amount-row sa-amount-row--footer">
+                    <span className="sa-amount-row__label">Amount Collected:</span>
+                    <AmountToCollect delivery={d} showOriginal={false} tone="neutral" />
                   </div>
-                </div>
+                </Card>
               ))}
-              {completedDeliveries.length === 0 && <div style={{ textAlign: 'center', color: '#718096', padding: '30px' }}>No completed history yet.</div>}
+              {completedDeliveries.length === 0 && (
+                <Card><EmptyState compact icon={<History size={24} />} title="No completed history yet." /></Card>
+              )}
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 4: PROFILE */}
+        {/* ── Profile ── */}
         {activeTab === 'profile' && !isLoading && (
-          <div style={{ padding: '0 20px' }}>
-            <div
-              style={{
-                background: 'linear-gradient(135deg, rgba(165, 221, 247, 0.95) 0%, rgba(223, 241, 255, 0.94) 56%, rgba(255, 255, 255, 0.98) 100%)',
-                borderRadius: '28px',
-                padding: '26px 22px',
-                marginBottom: '18px',
-                position: 'relative',
-                overflow: 'hidden',
-                border: '1px solid rgba(191, 219, 254, 0.8)',
-                boxShadow: '0 18px 40px rgba(15, 23, 42, 0.08)',
-              }}
-            >
-              <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at top right, rgba(255,255,255,0.55), transparent 42%)' }} />
-              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '16px' }}>
-                {staffProfile?.staff_image_url ? (
-                  <img
-                    src={staffProfile.staff_image_url}
-                    alt={staffProfile.name || userName}
-                    style={{ width: '86px', height: '86px', borderRadius: '50%', objectFit: 'cover', border: '4px solid #1F3B73', boxShadow: '0 12px 28px rgba(31, 59, 115, 0.12)' }}
-                  />
-                ) : (
-                  <div style={{ width: '86px', height: '86px', borderRadius: '50%', background: 'rgba(255,255,255,0.32)', border: '4px solid #1F3B73', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: 900, color: '#1F3B73' }}>
-                    {profileInitials}
-                  </div>
-                )}
-                <div style={{ minWidth: 0 }}>
-                  <h3 style={{ fontSize: '22px', fontWeight: 900, color: '#243B67', margin: '0 0 6px', lineHeight: 1.1 }}>
-                    {staffProfile?.name || userName}
-                  </h3>
-                  <p style={{ fontSize: '15px', color: '#3E5E95', margin: 0, lineHeight: 1.5 }}>
-                    Manage your account and saved details.
-                  </p>
-                </div>
+          <div className="sa-stack">
+            <Card className="sa-profile">
+              {staffProfile?.staff_image_url ? (
+                <img src={staffProfile.staff_image_url} alt={staffProfile.name || userName} className="sa-profile__avatar" />
+              ) : (
+                <div className="sa-profile__avatar sa-profile__avatar--initials">{profileInitials}</div>
+              )}
+              <div className="sa-profile__text">
+                <h3>{staffProfile?.name || userName}</h3>
+                <p>Manage your account and saved details.</p>
               </div>
-            </div>
+            </Card>
 
-            <div style={{ marginBottom: '16px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#132B4F', margin: 0 }}>Account Details</h4>
-                <button
-                  type="button"
-                  onClick={openEditProfile}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '16px', border: '1px solid #BCD6FF', background: '#F7FBFF', color: '#315FB7', fontSize: '13px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 8px 16px rgba(49, 95, 183, 0.08)' }}
-                >
-                  <Pencil size={16} />
-                  Edit
-                </button>
-              </div>
-              <div style={{ background: '#FFFFFF', borderRadius: '26px', border: '1px solid #EDF2F7', overflow: 'hidden', boxShadow: '0 18px 38px rgba(15, 23, 42, 0.06)' }}>
-                {profileRows.map((row, index) => (
-                  <div key={row.label}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '22px 22px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-                        <div style={{ width: '46px', height: '46px', borderRadius: '16px', background: '#EEF4FF', color: '#365FC4', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                          {row.icon}
-                        </div>
-                        <span style={{ fontSize: '13px', color: '#233B69', fontWeight: 800 }}>{row.label}</span>
-                      </div>
-                      <div style={{ fontSize: '14px', color: '#6F7F9C', fontWeight: 700, textAlign: 'right', lineHeight: 1.45, maxWidth: '46%', wordBreak: 'break-word' }}>{row.value}</div>
+            <section>
+              <SectionHeader
+                as="h3"
+                title="Account Details"
+                className="sa-section-head"
+                meta={
+                  <Button type="button" variant="secondary" size="sm" icon={<Pencil size={14} />} onClick={openEditProfile}>
+                    Edit
+                  </Button>
+                }
+              />
+              <Card padding="none" className="sa-details">
+                {profileRows.map((row) => (
+                  <div key={row.label} className="sa-details__row">
+                    <div className="sa-details__label">
+                      <span className="sa-details__icon" aria-hidden="true">{row.icon}</span>
+                      <span>{row.label}</span>
                     </div>
-                    {index < profileRows.length - 1 ? <div style={{ height: '1px', background: '#EEF2F7', margin: '0 22px' }} /> : null}
+                    <div className="sa-details__value">{row.value}</div>
                   </div>
                 ))}
-              </div>
-            </div>
+              </Card>
+            </section>
 
-            <div style={{ marginBottom: '18px' }}>
-              <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#132B4F', margin: '0 0 10px' }}>Account</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <button
-                  onClick={() => { logout(); window.location.href = '/login'; }}
-                  style={{ width: '100%', padding: '20px 22px', background: '#FFFFFF', border: '1px solid #F2E7E7', borderRadius: '26px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', boxShadow: '0 18px 38px rgba(15, 23, 42, 0.06)' }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <div style={{ width: '46px', height: '46px', borderRadius: '16px', background: '#FFF1F1', color: '#E24C40', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <ChevronRight size={18} style={{ transform: 'rotate(180deg)' }} />
-                    </div>
-                    <div style={{ textAlign: 'left' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 900, color: '#D13E34' }}>Logout</div>
-                    </div>
-                  </div>
-                  <ChevronRight size={20} color="#D13E34" />
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ================================================== */}
-        {/* 13. BOTTOM NAVIGATION (STAFF WORKFLOW) */}
-        {/* ================================================== */}
-        <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: '430px', background: '#FFFFFF', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-around', padding: '10px 0 16px', zIndex: 1000, boxShadow: '0 -4px 20px rgba(0,0,0,0.05)' }}>
-          <button
-            onClick={() => setActiveTab('home')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'home' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <Truck size={22} color={activeTab === 'home' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'home' ? 700 : 500 }}>Home</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('deliveries')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'deliveries' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <Navigation size={22} color={activeTab === 'deliveries' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'deliveries' ? 700 : 500 }}>Deliveries</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('history')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'history' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <History size={22} color={activeTab === 'history' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'history' ? 700 : 500 }}>History</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('profile')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'profile' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <User size={22} color={activeTab === 'profile' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'profile' ? 700 : 500 }}>Profile</span>
-          </button>
-        </div>
-
-        {/* NOTIFICATIONS MODAL */}
-        {showNotifications && (
-          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}>
-            <div style={{ background: '#FFF', width: '100%', maxWidth: '360px', maxHeight: '80vh', borderRadius: '16px', padding: '20px', display: 'flex', flexDirection: 'column' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid #F1F5F9', paddingBottom: '12px' }}>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, margin: 0 }}>Staff Notifications</h3>
-                <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer' }}>✕</button>
-              </div>
-
-              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {notifications.map((n) => (
-                  <div
-                    key={n.id}
-                    onClick={() => void handleMarkRead(n.id)}
-                    style={{ padding: '12px', borderRadius: '10px', background: n.is_read ? '#F8FAFC' : '#EFF6FF', border: n.is_read ? '1px solid #E2E8F0' : '1px solid #BFDBFE', cursor: 'pointer' }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                      <strong style={{ fontSize: '13px', color: '#1E293B' }}>{n.title}</strong>
-                      <small style={{ fontSize: '10px', color: '#94A3B8' }}>{new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
-                    </div>
-                    <p style={{ fontSize: '12px', color: '#475569', margin: 0 }}>{n.body}</p>
-                  </div>
-                ))}
-                {notifError && (
-                  <div role="alert" style={{ textAlign: 'center', color: '#B91C1C', marginTop: '24px', fontSize: '13px' }}>
-                    <p style={{ margin: 0 }}>Notifications unavailable. {notifError}</p>
-                    <button type="button" onClick={load} style={{ marginTop: '10px', padding: '8px 14px', background: '#1457B8', color: '#FFF', border: 'none', borderRadius: '10px', fontWeight: 700, cursor: 'pointer' }}>Retry</button>
-                  </div>
-                )}
-                {!notifError && notifications.length === 0 && <p style={{ textAlign: 'center', color: '#94A3B8', marginTop: '40px', fontSize: '13px' }}>No alerts received yet.</p>}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {showEditProfile && (
-          <div
-            onClick={() => { if (!isSavingProfile) setShowEditProfile(false); }}
-            style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)', backdropFilter: 'blur(4px)', zIndex: 2500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{ width: '100%', maxWidth: '430px', background: '#FFFFFF', borderRadius: '24px', boxShadow: '0 24px 48px rgba(15, 23, 42, 0.18)', overflow: 'hidden' }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 20px 14px', borderBottom: '1px solid #F1F5F9' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <div style={{ width: '42px', height: '42px', borderRadius: '14px', background: '#EFF6FF', color: '#1457B8', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Pencil size={18} />
-                  </div>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: '#132B4F' }}>Edit Profile</h3>
-                    <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#718096' }}>Update your personal details</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { if (!isSavingProfile) setShowEditProfile(false); }}
-                  style={{ width: '32px', height: '32px', borderRadius: '50%', border: 'none', background: '#F1F5F9', color: '#64748B', cursor: 'pointer', fontSize: '18px' }}
-                >
-                  ×
-                </button>
-              </div>
-
-              <form onSubmit={saveProfileChanges} style={{ padding: '18px 20px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                {editProfileError ? (
-                  <div style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#B91C1C', fontSize: '12.5px', fontWeight: 700 }}>
-                    {editProfileError}
-                  </div>
-                ) : null}
-
-                {([
-                  { key: 'full_name', label: 'Full Name *', type: 'text', placeholder: 'Enter your full name', maxLength: LIMITS.name },
-                  { key: 'phone', label: 'Phone Number', type: 'tel', placeholder: 'Enter mobile number', maxLength: LIMITS.phone, inputMode: 'numeric', pattern: '[0-9]*' },
-                  { key: 'email', label: 'Email Address', type: 'email', placeholder: 'Enter email address', maxLength: LIMITS.email },
-                ] as { key: string; label: string; type: string; placeholder: string; maxLength: number; inputMode?: 'numeric'; pattern?: string }[]).map((field) => (
-                  <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#334155' }}>{field.label}</span>
-                    <input
-                      type={field.type}
-                      value={editProfileValues[field.key as keyof typeof editProfileValues]}
-                      onChange={(e) => setEditProfileValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                      placeholder={field.placeholder}
-                      maxLength={field.maxLength}
-                      inputMode={field.inputMode}
-                      pattern={field.pattern}
-                      title={field.pattern ? 'Only digits allowed' : undefined}
-                      style={{ width: '100%', padding: '12px 14px', borderRadius: '14px', border: '1px solid #D7E0EA', fontSize: '14px', color: '#132B4F', outline: 'none', background: '#FFFFFF' }}
-                    />
-                  </label>
-                ))}
-
-                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#334155' }}>Address</span>
-                  <textarea
-                    rows={3}
-                    value={editProfileValues.address}
-                    onChange={(e) => setEditProfileValues((prev) => ({ ...prev, address: e.target.value }))}
-                    placeholder="Enter full address"
-                    style={{ width: '100%', padding: '12px 14px', borderRadius: '14px', border: '1px solid #D7E0EA', fontSize: '14px', color: '#132B4F', outline: 'none', resize: 'vertical', background: '#FFFFFF' }}
-                  />
-                </label>
-
-                <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-                  <button
-                    type="button"
-                    onClick={() => setShowEditProfile(false)}
-                    disabled={isSavingProfile}
-                    style={{ flex: 1, padding: '12px 14px', borderRadius: '14px', border: '1px solid #CBD5E1', background: '#FFFFFF', color: '#475569', fontWeight: 800, cursor: isSavingProfile ? 'not-allowed' : 'pointer' }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSavingProfile}
-                    style={{ flex: 1, padding: '12px 14px', borderRadius: '14px', border: 'none', background: '#1457B8', color: '#FFFFFF', fontWeight: 800, cursor: isSavingProfile ? 'not-allowed' : 'pointer' }}
-                  >
-                    {isSavingProfile ? 'Saving...' : 'Save Changes'}
-                  </button>
-                </div>
-              </form>
-            </div>
+            <section>
+              <SectionHeader as="h3" title="Account" className="sa-section-head" />
+              <button
+                type="button"
+                className="sa-logout"
+                onClick={() => { logout(); window.location.href = '/login'; }}
+              >
+                <span className="sa-logout__icon" aria-hidden="true"><LogOut size={18} /></span>
+                <span className="sa-logout__label">Logout</span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
+            </section>
           </div>
         )}
       </div>
+
+      {/* Bottom navigation */}
+      <nav className="sa-nav" aria-label="Staff navigation">
+        <div className="sa-nav__inner">
+          {navItems.map((item) => (
+            <button
+              key={item.tab}
+              type="button"
+              className={`sa-nav__item${activeTab === item.tab ? ' is-active' : ''}`}
+              aria-current={activeTab === item.tab ? 'page' : undefined}
+              onClick={() => setActiveTab(item.tab)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {/* Notifications */}
+      <Modal open={showNotifications} onClose={() => setShowNotifications(false)} title="Staff Notifications" size="sm">
+        <div className="sa-notifs">
+          {notifications.map((n) => (
+            <button
+              key={n.id}
+              type="button"
+              className={`sa-notif${n.is_read ? '' : ' sa-notif--unread'}`}
+              onClick={() => void handleMarkRead(n.id)}
+            >
+              <span className="sa-notif__head">
+                <strong>{n.title}</strong>
+                <small>{new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
+              </span>
+              <span className="sa-notif__body">{n.body}</span>
+            </button>
+          ))}
+          {notifError && (
+            <Alert
+              tone="danger"
+              actions={<Button type="button" size="sm" variant="secondary" onClick={load}>Retry</Button>}
+            >
+              <p>Notifications unavailable. {notifError}</p>
+            </Alert>
+          )}
+          {!notifError && notifications.length === 0 && (
+            <EmptyState compact icon={<Bell size={24} />} title="No alerts received yet." />
+          )}
+        </div>
+      </Modal>
+
+      {/* Edit profile */}
+      <Modal
+        open={showEditProfile}
+        onClose={() => { if (!isSavingProfile) setShowEditProfile(false); }}
+        closeOnOverlay
+        title="Edit Profile"
+        description="Update your personal details"
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setShowEditProfile(false)} disabled={isSavingProfile}>
+              Cancel
+            </Button>
+            <Button type="submit" form="staff-edit-profile-form" disabled={isSavingProfile} loading={isSavingProfile}>
+              {isSavingProfile ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </>
+        }
+      >
+        <form id="staff-edit-profile-form" onSubmit={saveProfileChanges} className="sa-form">
+          {editProfileError ? <Alert tone="danger" compact>{editProfileError}</Alert> : null}
+
+          {([
+            { key: 'full_name', label: 'Full Name *', type: 'text', placeholder: 'Enter your full name', maxLength: LIMITS.name },
+            { key: 'phone', label: 'Phone Number', type: 'tel', placeholder: 'Enter mobile number', maxLength: LIMITS.phone, inputMode: 'numeric', pattern: '[0-9]*' },
+            { key: 'email', label: 'Email Address', type: 'email', placeholder: 'Enter email address', maxLength: LIMITS.email },
+          ] as { key: string; label: string; type: string; placeholder: string; maxLength: number; inputMode?: 'numeric'; pattern?: string }[]).map((field) => (
+            <Field key={field.key} label={field.label}>
+              <Input
+                type={field.type}
+                value={editProfileValues[field.key as keyof typeof editProfileValues]}
+                onChange={(e) => setEditProfileValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                placeholder={field.placeholder}
+                maxLength={field.maxLength}
+                inputMode={field.inputMode}
+                pattern={field.pattern}
+                title={field.pattern ? 'Only digits allowed' : undefined}
+              />
+            </Field>
+          ))}
+
+          <Field label="Address">
+            <Textarea
+              rows={3}
+              value={editProfileValues.address}
+              onChange={(e) => setEditProfileValues((prev) => ({ ...prev, address: e.target.value }))}
+              placeholder="Enter full address"
+            />
+          </Field>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -1,17 +1,28 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { ArrowDownUp, ArrowRight, Check, ChevronDown, Factory, Plus, Search, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowDownLeft, ArrowDownUp, ArrowRight, ArrowUpRight, Check, CheckCircle2, Factory, History, Package, Plus, Trash2, User } from 'lucide-react';
 import { api, extractApiError, fetchAllPages } from '../lib/api';
+import { AppSelect, type SelectOption } from '../components/ui/AppSelect';
 import { ErrorState, LoadingState } from '../components/AsyncState';
 import { Pager } from '../components/Pager';
 import { usePager } from '../hooks/usePager';
+import { Alert } from '../components/ui/Alert';
+import { Badge } from '../components/ui/Badge';
+import { Button } from '../components/ui/Button';
+import { Card, CardFooter, CardHeader } from '../components/ui/Card';
+import { EmptyState } from '../components/ui/EmptyState';
+import { Field, Input, Select } from '../components/ui/Field';
+import { IconButton } from '../components/ui/IconButton';
+import { PageHeader } from '../components/ui/PageHeader';
+import { SearchInput } from '../components/ui/SearchInput';
+import { SkeletonRows } from '../components/ui/Skeleton';
+import { Tabs } from '../components/ui/Tabs';
 
 type Tab = 'movement' | 'new_load' | 'refuel' | 'history';
 type Location = { id: number; name: string; code: string };
 type CylinderType = { id: number; name: string };
 type RefuelItem = { cylinder_type: number; quantity: string; status?: string };
 type StockRow = { id: number; cylinder_type: number; location: number; status: string; quantity: number; cylinder_type_name: string; location_name: string };
-type SelectOption<T extends string | number> = { value: T; label: string };
 type Movement = {
   id: number;
   cylinder_type_name: string;
@@ -24,74 +35,6 @@ type Movement = {
   note: string;
   supplier_pending_after?: number | null;
 };
-
-function AppSelect<T extends string | number>({
-  value,
-  options,
-  onChange,
-  ariaLabel,
-}: {
-  value: T;
-  options: SelectOption<T>[];
-  onChange: (value: T) => void;
-  ariaLabel: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const [openUp, setOpenUp] = useState(false);
-  const triggerRef = React.useRef<HTMLButtonElement>(null);
-  const selected = options.find((option) => option.value === value) ?? options[0];
-
-  const handleOpen = () => {
-    setOpen((current) => {
-      if (!current && triggerRef.current) {
-        const rect = triggerRef.current.getBoundingClientRect();
-        const spaceBelow = window.innerHeight - rect.bottom;
-        setOpenUp(spaceBelow < 220);
-      }
-      return !current;
-    });
-  };
-
-  return (
-    <div className="app-select" onBlur={() => setOpen(false)}>
-      <button
-        ref={triggerRef}
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        className="app-select-trigger"
-        onClick={handleOpen}
-        type="button"
-      >
-        <span>{selected?.label ?? 'Select'}</span>
-        <ChevronDown size={18} />
-      </button>
-      {open && (
-        <div className={`app-select-menu ${openUp ? 'open-up' : ''}`} role="listbox">
-          {options.map((option) => {
-            const isSelected = option.value === value;
-            return (
-              <button
-                aria-selected={isSelected}
-                className={isSelected ? 'selected' : ''}
-                key={option.value}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                }}
-                role="option"
-                type="button"
-              >
-                <span>{option.label}</span>
-                {isSelected && <Check size={16} />}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function Stock() {
   const [activeTab, setActiveTab] = useState<Tab>('refuel');
@@ -491,71 +434,58 @@ export default function Stock() {
 
   const historyPager = usePager(filtered, 10, `${searchQuery}|${historyFilter}`);
 
-  const tabBtn = (tab: Tab, label: string) => (
-    <button
-      onClick={() => setActiveTab(tab)}
-      style={{
-        flex: 1, padding: '10px', border: 'none', borderRadius: '6px', fontWeight: 600,
-        background: activeTab === tab ? 'var(--surface)' : 'transparent',
-        color: activeTab === tab ? 'var(--text)' : 'var(--text-muted)',
-        cursor: 'pointer',
-      }}
-    >
-      {label}
-    </button>
-  );
-
   return (
     <div>
-      <div className="page-title" style={{ marginBottom: '16px' }}>
-        <div>
-          <h1>Stock &amp; Load</h1>
-          <p>Move cylinders, enter new loads, or record refuel cycles.</p>
-        </div>
-      </div>
+      <PageHeader title="Stock &amp; Load" description="Move cylinders, enter new loads, or record refuel cycles." />
 
-      <div style={{ display: 'flex', background: 'var(--border)', borderRadius: '8px', padding: '4px', marginBottom: '16px' }}>
-        {tabBtn('refuel', '🔥 Refuel')}
-        {tabBtn('movement', 'Movement')}
-        {tabBtn('new_load', 'New Load')}
-        {tabBtn('history', 'History')}
-      </div>
+      <Tabs
+        ariaLabel="Stock sections"
+        variant="tabs"
+        className="page-tabs"
+        value={activeTab}
+        onChange={setActiveTab}
+        items={[
+          { value: 'refuel', label: 'Refuel' },
+          { value: 'movement', label: 'Movement' },
+          { value: 'new_load', label: 'New Load' },
+          { value: 'history', label: 'History' },
+        ]}
+      />
 
       {refStatus === 'error' && activeTab !== 'history' && (
         <ErrorState message={refError} onRetry={() => { setRefStatus('loading'); loadReferenceData(); }} />
       )}
       {refStatus === 'loading' && activeTab !== 'history' && <LoadingState label="Loading stock setup…" />}
       {stockError && refStatus === 'ready' && activeTab !== 'history' && (
-        <p className="form-error" role="alert" style={{ marginBottom: '12px' }}>
-          {stockError}{' '}
-          <button type="button" className="async-inline-retry" onClick={fetchStock}>Retry</button>
-        </p>
+        <Alert
+          tone="danger"
+          role="alert"
+          className="ui-alert--block-sm"
+          actions={<Button type="button" variant="link" size="sm" onClick={fetchStock}>Retry</Button>}
+        >
+          {stockError}
+        </Alert>
       )}
 
       {/* ── Movement ── */}
       {activeTab === 'movement' && refStatus === 'ready' && (
-        <div className="card form-card">
-          <h2 style={{ marginBottom: '4px' }}>Move Cylinders</h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
-            Transfer cylinders between your locations.
-          </p>
+        <Card className="stock-card">
+          <CardHeader title="Move Cylinders" description="Transfer cylinders between your locations." />
           <form onSubmit={handleMovement} className="form-stack">
             <div className="move-grid">
-              <label>
-                <span>From</span>
+              <Field label="From">
                 <AppSelect ariaLabel="From location" value={fromLocation} options={moveLocationOptions} onChange={setFromLocation} />
-              </label>
-              <button className="swap-button" type="button" onClick={swapLocations}>
-                <ArrowDownUp size={22} />
-              </button>
-              <label>
-                <span>To</span>
+              </Field>
+              <IconButton type="button" variant="outline" label="Swap locations" className="swap-button" onClick={swapLocations}>
+                <ArrowDownUp size={20} />
+              </IconButton>
+              <Field label="To">
                 <AppSelect ariaLabel="To location" value={toLocation} options={moveLocationOptions} onChange={setToLocation} />
-              </label>
+              </Field>
             </div>
 
             {/* Multi-row items */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div className="stock-rows">
               {moveItems.map((item, idx) => {
                 const srcStock = stockData.find(
                   (s) => s.cylinder_type === item.cylinder_type && s.location === fromLocation && s.status === (item.status || 'filled')
@@ -563,54 +493,35 @@ export default function Stock() {
                 const available = srcStock?.quantity ?? 0;
                 return (
                   <div key={idx} className="stock-item-row">
-                    <label>
-                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder</span>}
+                    <Field label={idx === 0 ? 'Cylinder' : undefined}>
                       <AppSelect
                         ariaLabel="Cylinder type"
                         value={item.cylinder_type}
                         options={getMoveAvailableOptions(moveItems, idx)}
                         onChange={(v) => setMoveItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                       />
-                    </label>
-                    <label>
-                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Status</span>}
+                    </Field>
+                    <Field label={idx === 0 ? 'Status' : undefined}>
                       <AppSelect
                         ariaLabel="Status"
                         value={item.status || 'filled'}
                         options={getMoveStatusOptions(moveItems, idx)}
                         onChange={(v) => setMoveItems(prev => prev.map((it, i) => i === idx ? { ...it, status: String(v) } : it))}
                       />
-                    </label>
-                    <label>
-                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
-                      <input
+                    </Field>
+                    <Field label={idx === 0 ? 'Qty' : undefined}>
+                      <Input
                         type="number" min="1" placeholder="0"
+                        className="stock-num"
                         value={item.quantity}
                         onChange={(e) => setMoveItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
-                        style={{ textAlign: 'center' }}
                       />
-                    </label>
-                    <div className="stock-avail" title={stockError ? 'Stock levels unavailable' : undefined} style={{
-                      padding: '8px 10px', borderRadius: '8px', textAlign: 'center',
-                      fontSize: '0.8rem', fontWeight: 700, marginBottom: '2px',
-                      background: stockError ? 'var(--surface)' : available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
-                      color: stockError ? 'var(--text-muted)' : available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
-                      border: stockError ? '1px dashed var(--border)' : 'none',
-                    }}>
-                      {stockError ? 'Stock unavailable' : available > 0 ? `📦 ${available}` : '⚠️ 0'}
-                    </div>
+                    </Field>
+                    <StockAvailability error={Boolean(stockError)} available={available} warnWhenZero />
                     {moveItems.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => setMoveItems(prev => prev.filter((_, i) => i !== idx))}
-                        style={{
-                          background: 'none', border: 'none', color: 'var(--danger, #ef4444)',
-                          cursor: 'pointer', padding: '6px', marginBottom: '2px',
-                        }}
-                        title="Remove"
-                      >
+                      <IconButton type="button" label="Remove" tone="danger" className="stock-item-row__remove" onClick={() => setMoveItems(prev => prev.filter((_, i) => i !== idx))}>
                         <Trash2 size={16} />
-                      </button>
+                      </IconButton>
                     )}
                   </div>
                 );
@@ -618,125 +529,119 @@ export default function Stock() {
             </div>
 
             {moveItems.length < cylinderTypes.length * 2 && (
-              <button
-                type="button"
-                onClick={() => setMoveItems(prev => {
-                  const nextItem = getNextMoveAvailableItem(prev);
-                  return [...prev, { cylinder_type: nextItem.cylinder_type, quantity: '', status: nextItem.status }];
-                })}
-                className="btn btn-secondary"
-                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-              >
-                <Plus size={16} /> Add Cylinder Type
-              </button>
+              <div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  icon={<Plus />}
+                  onClick={() => setMoveItems(prev => {
+                    const nextItem = getNextMoveAvailableItem(prev);
+                    return [...prev, { cylinder_type: nextItem.cylinder_type, quantity: '', status: nextItem.status }];
+                  })}
+                >
+                  Add Cylinder Type
+                </Button>
+              </div>
             )}
 
-            {moveErr && <p className="form-error">{moveErr}</p>}
-            {moveMsg && <p className="form-note">{moveMsg}</p>}
+            {moveErr && <Alert tone="danger">{moveErr}</Alert>}
+            {moveMsg && <Alert tone="success">{moveMsg}</Alert>}
 
-            <button type="submit" className="btn btn-primary" disabled={moveSaving}>
-              <ArrowDownUp size={18} /> {moveSaving ? 'Moving…' : `Move ${moveItems.filter(i => Number(i.quantity) > 0).length} type(s)`}
-            </button>
+            <div className="stock-submit">
+              <Button type="submit" size="lg" icon={<ArrowDownUp />} disabled={moveSaving}>
+                {moveSaving ? 'Moving…' : `Move ${moveItems.filter(i => Number(i.quantity) > 0).length} type(s)`}
+              </Button>
+            </div>
           </form>
-        </div>
+        </Card>
       )}
 
       {/* ── New Load ── */}
       {activeTab === 'new_load' && refStatus === 'ready' && (
-        <div className="card form-card">
-          <h2 style={{ marginBottom: '4px' }}>Record New Load</h2>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
-            Record filled cylinders arriving from the supplier.
-          </p>
+        <Card className="stock-card">
+          <CardHeader title="Record New Load" description="Record filled cylinders arriving from the supplier." />
           <form onSubmit={handleNewLoad} className="form-stack">
-            <label>
-              <span>Load Into Location</span>
+            <Field label="Load Into Location">
               <AppSelect ariaLabel="Load destination" value={loadTo} options={loadLocationOptions} onChange={setLoadTo} />
-            </label>
+            </Field>
 
             {/* Multi-row items */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div className="stock-rows">
               {loadItems.map((item, idx) => (
                 <div key={idx} className="stock-item-row">
-                  <label>
-                    {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
+                  <Field label={idx === 0 ? 'Cylinder Type' : undefined}>
                     <AppSelect
                       ariaLabel="Cylinder size"
                       value={item.cylinder_type}
                       options={getAvailableOptions(loadItems, idx)}
                       onChange={(v) => setLoadItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                     />
-                  </label>
-                  <label>
-                    {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
-                    <input
+                  </Field>
+                  <Field label={idx === 0 ? 'Qty' : undefined}>
+                    <Input
                       type="number" min="1" placeholder="0"
+                      className="stock-num"
                       value={item.quantity}
                       onChange={(e) => setLoadItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
-                      style={{ textAlign: 'center' }}
                     />
-                  </label>
+                  </Field>
                   {loadItems.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => setLoadItems(prev => prev.filter((_, i) => i !== idx))}
-                      style={{
-                        background: 'none', border: 'none', color: 'var(--danger, #ef4444)',
-                        cursor: 'pointer', padding: '6px', marginBottom: '2px',
-                      }}
-                      title="Remove"
-                    >
+                    <IconButton type="button" label="Remove" tone="danger" className="stock-item-row__remove" onClick={() => setLoadItems(prev => prev.filter((_, i) => i !== idx))}>
                       <Trash2 size={16} />
-                    </button>
+                    </IconButton>
                   )}
                 </div>
               ))}
             </div>
 
             {loadItems.length < cylinderTypes.length && (
-              <button
-                type="button"
-                onClick={() => setLoadItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
-                className="btn btn-secondary"
-                style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-              >
-                <Plus size={16} /> Add Cylinder Type
-              </button>
+              <div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  icon={<Plus />}
+                  onClick={() => setLoadItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
+                >
+                  Add Cylinder Type
+                </Button>
+              </div>
             )}
 
-            {loadErr && <p className="form-error">{loadErr}</p>}
-            {loadMsg && <p className="form-note">{loadMsg}</p>}
+            {loadErr && <Alert tone="danger">{loadErr}</Alert>}
+            {loadMsg && <Alert tone="success">{loadMsg}</Alert>}
 
-            <button type="submit" className="btn btn-primary" style={{ background: 'var(--success)' }} disabled={loadSaving}>
-              <Factory size={20} /> {loadSaving ? 'Saving…' : `Save ${loadItems.filter(i => Number(i.quantity) > 0).length} type(s)`}
-            </button>
+            <div className="stock-submit">
+              <Button type="submit" size="lg" icon={<Factory />} disabled={loadSaving}>
+                {loadSaving ? 'Saving…' : `Save ${loadItems.filter(i => Number(i.quantity) > 0).length} type(s)`}
+              </Button>
+            </div>
           </form>
-        </div>
+        </Card>
       )}
 
       {/* ── Refuel ── */}
       {activeTab === 'refuel' && refStatus === 'ready' && (
         <div className="refuel-grid">
-          
+
           {/* Send Empties */}
-          <div className="card form-card">
-            <h2 style={{ marginBottom: '4px' }}>Send Empties</h2>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
-              Send empty cylinders to the supplier for refilling.
-            </p>
+          <Card className="stock-card">
+            <CardHeader
+              title={<span className="stock-card__title"><ArrowUpRight size={18} aria-hidden="true" />Send Empties</span>}
+              description="Send empty cylinders to the supplier for refilling."
+            />
 
             {(() => {
               const emptiesAtLoc = stockData.filter(s => s.location === refuelSendLoc && s.status === 'empty' && s.quantity > 0);
               if (emptiesAtLoc.length > 0) {
                 return (
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
-                    <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>Available Empties at Location:</span>
+                  <div className="stock-chips">
+                    <span className="stock-chips__label">Available Empties at Location:</span>
                     {emptiesAtLoc.map((e, i) => {
                       const cName = cylinderTypes.find(c => c.id === e.cylinder_type)?.name || 'Unknown';
                       return (
-                        <span key={i} className="badge" style={{ background: 'var(--primary-soft, #e0e7ff)', color: 'var(--primary, #4f46e5)', border: '1px solid var(--primary)' }}>
-                          {e.quantity}× {cName}
-                        </span>
+                        <Badge key={i} tone="primary">{e.quantity}× {cName}</Badge>
                       );
                     })}
                   </div>
@@ -744,19 +649,16 @@ export default function Stock() {
               }
               if (stockError) return null;
               return (
-                <div style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--success)' }}>
-                  ✓ No empty cylinders at this location.
-                </div>
+                <p className="stock-ok"><CheckCircle2 size={14} aria-hidden="true" /> No empty cylinders at this location.</p>
               );
             })()}
 
             <form onSubmit={handleRefuelSend} className="form-stack">
-              <label>
-                <span>From Location</span>
+              <Field label="From Location">
                 <AppSelect ariaLabel="From location" value={refuelSendLoc} options={moveLocationOptions} onChange={setRefuelSendLoc} />
-              </label>
+              </Field>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div className="stock-rows">
                 {refuelSendItems.map((item, idx) => {
                   const emptyStock = stockData.find(
                     (s) => s.cylinder_type === item.cylinder_type && s.location === refuelSendLoc && s.status === 'empty'
@@ -764,41 +666,27 @@ export default function Stock() {
                   const available = emptyStock?.quantity ?? 0;
                   return (
                     <div key={idx} className="stock-item-row">
-                      <label>
-                        {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
+                      <Field label={idx === 0 ? 'Cylinder Type' : undefined}>
                         <AppSelect
                           ariaLabel="Cylinder type"
                           value={item.cylinder_type}
                           options={getAvailableOptions(refuelSendItems, idx)}
                           onChange={(v) => setRefuelSendItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                         />
-                      </label>
-                      <label>
-                        {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
-                        <input
+                      </Field>
+                      <Field label={idx === 0 ? 'Qty' : undefined}>
+                        <Input
                           type="number" min="1" placeholder="0"
+                          className="stock-num"
                           value={item.quantity}
                           onChange={(e) => setRefuelSendItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
-                          style={{ textAlign: 'center' }}
                         />
-                      </label>
-                      <div className="stock-avail" title={stockError ? 'Stock levels unavailable' : undefined} style={{
-                        padding: '8px', borderRadius: '8px', textAlign: 'center',
-                        fontSize: '0.75rem', fontWeight: 700, marginBottom: '2px',
-                        background: stockError ? 'var(--surface)' : available > 0 ? 'var(--success-soft, #d1fae5)' : 'var(--danger-soft, #fee2e2)',
-                        color: stockError ? 'var(--text-muted)' : available > 0 ? 'var(--success)' : 'var(--danger, #ef4444)',
-                        border: stockError ? '1px dashed var(--border)' : 'none',
-                      }}>
-                        {stockError ? 'Stock unavailable' : `📦 ${available}`}
-                      </div>
+                      </Field>
+                      <StockAvailability error={Boolean(stockError)} available={available} />
                       {refuelSendItems.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => setRefuelSendItems(prev => prev.filter((_, i) => i !== idx))}
-                          style={{ background: 'none', border: 'none', color: 'var(--danger, #ef4444)', cursor: 'pointer', padding: '6px', marginBottom: '2px' }}
-                        >
+                        <IconButton type="button" label="Remove" tone="danger" className="stock-item-row__remove" onClick={() => setRefuelSendItems(prev => prev.filter((_, i) => i !== idx))}>
                           <Trash2 size={16} />
-                        </button>
+                        </IconButton>
                       )}
                     </div>
                   );
@@ -806,227 +694,242 @@ export default function Stock() {
               </div>
 
               {refuelSendItems.length < cylinderTypes.length && (
-                <button
-                  type="button"
-                  onClick={() => setRefuelSendItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
-                  className="btn btn-secondary"
-                  style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-                >
-                  <Plus size={16} /> Add
-                </button>
+                <div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    icon={<Plus />}
+                    onClick={() => setRefuelSendItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
+                  >
+                    Add
+                  </Button>
+                </div>
               )}
 
-              <div style={{ marginTop: '16px' }}>
-                <label>Reference Note (Optional)</label>
-                <input 
-                  type="text" 
-                  value={refuelSendNote} 
-                  onChange={e => setRefuelSendNote(e.target.value)} 
-                  placeholder="e.g. Sent via Driver John" 
+              <Field label="Reference Note (Optional)">
+                <Input
+                  type="text"
+                  value={refuelSendNote}
+                  onChange={e => setRefuelSendNote(e.target.value)}
+                  placeholder="e.g. Sent via Driver John"
                 />
-              </div>
+              </Field>
 
-              {refuelSendErr && <div className="error-text" style={{ marginTop: '16px' }}>{refuelSendErr}</div>}
-              {refuelSendMsg && <p className="form-note">{refuelSendMsg}</p>}
-              <button type="submit" className="btn btn-primary" style={{ background: 'var(--warning)', color: 'black' }} disabled={refuelSendSaving}>
-                <ArrowRight size={18} /> {refuelSendSaving ? 'Sending…' : `Send to Supplier`}
-              </button>
+              {refuelSendErr && <Alert tone="danger">{refuelSendErr}</Alert>}
+              {refuelSendMsg && <Alert tone="success">{refuelSendMsg}</Alert>}
+              <Button type="submit" block icon={<ArrowRight />} disabled={refuelSendSaving}>
+                {refuelSendSaving ? 'Sending…' : `Send to Supplier`}
+              </Button>
             </form>
-          </div>
+          </Card>
 
           {/* Receive Refilled */}
-          <div className="card form-card">
-            <h2 style={{ marginBottom: '4px' }}>Receive Refilled</h2>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: '16px' }}>
-              Record refilled cylinders arriving from the supplier.
-            </p>
+          <Card className="stock-card">
+            <CardHeader
+              title={<span className="stock-card__title"><ArrowDownLeft size={18} aria-hidden="true" />Receive Refilled</span>}
+              description="Record refilled cylinders arriving from the supplier."
+            />
 
             {supplierPending.length > 0 && (
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' }}>
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center' }}>Pending from Supplier:</span>
+              <div className="stock-chips">
+                <span className="stock-chips__label">Pending from Supplier:</span>
                 {supplierPending.map((p, i) => (
-                  <span key={i} className="badge" style={{ background: 'var(--warning-soft, #fef3c7)', color: 'var(--warning, #d97706)', border: '1px solid var(--warning)' }}>
-                    {p.pending}× {p.cylinder_type_name}
-                  </span>
+                  <Badge key={i} tone="warning">{p.pending}× {p.cylinder_type_name}</Badge>
                 ))}
               </div>
             )}
             {supplierPendingError && (
-              <div role="alert" style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--danger)' }}>
-                {supplierPendingError}{' '}
-                <button type="button" className="async-inline-retry" onClick={fetchSupplierPending}>Retry</button>
-              </div>
+              <Alert
+                tone="danger"
+                role="alert"
+                compact
+                className="ui-alert--block-sm"
+                actions={<Button type="button" variant="link" size="sm" onClick={fetchSupplierPending}>Retry</Button>}
+              >
+                {supplierPendingError}
+              </Alert>
             )}
             {!supplierPendingError && supplierPending.length === 0 && (
-              <div style={{ marginBottom: '16px', fontSize: '0.85rem', color: 'var(--success)' }}>
-                ✓ No pending refuels from supplier.
-              </div>
+              <p className="stock-ok"><CheckCircle2 size={14} aria-hidden="true" /> No pending refuels from supplier.</p>
             )}
 
             {justSentItems && (
-              <div style={{ background: 'var(--primary-soft, #e0e7ff)', padding: '16px', borderRadius: '10px', marginBottom: '16px', border: '1px solid var(--primary)' }}>
-                <h3 style={{ margin: '0 0 8px 0', color: 'var(--primary)', fontSize: '0.95rem' }}>Receive them back immediately?</h3>
-                <p style={{ margin: '0 0 12px 0', fontSize: '0.85rem' }}>
-                  You just sent {justSentItems.map(i => `${i.quantity}× ${cylinderTypes.find(c => c.id === i.cylinder_type)?.name}`).join(', ')}.
-                </p>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button type="button" className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '0.85rem', background: '#0284c7' }} onClick={() => handleQuickReceive(justSentItems)} disabled={refuelRecvSaving}>
-                    <Check size={16} /> Yes, Receive All Now
-                  </button>
-                  <button type="button" className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '0.85rem' }} onClick={() => setJustSentItems(null)}>
-                    Record Later
-                  </button>
-                </div>
-              </div>
+              <Alert
+                tone="info"
+                title="Receive them back immediately?"
+                className="ui-alert--block-sm stock-quick"
+                actions={(
+                  <>
+                    <Button type="button" size="sm" icon={<Check />} onClick={() => handleQuickReceive(justSentItems)} disabled={refuelRecvSaving}>
+                      Yes, Receive All Now
+                    </Button>
+                    <Button type="button" variant="secondary" size="sm" onClick={() => setJustSentItems(null)}>
+                      Record Later
+                    </Button>
+                  </>
+                )}
+              >
+                You just sent {justSentItems.map(i => `${i.quantity}× ${cylinderTypes.find(c => c.id === i.cylinder_type)?.name}`).join(', ')}.
+              </Alert>
             )}
 
             <form onSubmit={handleRefuelReceive} className="form-stack">
-              <label>
-                <span>Receive Into Location</span>
+              <Field label="Receive Into Location">
                 <AppSelect ariaLabel="Receive location" value={refuelRecvLoc} options={moveLocationOptions} onChange={setRefuelRecvLoc} />
-              </label>
+              </Field>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div className="stock-rows">
                 {refuelRecvItems.map((item, idx) => (
                   <div key={idx} className="stock-item-row">
-                    <label>
-                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Cylinder Type</span>}
+                    <Field label={idx === 0 ? 'Cylinder Type' : undefined}>
                       <AppSelect
                         ariaLabel="Cylinder size"
                         value={item.cylinder_type}
                         options={getAvailableOptions(refuelRecvItems, idx)}
                         onChange={(v) => setRefuelRecvItems(prev => prev.map((it, i) => i === idx ? { ...it, cylinder_type: v } : it))}
                       />
-                    </label>
-                    <label>
-                      {idx === 0 && <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Qty</span>}
-                      <input
+                    </Field>
+                    <Field label={idx === 0 ? 'Qty' : undefined}>
+                      <Input
                         type="number" min="1" placeholder="0"
+                        className="stock-num"
                         value={item.quantity}
                         onChange={(e) => setRefuelRecvItems(prev => prev.map((it, i) => i === idx ? { ...it, quantity: e.target.value } : it))}
-                        style={{ textAlign: 'center' }}
                       />
-                    </label>
+                    </Field>
                     {refuelRecvItems.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => setRefuelRecvItems(prev => prev.filter((_, i) => i !== idx))}
-                        style={{ background: 'none', border: 'none', color: 'var(--danger, #ef4444)', cursor: 'pointer', padding: '6px', marginBottom: '2px' }}
-                      >
+                      <IconButton type="button" label="Remove" tone="danger" className="stock-item-row__remove" onClick={() => setRefuelRecvItems(prev => prev.filter((_, i) => i !== idx))}>
                         <Trash2 size={16} />
-                      </button>
+                      </IconButton>
                     )}
                   </div>
                 ))}
               </div>
 
               {refuelRecvItems.length < cylinderTypes.length && (
-                <button
-                  type="button"
-                  onClick={() => setRefuelRecvItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
-                  className="btn btn-secondary"
-                  style={{ width: 'auto', alignSelf: 'flex-start', padding: '6px 16px', fontSize: '0.85rem' }}
-                >
-                  <Plus size={16} /> Add
-                </button>
+                <div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    icon={<Plus />}
+                    onClick={() => setRefuelRecvItems(prev => [...prev, { cylinder_type: getNextAvailableId(prev), quantity: '' }])}
+                  >
+                    Add
+                  </Button>
+                </div>
               )}
 
-              <div style={{ marginTop: '16px' }}>
-                <label>Reference Note (Optional)</label>
-                <input 
-                  type="text" 
-                  value={refuelRecvNote} 
-                  onChange={e => setRefuelRecvNote(e.target.value)} 
-                  placeholder="e.g. Received partial from Monday's batch" 
+              <Field label="Reference Note (Optional)">
+                <Input
+                  type="text"
+                  value={refuelRecvNote}
+                  onChange={e => setRefuelRecvNote(e.target.value)}
+                  placeholder="e.g. Received partial from Monday's batch"
                 />
-              </div>
+              </Field>
 
-              {refuelRecvErr && <div className="error-text" style={{ marginTop: '16px' }}>{refuelRecvErr}</div>}
-              {refuelRecvMsg && <p className="form-note">{refuelRecvMsg}</p>}
-              <button type="submit" className="btn btn-primary" style={{ background: '#0284c7' }} disabled={refuelRecvSaving}>
-                <Check size={18} /> {refuelRecvSaving ? 'Recording…' : `Receive from Supplier`}
-              </button>
+              {refuelRecvErr && <Alert tone="danger">{refuelRecvErr}</Alert>}
+              {refuelRecvMsg && <Alert tone="success">{refuelRecvMsg}</Alert>}
+              <Button type="submit" block icon={<Check />} disabled={refuelRecvSaving}>
+                {refuelRecvSaving ? 'Recording…' : `Receive from Supplier`}
+              </Button>
             </form>
-          </div>
+          </Card>
         </div>
       )}
 
       {/* ── History ── */}
       {activeTab === 'history' && (
-        <div className="card">
-          <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
-            <div style={{ position: 'relative', flex: 1 }}>
-              <Search size={16} style={{ position: 'absolute', left: '10px', top: '14px', color: 'var(--text-muted)' }} />
-              <input
+        <div>
+          <div className="ui-toolbar">
+            <div className="ui-toolbar__grow">
+              <SearchInput
+                aria-label="Search movements"
                 placeholder="Search cylinder, location, staff…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                style={{ paddingLeft: '36px' }}
               />
             </div>
-            <select
+            <Select
+              aria-label="Movement type"
               value={historyFilter}
               onChange={(e) => setHistoryFilter(e.target.value as any)}
-              style={{ width: '200px', padding: '10px', borderRadius: '6px', border: '1px solid var(--border)', background: 'var(--surface)', cursor: 'pointer' }}
             >
               <option value="all">All Movements</option>
               <option value="new_load">New Loads</option>
               <option value="refuel_sent">Refuel Sent</option>
               <option value="refuel_received">Refuel Received</option>
-            </select>
+            </Select>
           </div>
-          {historyStatus === 'loading' && <LoadingState label="Loading movements…" />}
-          {historyStatus === 'error' && <ErrorState message={historyError} onRetry={() => { setHistoryStatus('loading'); fetchHistory(); }} compact />}
-          {historyStatus === 'ready' && (
-          <div className="ledger-list">
-            {filtered.length === 0 && (
-              <p style={{ textAlign: 'center', padding: '24px' }}>No movements found.</p>
-            )}
-            {historyPager.pageItems.map((m) => (
-              <div className="ledger-row" key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                    <strong>{m.quantity} × {m.cylinder_type_name}</strong>
-                    
-                    {/* Beautiful Status Badge */}
-                    <span style={{ 
-                      padding: '2px 8px', 
-                      borderRadius: '12px', 
-                      fontSize: '0.7rem', 
-                      fontWeight: 600, 
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.5px',
-                      background: m.status === 'filled' ? 'var(--success-soft)' : 'var(--surface)',
-                      color: m.status === 'filled' ? 'var(--success)' : 'var(--text-muted)',
-                      border: `1px solid ${m.status === 'filled' ? 'var(--success)' : 'var(--border)'}`
-                    }}>
-                      {m.status}
-                    </span>
-                    
-                    {m.note === 'New supplier load' && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--success-soft)', color: 'var(--success)' }}>New Load</span>}
-                    {m.note.startsWith('Sent for refilling') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--warning-soft, #fff7ed)', color: 'var(--warning, #c2410c)', border: '1px solid var(--warning)' }}>🔥 Refuel Sent</span>}
-                    {m.note.startsWith('Received refilled cylinders') && <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--info-soft, #eff6ff)', color: 'var(--info, #1d4ed8)', border: '1px solid var(--info)' }}>🔥 Refuel Received</span>}
-                    
-                    {m.supplier_pending_after !== undefined && m.supplier_pending_after !== null && (
-                      <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
-                        <strong style={{ marginRight: '4px', color: m.supplier_pending_after > 0 ? 'var(--warning, #d97706)' : 'var(--success)' }}>{m.supplier_pending_after}</strong>owed
-                      </span>
-                    )}
-                  </div>
-                  <p style={{ marginTop: '8px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                    {m.from_location_name} → {m.to_location_name}
-                    {m.note ? ` · ${m.note}` : ''}
-                    {' · '}{new Date(m.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
-                  </p>
-                </div>
-                <span className="badge">{m.moved_by_name}</span>
-              </div>
-            ))}
-            <Pager page={historyPager.page} pageCount={historyPager.pageCount} onChange={historyPager.setPage} total={historyPager.total} />
-          </div>
+          <Card padding="none" className="ui-list">
+          {historyStatus === 'loading' && (
+            <div className="ui-card__skeleton"><SkeletonRows rows={6} columns={3} label="Loading movements…" /></div>
           )}
+          {historyStatus === 'error' && (
+            <div className="ui-card__skeleton stock-history__error">
+              <ErrorState message={historyError} onRetry={() => { setHistoryStatus('loading'); fetchHistory(); }} compact />
+            </div>
+          )}
+          {historyStatus === 'ready' && filtered.length === 0 && (
+            <EmptyState icon={<History size={24} />} title="No movements found." />
+          )}
+          {historyStatus === 'ready' && historyPager.pageItems.map((m) => (
+            <div className="ui-list-row" key={m.id}>
+              <div className="ui-list-row__main">
+                <div className="ui-list-row__title">
+                  <span className="ui-list-row__name">{m.quantity} × {m.cylinder_type_name}</span>
+                  <Badge size="sm" square variant={m.status === 'filled' ? 'soft' : 'outline'} tone={m.status === 'filled' ? 'success' : 'neutral'} className="stock-status">
+                    {m.status}
+                  </Badge>
+                  {m.note === 'New supplier load' && <Badge tone="success">New Load</Badge>}
+                  {m.note.startsWith('Sent for refilling') && <Badge tone="warning" icon={<ArrowUpRight />}>Refuel Sent</Badge>}
+                  {m.note.startsWith('Received refilled cylinders') && <Badge tone="info" icon={<ArrowDownLeft />}>Refuel Received</Badge>}
+                  {m.supplier_pending_after !== undefined && m.supplier_pending_after !== null && (
+                    <Badge variant="outline" tone={m.supplier_pending_after > 0 ? 'warning' : 'success'}>
+                      {m.supplier_pending_after} owed
+                    </Badge>
+                  )}
+                </div>
+                <div className="ui-list-row__meta">
+                  <span className="stock-route">
+                    {m.from_location_name} <ArrowRight size={12} aria-hidden="true" /> {m.to_location_name}
+                  </span>
+                  {m.note ? <span>{m.note}</span> : null}
+                  <span>{new Date(m.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+                </div>
+              </div>
+              <div className="ui-list-row__actions">
+                <Badge variant="outline" icon={<User />}>{m.moved_by_name}</Badge>
+              </div>
+            </div>
+          ))}
+          {historyStatus === 'ready' && historyPager.pageCount > 1 && (
+            <CardFooter>
+              <Pager page={historyPager.page} pageCount={historyPager.pageCount} onChange={historyPager.setPage} total={historyPager.total} />
+            </CardFooter>
+          )}
+          </Card>
         </div>
       )}
     </div>
+  );
+}
+
+/** Stock-available chip beside a quantity input (presentation only). */
+function StockAvailability({ error, available, warnWhenZero = false }: { error: boolean; available: number; warnWhenZero?: boolean }) {
+  if (error) {
+    return <Badge variant="outline" className="stock-avail" title="Stock levels unavailable">Stock unavailable</Badge>;
+  }
+  return (
+    <Badge
+      tone={available > 0 ? 'success' : 'danger'}
+      className="stock-avail"
+      icon={available > 0 || !warnWhenZero ? <Package /> : <AlertTriangle />}
+      title="Available"
+    >
+      {available}
+    </Badge>
   );
 }

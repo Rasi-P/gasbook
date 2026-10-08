@@ -1,0 +1,79 @@
+/* Reports page (pages/admin/Reports.tsx) */
+.rp-range {
+  display: grid;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.rp-range__row {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.rp-range__field {
+  flex: 1 1 160px;
+}
+
+.rp-range__go {
+  flex: 0 0 auto;
+  min-width: 72px;
+}
+
+.rp-range__error {
+  margin: 0;
+}
+
+.rp-section {
+  margin-bottom: var(--space-5);
+}
+
+.rp-stack {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.rp-stats {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: var(--space-5);
+}
+
+.rp-table {
+  min-width: 520px;
+}
+
+.rp-table--wide {
+  min-width: 780px;
+}
+
+.rp-avatar {
+  align-items: center;
+  background: var(--warning-tint);
+  border-radius: var(--radius-full);
+  color: var(--warning-text);
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  width: 36px;
+}
+
+@media (min-width: 480px) {
+  .rp-range__go {
+    align-self: flex-end;
+  }
+}
+
+@media (max-width: 479px) {
+  .rp-range__go {
+    flex: 1 1 100%;
+  }
+}
+
+@media (min-width: 680px) {
+  .rp-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

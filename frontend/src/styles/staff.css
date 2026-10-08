@@ -1,0 +1,60 @@
+/* Staff & Users page (pages/admin/Staff.tsx) */
+.staff-add {
+  margin-bottom: var(--space-4);
+}
+
+.staff-avatar {
+  align-items: center;
+  background: var(--primary-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--primary);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  height: 40px;
+  justify-content: center;
+  object-fit: cover;
+  width: 40px;
+}
+
+.staff-avatar--lg {
+  height: 56px;
+  width: 56px;
+}
+
+.staff-role {
+  letter-spacing: 0.04em;
+}
+
+.staff-image-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.staff-check {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.staff-check input {
+  accent-color: var(--primary);
+  height: 16px;
+  min-height: 0;
+  width: 16px;
+}
+
+.staff-check span {
+  font-weight: var(--weight-regular);
+}
+
+/* Avatar keeps its column on phones; actions drop under the name */
+@media (max-width: 679px) {
+  .staff-actions {
+    padding-left: 56px;
+  }
+}

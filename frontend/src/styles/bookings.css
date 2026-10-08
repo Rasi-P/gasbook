@@ -1,0 +1,84 @@
+/* Bookings page (pages/admin/AdminBookings.tsx) */
+/* Fits the narrowest content area from 680px up (tablet and sidebar layouts) without scrolling. */
+.bookings-table {
+  min-width: 680px;
+}
+
+.bookings-table .bk-col-customer { width: 26%; }
+.bookings-table .bk-col-cylinder { width: 20%; }
+.bookings-table .bk-col-status { width: 24%; }
+.bookings-table .bk-col-staff { width: 18%; }
+.bookings-table .bk-col-actions { width: 12%; }
+
+.bookings-table td {
+  vertical-align: top;
+}
+
+.bk-name {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.bk-price {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  gap: 2px 8px;
+  margin-top: 2px;
+}
+
+.bk-price s {
+  color: var(--text-placeholder);
+}
+
+.bk-price strong {
+  color: var(--success-text);
+}
+
+.bk-note {
+  overflow-wrap: anywhere;
+}
+
+.bk-status {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bk-reason {
+  color: var(--danger-text);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.bk-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+/* Phones: each booking becomes a card; labels sit above values so long text uses the full width. */
+@media (max-width: 679px) {
+  .bookings-table {
+    min-width: 0;
+  }
+
+  .bookings-table.ui-table--cards td {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+    text-align: left;
+  }
+
+  .bookings-table.ui-table--cards td:first-child {
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+    padding-bottom: 10px;
+  }
+
+  .bookings-table .bk-actions {
+    justify-content: flex-start;
+  }
+}
