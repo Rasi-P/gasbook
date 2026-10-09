@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -21,7 +22,9 @@ from .models import (
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
 from .exceptions import ApiError
+from .pagination import StandardPagination
 from .services import (
+    OPEN_DELIVERY_STATUSES,
     admin_users,
     clean_reason,
     deactivate_customer,
@@ -53,6 +56,7 @@ from .serializers import (
     StockLocationSerializer,
     StockMovementSerializer,
     StockSerializer,
+    StaffDeliveryHistorySerializer,
     StaffProfileSerializer,
     UserSerializer,
     get_booking_pricing_snapshot,
@@ -1532,6 +1536,90 @@ def user_reactivate(request, pk):
         "detail": "User reactivated.",
         "mode": "reactivated",
         "user": {**UserSerializer(user).data, "staff_image_url": get_staff_image_url(request, user)},
+    })
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def user_deliveries(request, pk):
+    """Delivery history of one staff member, read from ``Delivery.staff``.
+
+    Query params: ``status`` (comma-separated delivery statuses), ``start`` / ``end``
+    (booking date, YYYY-MM-DD), ``search`` (order id or customer name/phone), ``page``,
+    ``page_size``. ``summary`` covers the date range only, not ``status`` / ``search``.
+
+    A booking has a single Delivery row that moves to the new staff on re-assignment,
+    so an order this staff declined and that was later re-assigned is not listed here.
+    """
+    user, error = _admin_user_or_response(request, pk)
+    if error is not None:
+        return error
+
+    start_str = (request.query_params.get("start") or "").strip()
+    end_str = (request.query_params.get("end") or "").strip()
+    try:
+        start = date.fromisoformat(start_str) if start_str else None
+        end = date.fromisoformat(end_str) if end_str else None
+    except ValueError:
+        return Response(
+            {"detail": "Invalid date. Use YYYY-MM-DD.", "code": "invalid_date"},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+    if start and end and start > end:
+        return Response(
+            {"detail": "Start date must be on or before end date.", "code": "invalid_range", "start": start_str, "end": end_str},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+
+    deliveries = Delivery.objects.filter(staff=user)
+    if start:
+        deliveries = deliveries.filter(booking__created_at__date__gte=start)
+    if end:
+        deliveries = deliveries.filter(booking__created_at__date__lte=end)
+
+    summary = deliveries.aggregate(
+        total=Count("id"),
+        delivered=Count("id", filter=Q(status=Delivery.Status.DELIVERED)),
+        active=Count("id", filter=Q(status__in=OPEN_DELIVERY_STATUSES)),
+        cancelled=Count("id", filter=Q(status=Delivery.Status.CANCELLED)),
+        declined=Count("id", filter=Q(status=Delivery.Status.REJECTED)),
+        collected=Sum("payment_collected", filter=Q(status=Delivery.Status.DELIVERED)),
+    )
+    summary["collected"] = serialize_decimal(summary["collected"] or 0)
+
+    statuses = [s.strip() for s in (request.query_params.get("status") or "").split(",") if s.strip()]
+    if statuses:
+        deliveries = deliveries.filter(status__in=statuses)
+    term = (request.query_params.get("search") or "").strip()
+    if term:
+        query = user_search_q(term, prefix="booking__customer__user__")
+        order_match = re.fullmatch(r"#?(?:GB)?(\d+)", term, re.IGNORECASE)
+        if order_match:
+            query |= Q(booking_id=int(order_match.group(1)))
+        deliveries = deliveries.filter(query)
+
+    deliveries = deliveries.select_related(
+        "booking__customer__user", "booking__cylinder_type", "booking__sale"
+    ).prefetch_related(
+        "booking__customer__custom_rates",
+        "booking__customer__cylinder_discounts__cylinder_type",
+    ).order_by("-booking__created_at", "-id")
+
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(deliveries, request)
+    data = StaffDeliveryHistorySerializer(page, many=True).data
+    staff_profile = getattr(user, "staff_profile", None)
+    vehicle_location = staff_profile.vehicle_location if staff_profile else None
+    return Response({
+        **paginator.get_paginated_response(data).data,
+        "summary": summary,
+        "staff": {
+            **UserSerializer(user).data,
+            "staff_image_url": get_staff_image_url(request, user),
+            "assigned_area": staff_profile.assigned_area if staff_profile else "",
+            "vehicle_number": staff_profile.vehicle_number if staff_profile else "",
+            "vehicle_location_name": vehicle_location.name if vehicle_location else None,
+        },
     })
 
 

@@ -901,3 +901,56 @@ class DeliverySerializer(serializers.ModelSerializer):
         sales_due = sum(sale.balance_due for sale in customer.sales.all())
         payments = sum(p.amount for p in customer.payments.filter(sale__isnull=True))
         return str(customer.opening_balance + sales_due - payments)
+
+
+class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
+    """Read-only row of the admin staff delivery history: one Delivery and its Booking."""
+
+    order_id = serializers.CharField(source="booking.order_id", read_only=True)
+    booking_status = serializers.CharField(source="booking.status", read_only=True)
+    booked_at = serializers.DateTimeField(source="booking.created_at", read_only=True)
+    customer_name = serializers.SerializerMethodField()
+    customer_phone = serializers.CharField(source="booking.customer.user.phone", read_only=True)
+    customer_area = serializers.CharField(source="booking.customer.area", read_only=True)
+    cylinder_type_name = serializers.CharField(source="booking.cylinder_type.name", read_only=True)
+    quantity = serializers.IntegerField(source="booking.quantity", read_only=True)
+    booking_payment_method = serializers.CharField(source="booking.payment_method", read_only=True)
+    booking_payment_status = serializers.CharField(source="booking.payment_status", read_only=True)
+    booking_rejection_reason = serializers.CharField(source="booking.rejection_reason", read_only=True)
+    original_amount = serializers.SerializerMethodField()
+    discount_amount = serializers.SerializerMethodField()
+    final_amount = serializers.SerializerMethodField()
+    balance_due = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Delivery
+        fields = [
+            "id", "booking", "order_id", "status", "booking_status", "booked_at",
+            "started_at", "completed_at",
+            "customer_name", "customer_phone", "customer_area",
+            "cylinder_type_name", "quantity",
+            "original_amount", "discount_amount", "final_amount",
+            "booking_payment_method", "booking_payment_status",
+            "payment_method", "payment_collected", "balance_due", "empty_collected",
+            "rejection_reason", "booking_rejection_reason", "note",
+        ]
+        read_only_fields = fields
+
+    def _get_pricing(self, obj):
+        return get_booking_pricing_snapshot(obj.booking)
+
+    def get_customer_name(self, obj):
+        return display_name(obj.booking.customer.user)
+
+    def get_original_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["original_amount"])
+
+    def get_discount_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["discount_amount"])
+
+    def get_final_amount(self, obj):
+        return serialize_decimal(self._get_pricing(obj)["final_amount"])
+
+    def get_balance_due(self, obj):
+        sale = obj.booking.sale
+        return serialize_decimal(sale.balance_due) if sale else None

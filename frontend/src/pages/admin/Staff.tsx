@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck, Users } from 'lucide-react';
+import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck, Users, ChevronRight } from 'lucide-react';
 import { api, extractApiError, getApiErrorCode, getApiStatus, LIMITS } from '../../lib/api';
 import { ErrorState } from '../../components/AsyncState';
 import { Alert } from '../../components/ui/Alert';
@@ -11,6 +11,7 @@ import { Field, Input, Select } from '../../components/ui/Field';
 import { IconButton } from '../../components/ui/IconButton';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { SkeletonRows } from '../../components/ui/Skeleton';
+import StaffHistory from './StaffHistory';
 
 type StaffUser = {
   id: number;
@@ -70,6 +71,7 @@ export default function Staff() {
   const [loadError, setLoadError] = useState('');
   const [rolesError, setRolesError] = useState('');
   const [rowNotice, setRowNotice] = useState<RowNotice | null>(null);
+  const [historyUser, setHistoryUser] = useState<StaffUser | null>(null);
 
   function load() {
     return Promise.allSettled([
@@ -273,6 +275,17 @@ export default function Staff() {
     }
   }
 
+  function openHistory(user: StaffUser) {
+    setEditingId(null);
+    setCredUserId(null);
+    setCredMsg('');
+    setHistoryUser(user);
+  }
+
+  if (historyUser) {
+    return <StaffHistory staff={historyUser} onBack={() => setHistoryUser(null)} />;
+  }
+
   return (
     <div>
       <PageHeader
@@ -453,6 +466,13 @@ export default function Staff() {
                   >
                     <Trash2 size={16} />
                   </IconButton>
+                  {u.role === 'staff' ? (
+                    <IconButton label="Delivery History" variant="outline" onClick={() => openHistory(u)}>
+                      <ChevronRight size={18} />
+                    </IconButton>
+                  ) : (
+                    <span className="staff-actions__spacer" aria-hidden="true" />
+                  )}
                 </div>
               </div>
 
