@@ -958,3 +958,45 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
     def get_balance_due(self, obj):
         sale = obj.booking.sale
         return serialize_decimal(sale.balance_due) if sale else None
+
+
+class StaffHandoverBookingSerializer(serializers.ModelSerializer):
+    """Booking-level part of a handed-over row in a staff history (same keys as
+    ``StaffDeliveryHistorySerializer``). Deliberately a whitelist: the Delivery now belongs
+    to another staff member, so its timestamps, collection, empties and the resulting
+    payment status are theirs and must not appear here."""
+
+    booking = serializers.IntegerField(source="pk", read_only=True)
+    order_id = serializers.CharField(read_only=True)
+    booking_status = serializers.CharField(source="status", read_only=True)
+    booked_at = serializers.DateTimeField(source="created_at", read_only=True)
+    customer_name = serializers.SerializerMethodField()
+    customer_phone = serializers.CharField(source="customer.user.phone", read_only=True)
+    customer_area = serializers.CharField(source="customer.area", read_only=True)
+    cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
+    booking_payment_method = serializers.CharField(source="payment_method", read_only=True)
+    original_amount = serializers.SerializerMethodField()
+    discount_amount = serializers.SerializerMethodField()
+    final_amount = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Booking
+        fields = [
+            "booking", "order_id", "booking_status", "booked_at",
+            "customer_name", "customer_phone", "customer_area",
+            "cylinder_type_name", "quantity",
+            "original_amount", "discount_amount", "final_amount", "booking_payment_method",
+        ]
+        read_only_fields = fields
+
+    def get_customer_name(self, obj):
+        return display_name(obj.customer.user)
+
+    def get_original_amount(self, obj):
+        return serialize_decimal(get_booking_pricing_snapshot(obj)["original_amount"])
+
+    def get_discount_amount(self, obj):
+        return serialize_decimal(get_booking_pricing_snapshot(obj)["discount_amount"])
+
+    def get_final_amount(self, obj):
+        return serialize_decimal(get_booking_pricing_snapshot(obj)["final_amount"])

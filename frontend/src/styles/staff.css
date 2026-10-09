@@ -178,15 +178,30 @@
   color: var(--danger-text);
 }
 
+/* Handed-over bookings read as past involvement, not current work */
+.sh-table tbody tr.sh-row--previous td {
+  background: var(--surface-muted);
+}
+
+.sh-table tbody tr.sh-row--previous td:first-child {
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
+
 @media (min-width: 480px) {
   .sh-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
+@media (min-width: 480px) and (max-width: 1279px) {
+  .sh-stats > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (min-width: 1280px) {
   .sh-stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 
@@ -211,6 +226,17 @@
     border-bottom: 1px solid var(--border);
     margin-bottom: 4px;
     padding-bottom: 10px;
+  }
+
+  .sh-table.ui-table--cards tr.sh-row--previous {
+    background: var(--surface-muted);
+    border-style: dashed;
+  }
+
+  .sh-table.ui-table--cards tr.sh-row--previous td,
+  .sh-table.ui-table--cards tr.sh-row--previous td:first-child {
+    background: transparent;
+    box-shadow: none;
   }
 
   .sh-filters__clear {

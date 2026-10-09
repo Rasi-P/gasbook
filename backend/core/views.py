@@ -12,6 +12,7 @@ from django.utils import timezone
 from rest_framework import permissions, viewsets, filters, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.fields import DateTimeField
 from rest_framework.response import Response
 from rest_framework import status as drf_status
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -26,6 +27,7 @@ from .pagination import StandardPagination
 from .services import (
     OPEN_DELIVERY_STATUSES,
     admin_users,
+    assignment_logging_started_at,
     clean_reason,
     deactivate_customer,
     deactivate_user,
@@ -39,6 +41,8 @@ from .services import (
     parse_non_negative_int,
     reactivate_customer,
     reactivate_user,
+    staff_assignment_details,
+    staff_handovers,
     user_search_q,
 )
 from .serializers import (
@@ -57,6 +61,7 @@ from .serializers import (
     StockMovementSerializer,
     StockSerializer,
     StaffDeliveryHistorySerializer,
+    StaffHandoverBookingSerializer,
     StaffProfileSerializer,
     UserSerializer,
     get_booking_pricing_snapshot,
@@ -1550,17 +1555,63 @@ def user_reactivate(request, pk):
     })
 
 
+# Row status (and ``status`` filter value) of a booking the staff member handed over.
+HANDED_OVER_STATUS = "reassigned"
+
+
+def build_staff_history_row(booking, staff, detail, names):
+    """One row of a staff history: the booking's Delivery when it is ``staff``'s
+    (``involvement: current``), else the handover read from the ActivityLog
+    (``involvement: previous``) with booking-level data only."""
+    to_datetime = DateTimeField().to_representation
+    try:
+        delivery = booking.delivery
+    except Delivery.DoesNotExist:
+        delivery = None
+
+    if delivery is not None and delivery.staff_id == staff.id:
+        from_id = detail.get("reassigned_from_id")
+        decline = detail.get("previous_decline")
+        return {
+            **StaffDeliveryHistorySerializer(delivery).data,
+            "involvement": "current",
+            "handover": None,
+            "reassigned_from": {"staff_id": from_id, "staff_name": names.get(from_id)} if from_id else None,
+            "previous_decline": (
+                {"reason": decline["reason"], "declined_at": to_datetime(decline["declined_at"])} if decline else None
+            ),
+        }
+
+    handover = detail["handover"]
+    return {
+        **{field: None for field in StaffDeliveryHistorySerializer.Meta.fields},
+        **StaffHandoverBookingSerializer(booking).data,
+        "status": HANDED_OVER_STATUS,
+        "involvement": "previous",
+        "handover": {
+            **handover,
+            "handed_over_at": to_datetime(handover["handed_over_at"]),
+            "to_staff_name": names.get(handover["to_staff_id"]),
+        },
+        "reassigned_from": None,
+        "previous_decline": None,
+    }
+
+
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def user_deliveries(request, pk):
-    """Delivery history of one staff member, read from ``Delivery.staff``.
+    """Delivery history of one staff member: one row per booking.
 
-    Query params: ``status`` (comma-separated delivery statuses), ``start`` / ``end``
-    (booking date, YYYY-MM-DD), ``search`` (order id or customer name/phone), ``page``,
-    ``page_size``. ``summary`` covers the date range only, not ``status`` / ``search``.
+    ``involvement: current`` rows are the bookings whose Delivery is theirs now
+    (``Delivery.staff``). ``involvement: previous`` rows are bookings they handed over —
+    declined, or re-assigned by an admin — read from the ActivityLog, which only exists
+    from ``history_since``; earlier handovers are not recoverable and not listed.
 
-    A booking has a single Delivery row that moves to the new staff on re-assignment,
-    so an order this staff declined and that was later re-assigned is not listed here.
+    Query params: ``status`` (comma-separated delivery statuses, plus ``reassigned`` for
+    handed-over rows), ``start`` / ``end`` (booking date, YYYY-MM-DD), ``search`` (order id
+    or customer name/phone), ``page``, ``page_size``. ``summary`` covers the date range
+    only, not ``status`` / ``search``; its delivery counts are current rows only.
     """
     user, error = _admin_user_or_response(request, pk)
     if error is not None:
@@ -1598,32 +1649,50 @@ def user_deliveries(request, pk):
     )
     summary["collected"] = serialize_decimal(summary["collected"] or 0)
 
+    handovers = staff_handovers(user)
+    bookings = Booking.objects.all()
+    if start:
+        bookings = bookings.filter(created_at__date__gte=start)
+    if end:
+        bookings = bookings.filter(created_at__date__lte=end)
+    summary["reassigned"] = bookings.filter(pk__in=list(handovers)).count()
+
     statuses = [s.strip() for s in (request.query_params.get("status") or "").split(",") if s.strip()]
+    scope = Q(delivery__staff=user)
     if statuses:
-        deliveries = deliveries.filter(status__in=statuses)
+        scope &= Q(delivery__status__in=[s for s in statuses if s != HANDED_OVER_STATUS])
+    if handovers and (not statuses or HANDED_OVER_STATUS in statuses):
+        scope |= Q(pk__in=list(handovers))
+    bookings = bookings.filter(scope)
     term = (request.query_params.get("search") or "").strip()
     if term:
-        query = user_search_q(term, prefix="booking__customer__user__")
+        query = user_search_q(term, prefix="customer__user__")
         order_match = re.fullmatch(r"#?(?:GB)?(\d+)", term, re.IGNORECASE)
         if order_match:
-            query |= Q(booking_id=int(order_match.group(1)))
-        deliveries = deliveries.filter(query)
+            query |= Q(pk=int(order_match.group(1)))
+        bookings = bookings.filter(query)
 
-    deliveries = deliveries.select_related(
-        "booking__customer__user", "booking__cylinder_type", "booking__sale"
+    bookings = bookings.select_related(
+        "customer__user", "cylinder_type", "sale", "delivery"
     ).prefetch_related(
-        "booking__customer__custom_rates",
-        "booking__customer__cylinder_discounts__cylinder_type",
-    ).order_by("-booking__created_at", "-id")
+        "customer__custom_rates",
+        "customer__cylinder_discounts__cylinder_type",
+    ).order_by("-created_at", "-id")
 
     paginator = StandardPagination()
-    page = paginator.paginate_queryset(deliveries, request)
-    data = StaffDeliveryHistorySerializer(page, many=True).data
+    page = paginator.paginate_queryset(bookings, request)
+    details = staff_assignment_details(user, [booking.pk for booking in page], handovers)
+    staff_ids = {d["handover"]["to_staff_id"] for d in details.values() if "handover" in d}
+    staff_ids |= {d["reassigned_from_id"] for d in details.values() if d.get("reassigned_from_id")}
+    names = {u.id: display_name(u) for u in User.objects.filter(pk__in=[i for i in staff_ids if i is not None])}
+    data = [build_staff_history_row(booking, user, details.get(booking.pk, {}), names) for booking in page]
+    logging_since = assignment_logging_started_at()
     staff_profile = getattr(user, "staff_profile", None)
     vehicle_location = staff_profile.vehicle_location if staff_profile else None
     return Response({
         **paginator.get_paginated_response(data).data,
         "summary": summary,
+        "history_since": DateTimeField().to_representation(logging_since) if logging_since else None,
         "staff": {
             **UserSerializer(user).data,
             "staff_image_url": get_staff_image_url(request, user),

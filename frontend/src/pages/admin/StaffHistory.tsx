@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, AtSign, Ban, Car, CircleCheck, ClipboardList, FilterX, Mail, MapPin, Phone, Truck } from 'lucide-react';
+import { ArrowLeft, ArrowRightLeft, AtSign, Ban, Car, CircleCheck, ClipboardList, FilterX, Mail, MapPin, Phone, Truck } from 'lucide-react';
 import { api, extractApiError, type Paginated } from '../../lib/api';
 import { ErrorState } from '../../components/AsyncState';
 import { Pager } from '../../components/Pager';
@@ -38,16 +38,12 @@ type StaffInfo = HistoryStaff & {
   vehicle_location_name?: string | null;
 };
 
-/** One row of GET /auth/users/{id}/deliveries/ (a Delivery and its Booking). */
-type StaffDelivery = {
-  id: number;
+/** Booking facts shared by both kinds of row of GET /auth/users/{id}/deliveries/. */
+type BookingFields = {
   booking: number;
   order_id: string;
-  status: string;
   booking_status: string;
   booked_at: string;
-  started_at: string | null;
-  completed_at: string | null;
   customer_name: string;
   customer_phone: string;
   customer_area: string;
@@ -57,6 +53,15 @@ type StaffDelivery = {
   discount_amount: string;
   final_amount: string;
   booking_payment_method: string;
+};
+
+/** The booking's Delivery is this staff member's now. */
+type CurrentRow = BookingFields & {
+  involvement: 'current';
+  id: number;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
   booking_payment_status: string;
   payment_method: string;
   payment_collected: string;
@@ -65,13 +70,39 @@ type StaffDelivery = {
   rejection_reason: string;
   booking_rejection_reason: string | null;
   note: string;
+  reassigned_from: { staff_id: number; staff_name: string | null } | null;
+  previous_decline: { reason: string | null; declined_at: string } | null;
 };
 
-type Summary = { total: number; delivered: number; active: number; cancelled: number; declined: number; collected: string };
+/** A booking this staff member handed over (from the activity log); its delivery fields are null. */
+type PreviousRow = BookingFields & {
+  involvement: 'previous';
+  status: 'reassigned';
+  handover: {
+    outcome: 'declined' | 'reassigned';
+    previous_status: string | null;
+    reason: string | null;
+    handed_over_at: string;
+    to_staff_id: number | null;
+    to_staff_name: string | null;
+  };
+};
 
-type HistoryResponse = Paginated<StaffDelivery> & { summary: Summary; staff: StaffInfo };
+type StaffDelivery = CurrentRow | PreviousRow;
 
-type StatusFilter = 'all' | 'active' | 'delivered' | 'cancelled' | 'declined';
+type Summary = {
+  total: number;
+  delivered: number;
+  active: number;
+  cancelled: number;
+  declined: number;
+  collected: string;
+  reassigned: number;
+};
+
+type HistoryResponse = Paginated<StaffDelivery> & { summary: Summary; history_since: string | null; staff: StaffInfo };
+
+type StatusFilter = 'all' | 'active' | 'delivered' | 'cancelled' | 'declined' | 'reassigned';
 
 const STATUS_FILTERS: { value: StatusFilter; label: string; statuses: string }[] = [
   { value: 'all', label: 'All', statuses: '' },
@@ -79,6 +110,7 @@ const STATUS_FILTERS: { value: StatusFilter; label: string; statuses: string }[]
   { value: 'delivered', label: 'Delivered', statuses: 'delivered' },
   { value: 'cancelled', label: 'Cancelled', statuses: 'cancelled' },
   { value: 'declined', label: 'Declined', statuses: 'rejected' },
+  { value: 'reassigned', label: 'Reassigned', statuses: 'reassigned' },
 ];
 
 const STATUS_LABELS: Record<string, string> = {
@@ -114,6 +146,15 @@ function fmtDateTime(iso: string) {
   return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
+function fmtDay(iso: string) {
+  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function sentenceCase(status: string) {
+  const text = status.replaceAll('_', ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 /** Delivery statuses reuse the booking tones; a staff decline is a warning, as on Booking Control. */
 function statusTone(status: string): BadgeTone {
   return status === 'rejected' ? 'warning' : bookingStatusTone(status);
@@ -123,6 +164,49 @@ function paymentTone(status: string): BadgeTone {
   if (status === 'PAID') return 'success';
   if (status === 'COLLECTED') return 'info';
   return 'warning';
+}
+
+/** A booking this staff member handed over: booking facts and the handover only — the delivery
+ *  times, collection and empties belong to whoever holds the booking now. */
+function HandoverRow({ row }: { row: PreviousRow }) {
+  const { handover } = row;
+  const recipient = handover.to_staff_name ?? 'another staff member';
+  const reassignedWhile = handover.previous_status === 'accepted'
+    ? 'after acceptance'
+    : handover.previous_status === 'assigned' ? 'before acceptance' : '';
+  return (
+    <tr className="sh-row--previous">
+      <Td label="Order">
+        <strong>{row.order_id}</strong>
+        <span className="ui-cell-sub">Booked {fmtDateTime(row.booked_at)}</span>
+      </Td>
+      <Td label="Customer">
+        <strong className="sh-cell-name">{row.customer_name}</strong>
+        {(row.customer_phone || row.customer_area) && (
+          <span className="ui-cell-sub">{[row.customer_phone, row.customer_area].filter(Boolean).join(' · ')}</span>
+        )}
+      </Td>
+      <Td label="Cylinder">{row.quantity} × {row.cylinder_type_name}</Td>
+      <Td label="Amount" numeric>
+        <strong>{money(row.final_amount)}</strong>
+        {Number(row.discount_amount) > 0 && <span className="ui-cell-sub"><s>{money(row.original_amount)}</s></span>}
+      </Td>
+      <Td label="Payment">—</Td>
+      <Td label="Status">
+        <div className="sh-stack">
+          <Badge variant="outline" icon={<ArrowRightLeft />}>Reassigned</Badge>
+          {handover.outcome === 'declined' ? (
+            <span className="sh-reason">Declined{handover.reason ? `: ${handover.reason}` : ''}</span>
+          ) : (
+            <span className="ui-cell-sub">Reassigned by admin{reassignedWhile ? ` ${reassignedWhile}` : ''}</span>
+          )}
+          <span className="ui-cell-sub">To {recipient} · {fmtDateTime(handover.handed_over_at)}</span>
+          <span className="ui-cell-sub">Order now: {sentenceCase(row.booking_status)}</span>
+        </div>
+      </Td>
+      <Td label="Delivered">—</Td>
+    </tr>
+  );
 }
 
 export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; onBack: () => void }) {
@@ -188,6 +272,7 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
   const count = data?.count ?? 0;
   const pageCount = Math.max(1, Math.ceil(count / DEFAULT_PAGE_SIZE));
   const failed = !loading && Boolean(error);
+  const historySince = data?.history_since ?? null;
   const rangeHint = start && end
     ? `Booked ${fmtDate(start)} – ${fmtDate(end)}`
     : start ? `Booked since ${fmtDate(start)}` : end ? `Booked until ${fmtDate(end)}` : 'All time';
@@ -247,7 +332,7 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
       />
 
       {!summary && loading && (
-        <div className="sh-stats-skeleton"><SkeletonStatGrid count={4} label="Loading summary" /></div>
+        <div className="sh-stats-skeleton"><SkeletonStatGrid count={5} label="Loading summary" /></div>
       )}
       {summary && (
         <section className="sh-stats" aria-label="Delivery summary">
@@ -264,6 +349,12 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
             value={summary.cancelled + summary.declined}
             icon={<Ban />}
             hint={`${summary.cancelled} cancelled · ${summary.declined} declined`}
+          />
+          <StatCard
+            label="Reassigned"
+            value={summary.reassigned}
+            icon={<ArrowRightLeft />}
+            hint={historySince ? `Handed over · recorded since ${fmtDay(historySince)}` : 'No handovers recorded yet'}
           />
         </section>
       )}
@@ -319,7 +410,9 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
       <Card padding="none">
         <CardHeader
           title="Delivery History"
-          description="Every order assigned to this staff member. An order that is later reassigned moves to the new staff member."
+          description={historySince
+            ? `Orders assigned to this staff member now, plus orders they handed over to someone else. Handovers are only recorded from ${fmtDateTime(historySince)}; earlier handovers are not shown.`
+            : 'Orders assigned to this staff member now. No handovers have been recorded yet; earlier handovers are not shown.'}
           meta={data && !loading && !failed ? <Badge>{count} {count === 1 ? 'delivery' : 'deliveries'}</Badge> : undefined}
         />
         {loading && (
@@ -335,6 +428,9 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
             <EmptyState
               icon={<ClipboardList size={24} />}
               title="No deliveries match these filters."
+              hint={statusFilter === 'reassigned'
+                ? (historySince ? `Handovers before ${fmtDateTime(historySince)} were not recorded.` : 'No handovers have been recorded yet.')
+                : undefined}
               action={<Button type="button" variant="secondary" size="sm" icon={<FilterX />} onClick={clearFilters}>Clear filters</Button>}
             />
           ) : (
@@ -361,13 +457,17 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
               </thead>
               <tbody>
                 {data.results.map((row) => {
+                  if (row.involvement === 'previous') return <HandoverRow key={row.booking} row={row} />;
                   const discounted = Number(row.discount_amount) > 0;
                   const due = row.balance_due !== null && Number(row.balance_due) > 0;
                   return (
-                    <tr key={row.id}>
+                    <tr key={row.booking}>
                       <Td label="Order">
                         <strong>{row.order_id}</strong>
                         <span className="ui-cell-sub">Booked {fmtDateTime(row.booked_at)}</span>
+                        {row.reassigned_from && (
+                          <span className="ui-cell-sub">Reassigned from {row.reassigned_from.staff_name ?? 'another staff member'}</span>
+                        )}
                       </Td>
                       <Td label="Customer">
                         <strong className="sh-cell-name">{row.customer_name}</strong>
@@ -409,6 +509,11 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
                           {row.booking_status === 'rejected' && (
                             <span className="sh-reason">
                               Order rejected{row.booking_rejection_reason ? `: ${row.booking_rejection_reason}` : ''}
+                            </span>
+                          )}
+                          {row.previous_decline && (
+                            <span className="ui-cell-sub">
+                              Declined earlier{row.previous_decline.reason ? `: ${row.previous_decline.reason}` : ''} · {fmtDateTime(row.previous_decline.declined_at)}
                             </span>
                           )}
                         </div>
