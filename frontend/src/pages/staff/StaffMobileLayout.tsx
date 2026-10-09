@@ -1,10 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Banknote,
   Bell,
   CalendarDays,
   CheckCircle2,
+  CircleSlash,
+  ClipboardList,
+  Clock,
+  Cylinder,
   MapPin,
   Mail,
   Navigation,
@@ -33,6 +37,7 @@ import { IconButton } from '../../components/ui/IconButton';
 import { Modal } from '../../components/ui/Modal';
 import { SectionHeader } from '../../components/ui/SectionHeader';
 import { Tabs } from '../../components/ui/Tabs';
+import { cx } from '../../components/ui/cx';
 
 type Delivery = {
   id: number;
@@ -141,6 +146,64 @@ function statusTone(status: string): BadgeTone {
   return STATUS_TONE[status] || 'neutral';
 }
 
+// Delivery.Status values (backend core.models.Delivery).
+const OPEN_STATUSES = ['assigned', 'accepted', 'out_for_delivery'];
+const ACTIVE_STATUSES = ['accepted', 'out_for_delivery'];
+
+// Same wording as the backend's Delivery.Status choice labels.
+const STATUS_LABEL: Record<string, string> = {
+  assigned: 'Assigned',
+  accepted: 'Accepted',
+  out_for_delivery: 'Out for Delivery',
+  delivered: 'Delivered',
+  cancelled: 'Cancelled',
+};
+
+const STATUS_ICON: Record<string, ReactNode> = {
+  assigned: <Clock size={12} />,
+  accepted: <Check size={12} />,
+  out_for_delivery: <Truck size={12} />,
+  delivered: <CheckCircle2 size={12} />,
+  cancelled: <CircleSlash size={12} />,
+};
+
+// Pending list order: orders already on the road first, then accepted, then new assignments.
+// Array.sort is stable, so the API order is kept within each status.
+const STATUS_PRIORITY: Record<string, number> = { out_for_delivery: 0, accepted: 1, assigned: 2 };
+
+function byStatusPriority(a: Delivery, b: Delivery) {
+  return (STATUS_PRIORITY[a.status] ?? 9) - (STATUS_PRIORITY[b.status] ?? 9);
+}
+
+// Same rule as the original "All" filter: every delivery except ones this staff member declined.
+// Cancelled deliveries (booking rejected by admin) stay visible there, without actions.
+function isListed(delivery: Delivery) {
+  return delivery.status !== 'rejected';
+}
+
+function isPaidOnline(delivery: Delivery) {
+  return delivery.booking_payment_method === 'ONLINE' || delivery.booking_payment_status === 'PAID';
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return (
+    <Badge tone={statusTone(status)} icon={STATUS_ICON[status]}>
+      {STATUS_LABEL[status] || status.replaceAll('_', ' ')}
+    </Badge>
+  );
+}
+
+function PaymentBadge({ delivery }: { delivery: Delivery }) {
+  const online = isPaidOnline(delivery);
+  return (
+    <Badge tone={online ? 'success' : 'warning'} icon={online ? <Check size={12} /> : <Banknote size={12} />}>
+      {online ? 'Paid Online' : 'COD'}
+    </Badge>
+  );
+}
+
+type DeliveryFilter = 'pending' | 'assigned' | 'active' | 'completed' | 'all';
+
 function formatJoinDate(value?: string) {
   if (!value) return 'Not available';
   const date = new Date(value);
@@ -150,8 +213,10 @@ function formatJoinDate(value?: string) {
 
 export default function StaffMobileLayout() {
   const [activeTab, setActiveTab] = useState<'home' | 'deliveries' | 'history' | 'profile'>('home');
-  const [filterTab, setFilterTab] = useState<'all' | 'assigned' | 'active' | 'completed'>('all');
-  
+  const [filterTab, setFilterTab] = useState<DeliveryFilter>('pending');
+  // Order open in the detail view. Viewing is local UI state only; it never calls the API.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -217,6 +282,8 @@ export default function StaffMobileLayout() {
         setUserName(meRes.data.name || localStorage.getItem('gasbook_name') || 'Staff Partner');
         setVehicleLocation(meRes.data.vehicle_location_name || '');
         setDeliveries(rows);
+        // Close the detail view if its order was declined or reassigned meanwhile.
+        setSelectedId((current) => (current !== null && rows.some((d) => d.id === current && isListed(d)) ? current : null));
         if (notif.rows) {
           setNotifications(notif.rows);
           setNotifError('');
@@ -350,14 +417,28 @@ export default function StaffMobileLayout() {
   }
 
   // Filtered Delivery Lists
+  const pendingOrders = deliveries.filter((d) => OPEN_STATUSES.includes(d.status)).sort(byStatusPriority);
   const pendingAssignments = deliveries.filter((d) => d.status === 'assigned');
-  const activeDelivery = deliveries.find((d) => d.status === 'accepted' || d.status === 'out_for_delivery');
+  // Several deliveries can be active at once; the one already on the road is shown as current.
+  const activeDeliveries = pendingOrders.filter((d) => ACTIVE_STATUSES.includes(d.status));
+  const activeDelivery = activeDeliveries[0];
   const completedDeliveries = deliveries.filter((d) => d.status === 'delivered');
   const recentCompleted = completedDeliveries.length > 0 ? completedDeliveries[0] : null;
 
+  const pendingCount = pendingOrders.length;
   const assignedCount = pendingAssignments.length;
-  const activeCount = deliveries.filter((d) => d.status === 'accepted' || d.status === 'out_for_delivery').length;
+  const activeCount = activeDeliveries.length;
   const completedCount = completedDeliveries.length;
+  const allDeliveries = deliveries.filter(isListed);
+
+  const filteredDeliveries = {
+    pending: pendingOrders,
+    assigned: pendingAssignments,
+    active: activeDeliveries,
+    completed: completedDeliveries,
+    all: allDeliveries,
+  }[filterTab];
+  const selectedOrder = selectedId === null ? undefined : deliveries.find((d) => d.id === selectedId);
   const profileInitials = (staffProfile?.name || userName || 'SP')
     .split(' ')
     .map((part) => part[0])
@@ -415,13 +496,236 @@ export default function StaffMobileLayout() {
     }
   }
 
-  const activeDeliveriesList = deliveries.filter((d) => {
-    if (d.status === 'rejected') return false;
-    if (filterTab === 'assigned') return d.status === 'assigned';
-    if (filterTab === 'active') return d.status === 'accepted' || d.status === 'out_for_delivery';
-    if (filterTab === 'completed') return d.status === 'delivered';
-    return true;
-  });
+  function goTab(tab: typeof activeTab) {
+    setActiveTab(tab);
+    window.scrollTo({ top: 0 });
+  }
+
+  function showDeliveries(filter: DeliveryFilter) {
+    setFilterTab(filter);
+    goTab('deliveries');
+  }
+
+  function openOrder(id: number) {
+    setMessage('');
+    setSelectedId(id);
+  }
+
+  function closeOrder() {
+    if (actionBusyId !== null || rejectBusy) return;
+    setSelectedId(null);
+  }
+
+  // ── Order building blocks (shared by Home, the Deliveries list and the detail view) ──
+
+  // Shown for COD orders once accepted, as before; Complete stays disabled until it is ticked.
+  function renderCodConfirm(order: Delivery) {
+    if (!ACTIVE_STATUSES.includes(order.status) || isPaidOnline(order)) return null;
+    return (
+      <label className="sa-check">
+        <input
+          type="checkbox"
+          checked={!!codConfirmed[order.id]}
+          onChange={(e) => setCodConfirmed((prev) => ({ ...prev, [order.id]: e.target.checked }))}
+        />
+        <span>Confirm Cash Collected ({money(finalAmount(order))})</span>
+      </label>
+    );
+  }
+
+  // The existing lifecycle actions for the order's current status; nothing else changes its status.
+  function renderOrderActions(order: Delivery) {
+    const busy = actionBusyId !== null || isLoading;
+    const isBusy = actionBusyId === order.id;
+
+    if (order.status === 'assigned') {
+      return rejectingId === order.id ? (
+        <div className="sa-reject">
+          <Select
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            disabled={rejectBusy}
+            aria-label="Decline reason"
+          >
+            <option value="Too far">Too far</option>
+            <option value="Unavailable">Unavailable</option>
+            <option value="Vehicle issue">Vehicle issue</option>
+          </Select>
+          <div className="sa-reject__actions">
+            <Button type="button" variant="danger" onClick={() => reject(order.id)} disabled={rejectBusy} loading={rejectBusy}>
+              {rejectBusy ? 'Declining…' : 'Confirm Reject'}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setRejectingId(null)} disabled={rejectBusy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="sa-order__actions">
+          <Button type="button" variant="secondary" size="lg" onClick={() => setRejectingId(order.id)} disabled={busy}>
+            Reject
+          </Button>
+          <Button type="button" size="lg" onClick={() => accept(order.id)} disabled={busy} loading={isBusy}>
+            {isBusy ? 'Accepting…' : 'Accept Assignment'}
+          </Button>
+        </div>
+      );
+    }
+
+    if (order.status === 'accepted') {
+      return (
+        <Button
+          type="button"
+          size="lg"
+          block
+          icon={<Navigation size={18} />}
+          onClick={() => start(order.id)}
+          disabled={busy}
+          loading={isBusy}
+        >
+          Start Delivery &amp; Notify Customer
+        </Button>
+      );
+    }
+
+    if (order.status === 'out_for_delivery') {
+      const online = isPaidOnline(order);
+      return (
+        <Button
+          type="button"
+          size="lg"
+          block
+          icon={<CheckCircle2 size={18} />}
+          onClick={() => complete(order.id, !online, finalAmount(order))}
+          disabled={(!online && !codConfirmed[order.id]) || busy}
+          loading={isBusy}
+        >
+          {isBusy ? 'Completing…' : 'Complete Delivery'}
+        </Button>
+      );
+    }
+
+    return null;
+  }
+
+  // Full order details: the Home active card and the detail view.
+  function renderOrderDetail(order: Delivery) {
+    const online = isPaidOnline(order);
+    const delivered = order.status === 'delivered';
+    const cancelled = order.status === 'cancelled';
+    const discount = discountAmount(order);
+
+    return (
+      <>
+        <div className="sa-cylinder">
+          <img src={cylinderImg} className="sa-cylinder__img" alt="Cylinder" />
+          <div className="sa-cylinder__text">
+            <div className="sa-cylinder__type">{order.cylinder_type_name}</div>
+            <div className="sa-cylinder__qty">Qty: {order.quantity}</div>
+          </div>
+          {order.customer_phone ? (
+            <a href={`tel:${order.customer_phone}`} className={buttonClassName({ variant: 'secondary', size: 'sm' })}>
+              <span className="ui-btn__icon" aria-hidden="true"><Phone size={14} /></span>
+              <span className="ui-btn__label">Call</span>
+            </a>
+          ) : null}
+        </div>
+
+        <div className="sa-block">
+          <div className="sa-block__eyebrow">CUSTOMER &amp; ADDRESS</div>
+          <div className="sa-block__name">{order.customer_name}</div>
+          <div className="sa-block__text">{order.customer_address || 'No address provided'}</div>
+          {order.customer_area || order.customer_phone ? (
+            <div className="sa-block__meta">
+              {order.customer_area ? (
+                <span><MapPin size={14} aria-hidden="true" />{order.customer_area}</span>
+              ) : null}
+              {order.customer_phone ? (
+                <span><Phone size={14} aria-hidden="true" />{order.customer_phone}</span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        <div className={`sa-pay ${online ? 'sa-pay--online' : 'sa-pay--cod'}`}>
+          <div className="sa-pay__row">
+            <div className="sa-pay__text">
+              <div className="sa-pay__title">
+                {online ? <CheckCircle2 size={14} aria-hidden="true" /> : <Banknote size={14} aria-hidden="true" />}
+                <span>{online ? 'Paid Online — No Cash Needed' : 'Cash on Delivery'}</span>
+              </div>
+              <div className="sa-pay__sub">
+                {delivered
+                  ? 'Delivery completed'
+                  : cancelled
+                    ? 'Order cancelled'
+                    : online
+                      ? 'Payment verified by system'
+                      : 'Collect cash upon delivery'}
+              </div>
+            </div>
+            <AmountToCollect delivery={order} showOriginal={!delivered} tone={online ? 'success' : 'warning'} />
+          </div>
+          {!delivered && discount > 0 ? (
+            <div className="sa-pay__note">Includes {money(discount)} discount</div>
+          ) : null}
+          {renderCodConfirm(order)}
+        </div>
+
+        {renderOrderActions(order)}
+      </>
+    );
+  }
+
+  // Compact list card. Tapping the summary opens the detail view; only the action buttons change status.
+  function renderOrderCard(order: Delivery) {
+    const delivered = order.status === 'delivered';
+    const actions = renderOrderActions(order);
+    const codConfirm = renderCodConfirm(order);
+
+    return (
+      <Card key={order.id} padding="sm" className={cx('sa-ocard', ACTIVE_STATUSES.includes(order.status) && 'sa-ocard--active')}>
+        <button type="button" className="sa-ocard__open" onClick={() => openOrder(order.id)}>
+          <span className="sa-order__top">
+            <strong className="sa-order__ref">Order #{orderRef(order)}</strong>
+            <StatusBadge status={order.status} />
+          </span>
+          <span className="sa-ocard__name">{order.customer_name}</span>
+          <span className="sa-ocard__line">
+            <MapPin size={14} aria-hidden="true" />
+            <span>{order.customer_address || 'No address provided'}</span>
+          </span>
+          <span className="sa-ocard__meta">
+            <span className="sa-ocard__line">
+              <Cylinder size={14} aria-hidden="true" />
+              <span>{order.quantity} × {order.cylinder_type_name}</span>
+            </span>
+            <PaymentBadge delivery={order} />
+          </span>
+          <span className="sa-ocard__more">
+            View details
+            <ChevronRight size={16} aria-hidden="true" />
+          </span>
+        </button>
+
+        <div className="sa-amount-row sa-amount-row--footer">
+          <span className="sa-amount-row__label">{delivered ? 'Amount Collected:' : 'Amount to Collect:'}</span>
+          <AmountToCollect delivery={order} showOriginal={!delivered} />
+        </div>
+
+        {codConfirm ? <div className="sa-ocard__confirm">{codConfirm}</div> : null}
+        {actions}
+      </Card>
+    );
+  }
+
+  const filterEmpty: Record<DeliveryFilter, { icon: ReactNode; title: string; hint: string }> = {
+    pending: { icon: <Check size={24} />, title: 'No pending deliveries', hint: "You're all caught up! New assignments will appear here." },
+    assigned: { icon: <Truck size={24} />, title: 'No new assignments', hint: 'Orders assigned to you by the admin appear here.' },
+    active: { icon: <Navigation size={24} />, title: 'No active deliveries', hint: 'Accepted and out-for-delivery orders appear here.' },
+    completed: { icon: <History size={24} />, title: 'No completed deliveries yet', hint: 'Delivered orders appear here.' },
+    all: { icon: <ClipboardList size={24} />, title: 'No deliveries yet', hint: 'Orders assigned to you appear here.' },
+  };
 
 
   const navItems = [
@@ -457,17 +761,20 @@ export default function StaffMobileLayout() {
           </span>
         </header>
 
+        {/* Sticky so action results stay visible when acting from further down a list */}
         {message && (
-          <Alert
-            tone={messageTone === 'error' ? 'danger' : 'info'}
-            actions={
-              <IconButton type="button" size="sm" label="Dismiss" onClick={() => setMessage('')}>
-                <X size={16} />
-              </IconButton>
-            }
-          >
-            <span>{message}</span>
-          </Alert>
+          <div className="sa-flash">
+            <Alert
+              tone={messageTone === 'error' ? 'danger' : 'info'}
+              actions={
+                <IconButton type="button" size="sm" label="Dismiss" onClick={() => setMessage('')}>
+                  <X size={16} />
+                </IconButton>
+              }
+            >
+              <span>{message}</span>
+            </Alert>
+          </div>
         )}
 
         {/* Loading */}
@@ -515,25 +822,31 @@ export default function StaffMobileLayout() {
                   <div className="sa-hero__label">Completed</div>
                 </div>
               </div>
+              <button type="button" className="sa-hero__cta" onClick={() => showDeliveries('pending')}>
+                <ClipboardList size={18} aria-hidden="true" />
+                <span className="sa-hero__cta-label">View All Deliveries</span>
+                <span className="sa-hero__cta-count">{pendingCount} pending</span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
             </section>
 
             {/* Quick actions */}
             <section>
               <SectionHeader as="h3" title="Quick Actions" className="sa-section-head" />
               <div className="sa-quick">
-                <button type="button" className="sa-quick__tile" onClick={() => { setActiveTab('deliveries'); setFilterTab('assigned'); }}>
+                <button type="button" className="sa-quick__tile" onClick={() => showDeliveries('assigned')}>
                   <span className="sa-quick__icon sa-quick__icon--primary" aria-hidden="true"><Truck size={20} /></span>
                   <span className="sa-quick__title">My Tasks</span>
                   <span className="sa-quick__sub">{assignedCount} assigned</span>
                 </button>
 
-                <button type="button" className="sa-quick__tile" onClick={() => { setActiveTab('deliveries'); setFilterTab('active'); }}>
+                <button type="button" className="sa-quick__tile" onClick={() => showDeliveries('active')}>
                   <span className="sa-quick__icon sa-quick__icon--warning" aria-hidden="true"><Navigation size={20} /></span>
-                  <span className="sa-quick__title">Active Order</span>
+                  <span className="sa-quick__title">Active Orders</span>
                   <span className="sa-quick__sub">{activeCount} in progress</span>
                 </button>
 
-                <button type="button" className="sa-quick__tile" onClick={() => setActiveTab('history')}>
+                <button type="button" className="sa-quick__tile" onClick={() => goTab('history')}>
                   <span className="sa-quick__icon sa-quick__icon--success" aria-hidden="true"><History size={20} /></span>
                   <span className="sa-quick__title">History</span>
                   <span className="sa-quick__sub">Past orders</span>
@@ -541,80 +854,7 @@ export default function StaffMobileLayout() {
               </div>
             </section>
 
-            {/* Pending assignments */}
-            {pendingAssignments.length > 0 ? (
-              <section>
-                <SectionHeader
-                  as="h3"
-                  title="New Assignment"
-                  className="sa-section-head"
-                  meta={<Badge tone="warning">{pendingAssignments.length} Pending</Badge>}
-                />
-
-                {pendingAssignments.slice(0, 1).map((order) => {
-                  const isOnline = order.booking_payment_method === 'ONLINE' || order.booking_payment_status === 'PAID';
-
-                  return (
-                    <Card key={order.id} className="sa-order">
-                      <div className="sa-order__top">
-                        <strong className="sa-order__ref">Order #{orderRef(order)}</strong>
-                        <Badge tone={isOnline ? 'success' : 'warning'} icon={isOnline ? <Check size={12} /> : <Banknote size={12} />}>
-                          {isOnline ? 'Paid Online' : 'COD'}
-                        </Badge>
-                      </div>
-
-                      <div className="sa-order__item">
-                        {order.quantity} x {order.cylinder_type_name}
-                      </div>
-
-                      <div className="sa-address">
-                        <MapPin size={16} aria-hidden="true" />
-                        <span>{order.customer_address || 'No address provided'}</span>
-                      </div>
-
-                      <div className="sa-amount-row">
-                        <span className="sa-amount-row__label">Amount to Collect:</span>
-                        <AmountToCollect delivery={order} showOriginal />
-                      </div>
-
-                      {rejectingId === order.id ? (
-                        <div className="sa-reject">
-                          <Select
-                            value={rejectReason}
-                            onChange={(e) => setRejectReason(e.target.value)}
-                            disabled={rejectBusy}
-                            aria-label="Decline reason"
-                          >
-                            <option value="Too far">Too far</option>
-                            <option value="Unavailable">Unavailable</option>
-                            <option value="Vehicle issue">Vehicle issue</option>
-                          </Select>
-                          <div className="sa-reject__actions">
-                            <Button type="button" variant="danger" onClick={() => reject(order.id)} disabled={rejectBusy} loading={rejectBusy}>
-                              {rejectBusy ? 'Declining…' : 'Confirm Reject'}
-                            </Button>
-                            <Button type="button" variant="secondary" onClick={() => setRejectingId(null)} disabled={rejectBusy}>
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="sa-order__actions">
-                          <Button type="button" variant="secondary" size="lg" onClick={() => setRejectingId(order.id)} disabled={actionBusyId !== null}>
-                            Reject
-                          </Button>
-                          <Button type="button" size="lg" onClick={() => accept(order.id)} disabled={actionBusyId !== null} loading={actionBusyId === order.id}>
-                            {actionBusyId === order.id ? 'Accepting…' : 'Accept Assignment'}
-                          </Button>
-                        </div>
-                      )}
-                    </Card>
-                  );
-                })}
-              </section>
-            ) : null}
-
-            {/* Active delivery */}
+            {/* Active deliveries: the current one in full, any others one tap away */}
             {activeDelivery ? (
               <section>
                 <SectionHeader
@@ -623,95 +863,38 @@ export default function StaffMobileLayout() {
                   className="sa-section-head"
                   meta={<span className="sa-section-head__note">In Progress</span>}
                 />
+                <Card className="sa-order sa-order--active">
+                  <div className="sa-order__top">
+                    <strong className="sa-order__ref">Order #{orderRef(activeDelivery)}</strong>
+                    <StatusBadge status={activeDelivery.status} />
+                  </div>
+                  {renderOrderDetail(activeDelivery)}
+                </Card>
+                {activeCount > 1 ? (
+                  <button type="button" className="sa-more" onClick={() => showDeliveries('active')}>
+                    <span>{activeCount - 1} more active {activeCount - 1 === 1 ? 'delivery' : 'deliveries'}</span>
+                    <ChevronRight size={16} aria-hidden="true" />
+                  </button>
+                ) : null}
+              </section>
+            ) : null}
 
-                {(() => {
-                  const isOnline = activeDelivery.booking_payment_method === 'ONLINE' || activeDelivery.booking_payment_status === 'PAID';
-                  const totalAmt = finalAmount(activeDelivery);
-                  const completeBlocked = (!isOnline && !codConfirmed[activeDelivery.id]) || actionBusyId !== null;
-
-                  return (
-                    <Card className="sa-order sa-order--active">
-                      <div className="sa-order__top">
-                        <strong className="sa-order__ref">Order #{orderRef(activeDelivery)}</strong>
-                        <Badge tone="primary">{activeDelivery.status.replaceAll('_', ' ')}</Badge>
-                      </div>
-
-                      <div className="sa-cylinder">
-                        <img src={cylinderImg} className="sa-cylinder__img" alt="Cylinder" />
-                        <div className="sa-cylinder__text">
-                          <div className="sa-cylinder__type">{activeDelivery.cylinder_type_name}</div>
-                          <div className="sa-cylinder__qty">Qty: {activeDelivery.quantity}</div>
-                        </div>
-                        {activeDelivery.customer_phone ? (
-                          <a href={`tel:${activeDelivery.customer_phone}`} className={buttonClassName({ variant: 'secondary', size: 'sm' })}>
-                            <span className="ui-btn__icon" aria-hidden="true"><Phone size={14} /></span>
-                            <span className="ui-btn__label">Call</span>
-                          </a>
-                        ) : null}
-                      </div>
-
-                      <div className="sa-block">
-                        <div className="sa-block__eyebrow">CUSTOMER &amp; ADDRESS</div>
-                        <div className="sa-block__name">{activeDelivery.customer_name}</div>
-                        <div className="sa-block__text">{activeDelivery.customer_address}</div>
-                      </div>
-
-                      <div className={`sa-pay ${isOnline ? 'sa-pay--online' : 'sa-pay--cod'}`}>
-                        <div className="sa-pay__row">
-                          <div className="sa-pay__text">
-                            <div className="sa-pay__title">
-                              {isOnline ? <CheckCircle2 size={14} aria-hidden="true" /> : <Banknote size={14} aria-hidden="true" />}
-                              <span>{isOnline ? 'Paid Online — No Cash Needed' : 'Cash on Delivery'}</span>
-                            </div>
-                            <div className="sa-pay__sub">
-                              {isOnline ? 'Payment verified by system' : 'Collect cash upon delivery'}
-                            </div>
-                          </div>
-                          <AmountToCollect delivery={activeDelivery} showOriginal tone={isOnline ? 'success' : 'warning'} />
-                        </div>
-
-                        {!isOnline ? (
-                          <label className="sa-check">
-                            <input
-                              type="checkbox"
-                              checked={!!codConfirmed[activeDelivery.id]}
-                              onChange={(e) => setCodConfirmed((prev) => ({ ...prev, [activeDelivery.id]: e.target.checked }))}
-                            />
-                            <span>Confirm Cash Collected ({money(totalAmt)})</span>
-                          </label>
-                        ) : null}
-                      </div>
-
-                      {activeDelivery.status === 'accepted' && (
-                        <Button
-                          type="button"
-                          size="lg"
-                          block
-                          icon={<Navigation size={18} />}
-                          onClick={() => start(activeDelivery.id)}
-                          disabled={actionBusyId !== null}
-                          loading={actionBusyId === activeDelivery.id}
-                        >
-                          Start Delivery &amp; Notify Customer
-                        </Button>
-                      )}
-
-                      {activeDelivery.status === 'out_for_delivery' && (
-                        <Button
-                          type="button"
-                          size="lg"
-                          block
-                          icon={<CheckCircle2 size={18} />}
-                          onClick={() => complete(activeDelivery.id, !isOnline, totalAmt)}
-                          disabled={completeBlocked}
-                          loading={actionBusyId === activeDelivery.id}
-                        >
-                          {actionBusyId === activeDelivery.id ? 'Completing…' : 'Complete Delivery'}
-                        </Button>
-                      )}
-                    </Card>
-                  );
-                })()}
+            {/* Next eligible assignment */}
+            {pendingAssignments.length > 0 ? (
+              <section>
+                <SectionHeader
+                  as="h3"
+                  title="New Assignment"
+                  className="sa-section-head"
+                  meta={<Badge tone="warning">{assignedCount} Assigned</Badge>}
+                />
+                {renderOrderCard(pendingAssignments[0])}
+                {assignedCount > 1 ? (
+                  <button type="button" className="sa-more" onClick={() => showDeliveries('assigned')}>
+                    <span>View all {assignedCount} assigned orders</span>
+                    <ChevronRight size={16} aria-hidden="true" />
+                  </button>
+                ) : null}
               </section>
             ) : null}
 
@@ -745,40 +928,37 @@ export default function StaffMobileLayout() {
         {/* ── All deliveries ── */}
         {activeTab === 'deliveries' && !isLoading && !loadError && (
           <section className="sa-stack sa-stack--tight">
-            <h3 className="sa-page-title">All Deliveries</h3>
+            <div className="sa-list-head">
+              <h3 className="sa-page-title">All Deliveries</h3>
+              <Badge tone={pendingCount > 0 ? 'warning' : 'neutral'}>{pendingCount} Pending</Badge>
+            </div>
             <div className="sa-filters">
               <Tabs
                 ariaLabel="Delivery filter"
-                size="sm"
+                block
                 value={filterTab}
                 onChange={setFilterTab}
                 items={[
-                  { value: 'all', label: 'All' },
-                  { value: 'assigned', label: `Assigned (${assignedCount})` },
-                  { value: 'active', label: `Active (${activeCount})` },
-                  { value: 'completed', label: `Completed (${completedCount})` },
+                  { value: 'pending', label: 'All Pending', count: pendingCount },
+                  { value: 'assigned', label: 'Assigned', count: assignedCount },
+                  { value: 'active', label: 'Active', count: activeCount },
+                  { value: 'completed', label: 'Completed', count: completedCount },
+                  { value: 'all', label: 'All', count: allDeliveries.length },
                 ]}
               />
             </div>
 
             <div className="sa-list">
-              {activeDeliveriesList.map((d) => (
-                <Card key={d.id} padding="sm" className="sa-list-card">
-                  <div className="sa-order__top">
-                    <strong className="sa-order__ref">Order #{orderRef(d)}</strong>
-                    <Badge tone={statusTone(d.status)}>{d.status.replaceAll('_', ' ')}</Badge>
-                  </div>
-                  <div className="sa-list-card__text">{d.customer_name} — {d.customer_address}</div>
-                  <div className="sa-amount-row sa-amount-row--footer">
-                    <span className="sa-amount-row__label">
-                      {d.status === 'delivered' ? 'Amount Collected:' : 'Amount to Collect:'}
-                    </span>
-                    <AmountToCollect delivery={d} showOriginal={d.status !== 'delivered'} />
-                  </div>
+              {filteredDeliveries.map((d) => renderOrderCard(d))}
+              {filteredDeliveries.length === 0 && (
+                <Card>
+                  <EmptyState
+                    compact
+                    icon={filterEmpty[filterTab].icon}
+                    title={filterEmpty[filterTab].title}
+                    hint={filterEmpty[filterTab].hint}
+                  />
                 </Card>
-              ))}
-              {activeDeliveriesList.length === 0 && (
-                <Card><EmptyState compact title="No deliveries found for filter." /></Card>
               )}
             </div>
           </section>
@@ -874,7 +1054,7 @@ export default function StaffMobileLayout() {
               type="button"
               className={`sa-nav__item${activeTab === item.tab ? ' is-active' : ''}`}
               aria-current={activeTab === item.tab ? 'page' : undefined}
-              onClick={() => setActiveTab(item.tab)}
+              onClick={() => goTab(item.tab)}
             >
               {item.icon}
               <span>{item.label}</span>
@@ -912,6 +1092,39 @@ export default function StaffMobileLayout() {
             <EmptyState compact icon={<Bell size={24} />} title="No alerts received yet." />
           )}
         </div>
+      </Modal>
+
+      {/* Order details (read-only view; only the action buttons inside change status) */}
+      <Modal
+        open={!!selectedOrder}
+        onClose={closeOrder}
+        closeOnEscape
+        closeOnOverlay
+        title={selectedOrder ? `Order #${orderRef(selectedOrder)}` : undefined}
+        className="sa-detail"
+      >
+        {selectedOrder ? (
+          <div className="sa-detail__body">
+            {message ? (
+              <Alert
+                tone={messageTone === 'error' ? 'danger' : 'info'}
+                compact
+                actions={
+                  <IconButton type="button" size="sm" label="Dismiss" onClick={() => setMessage('')}>
+                    <X size={16} />
+                  </IconButton>
+                }
+              >
+                <span>{message}</span>
+              </Alert>
+            ) : null}
+            <div className="sa-detail__badges">
+              <StatusBadge status={selectedOrder.status} />
+              <PaymentBadge delivery={selectedOrder} />
+            </div>
+            {renderOrderDetail(selectedOrder)}
+          </div>
+        ) : null}
       </Modal>
 
       {/* Edit profile */}
