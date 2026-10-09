@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -8,9 +9,10 @@ from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
-from rest_framework import permissions, viewsets, filters
+from rest_framework import permissions, viewsets, filters, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.fields import DateTimeField
 from rest_framework.response import Response
 from rest_framework import status as drf_status
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -21,8 +23,11 @@ from .models import (
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
 from .exceptions import ApiError
+from .pagination import StandardPagination
 from .services import (
+    OPEN_DELIVERY_STATUSES,
     admin_users,
+    assignment_logging_started_at,
     clean_reason,
     deactivate_customer,
     deactivate_user,
@@ -36,6 +41,8 @@ from .services import (
     parse_non_negative_int,
     reactivate_customer,
     reactivate_user,
+    staff_assignment_details,
+    staff_handovers,
     user_search_q,
 )
 from .serializers import (
@@ -53,6 +60,8 @@ from .serializers import (
     StockLocationSerializer,
     StockMovementSerializer,
     StockSerializer,
+    StaffDeliveryHistorySerializer,
+    StaffHandoverBookingSerializer,
     StaffProfileSerializer,
     UserSerializer,
     get_booking_pricing_snapshot,
@@ -625,7 +634,15 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(NotificationSerializer(notification).data)
 
 
-class BookingViewSet(viewsets.ModelViewSet):
+class BookingViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Bookings change only through customer ``create`` and the approve/reject actions;
+    there are no generic update/delete routes (they bypassed the workflow and its log)."""
+
     queryset = Booking.objects.select_related(
         "customer__user", "cylinder_type", "assigned_staff", "sale", "delivery", "delivery__staff"
     ).prefetch_related(
@@ -960,7 +977,10 @@ class BookingViewSet(viewsets.ModelViewSet):
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
 
-class DeliveryViewSet(viewsets.ModelViewSet):
+class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
+    """Deliveries change only through the accept/reject/start/complete actions; there are
+    no generic create/update/delete routes (they bypassed the workflow and its log)."""
+
     queryset = Delivery.objects.select_related("booking__customer__user", "booking__cylinder_type", "staff").prefetch_related(
         "booking__customer__custom_rates",
         "booking__customer__cylinder_discounts__cylinder_type",
@@ -1532,6 +1552,154 @@ def user_reactivate(request, pk):
         "detail": "User reactivated.",
         "mode": "reactivated",
         "user": {**UserSerializer(user).data, "staff_image_url": get_staff_image_url(request, user)},
+    })
+
+
+# Row status (and ``status`` filter value) of a booking the staff member handed over.
+HANDED_OVER_STATUS = "reassigned"
+
+
+def build_staff_history_row(booking, staff, detail, names):
+    """One row of a staff history: the booking's Delivery when it is ``staff``'s
+    (``involvement: current``), else the handover read from the ActivityLog
+    (``involvement: previous``) with booking-level data only."""
+    to_datetime = DateTimeField().to_representation
+    try:
+        delivery = booking.delivery
+    except Delivery.DoesNotExist:
+        delivery = None
+
+    if delivery is not None and delivery.staff_id == staff.id:
+        from_id = detail.get("reassigned_from_id")
+        decline = detail.get("previous_decline")
+        return {
+            **StaffDeliveryHistorySerializer(delivery).data,
+            "involvement": "current",
+            "handover": None,
+            "reassigned_from": {"staff_id": from_id, "staff_name": names.get(from_id)} if from_id else None,
+            "previous_decline": (
+                {"reason": decline["reason"], "declined_at": to_datetime(decline["declined_at"])} if decline else None
+            ),
+        }
+
+    handover = detail["handover"]
+    return {
+        **{field: None for field in StaffDeliveryHistorySerializer.Meta.fields},
+        **StaffHandoverBookingSerializer(booking).data,
+        "status": HANDED_OVER_STATUS,
+        "involvement": "previous",
+        "handover": {
+            **handover,
+            "handed_over_at": to_datetime(handover["handed_over_at"]),
+            "to_staff_name": names.get(handover["to_staff_id"]),
+        },
+        "reassigned_from": None,
+        "previous_decline": None,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def user_deliveries(request, pk):
+    """Delivery history of one staff member: one row per booking.
+
+    ``involvement: current`` rows are the bookings whose Delivery is theirs now
+    (``Delivery.staff``). ``involvement: previous`` rows are bookings they handed over —
+    declined, or re-assigned by an admin — read from the ActivityLog, which only exists
+    from ``history_since``; earlier handovers are not recoverable and not listed.
+
+    Query params: ``status`` (comma-separated delivery statuses, plus ``reassigned`` for
+    handed-over rows), ``start`` / ``end`` (booking date, YYYY-MM-DD), ``search`` (order id
+    or customer name/phone), ``page``, ``page_size``. ``summary`` covers the date range
+    only, not ``status`` / ``search``; its delivery counts are current rows only.
+    """
+    user, error = _admin_user_or_response(request, pk)
+    if error is not None:
+        return error
+
+    start_str = (request.query_params.get("start") or "").strip()
+    end_str = (request.query_params.get("end") or "").strip()
+    try:
+        start = date.fromisoformat(start_str) if start_str else None
+        end = date.fromisoformat(end_str) if end_str else None
+    except ValueError:
+        return Response(
+            {"detail": "Invalid date. Use YYYY-MM-DD.", "code": "invalid_date"},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+    if start and end and start > end:
+        return Response(
+            {"detail": "Start date must be on or before end date.", "code": "invalid_range", "start": start_str, "end": end_str},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+
+    deliveries = Delivery.objects.filter(staff=user)
+    if start:
+        deliveries = deliveries.filter(booking__created_at__date__gte=start)
+    if end:
+        deliveries = deliveries.filter(booking__created_at__date__lte=end)
+
+    summary = deliveries.aggregate(
+        total=Count("id"),
+        delivered=Count("id", filter=Q(status=Delivery.Status.DELIVERED)),
+        active=Count("id", filter=Q(status__in=OPEN_DELIVERY_STATUSES)),
+        cancelled=Count("id", filter=Q(status=Delivery.Status.CANCELLED)),
+        declined=Count("id", filter=Q(status=Delivery.Status.REJECTED)),
+        collected=Sum("payment_collected", filter=Q(status=Delivery.Status.DELIVERED)),
+    )
+    summary["collected"] = serialize_decimal(summary["collected"] or 0)
+
+    handovers = staff_handovers(user)
+    bookings = Booking.objects.all()
+    if start:
+        bookings = bookings.filter(created_at__date__gte=start)
+    if end:
+        bookings = bookings.filter(created_at__date__lte=end)
+    summary["reassigned"] = bookings.filter(pk__in=list(handovers)).count()
+
+    statuses = [s.strip() for s in (request.query_params.get("status") or "").split(",") if s.strip()]
+    scope = Q(delivery__staff=user)
+    if statuses:
+        scope &= Q(delivery__status__in=[s for s in statuses if s != HANDED_OVER_STATUS])
+    if handovers and (not statuses or HANDED_OVER_STATUS in statuses):
+        scope |= Q(pk__in=list(handovers))
+    bookings = bookings.filter(scope)
+    term = (request.query_params.get("search") or "").strip()
+    if term:
+        query = user_search_q(term, prefix="customer__user__")
+        order_match = re.fullmatch(r"#?(?:GB)?(\d+)", term, re.IGNORECASE)
+        if order_match:
+            query |= Q(pk=int(order_match.group(1)))
+        bookings = bookings.filter(query)
+
+    bookings = bookings.select_related(
+        "customer__user", "cylinder_type", "sale", "delivery"
+    ).prefetch_related(
+        "customer__custom_rates",
+        "customer__cylinder_discounts__cylinder_type",
+    ).order_by("-created_at", "-id")
+
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(bookings, request)
+    details = staff_assignment_details(user, [booking.pk for booking in page], handovers)
+    staff_ids = {d["handover"]["to_staff_id"] for d in details.values() if "handover" in d}
+    staff_ids |= {d["reassigned_from_id"] for d in details.values() if d.get("reassigned_from_id")}
+    names = {u.id: display_name(u) for u in User.objects.filter(pk__in=[i for i in staff_ids if i is not None])}
+    data = [build_staff_history_row(booking, user, details.get(booking.pk, {}), names) for booking in page]
+    logging_since = assignment_logging_started_at()
+    staff_profile = getattr(user, "staff_profile", None)
+    vehicle_location = staff_profile.vehicle_location if staff_profile else None
+    return Response({
+        **paginator.get_paginated_response(data).data,
+        "summary": summary,
+        "history_since": DateTimeField().to_representation(logging_since) if logging_since else None,
+        "staff": {
+            **UserSerializer(user).data,
+            "staff_image_url": get_staff_image_url(request, user),
+            "assigned_area": staff_profile.assigned_area if staff_profile else "",
+            "vehicle_number": staff_profile.vehicle_number if staff_profile else "",
+            "vehicle_location_name": vehicle_location.name if vehicle_location else None,
+        },
     })
 
 

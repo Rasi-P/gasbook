@@ -137,6 +137,104 @@ def user_search_q(term, prefix=""):
 
 
 # ---------------------------------------------------------------------------
+# Assignment history (ActivityLog)
+#
+# A booking has a single Delivery row that moves to the new staff on re-assignment.
+# The approve / decline actions log every move, so a staff member's earlier part in a
+# booking is read back from those logs — always in (created_at, id) order, since
+# several events can share a timestamp. Nothing before the first log is recoverable.
+# ---------------------------------------------------------------------------
+
+ASSIGNMENT_LOG_ACTIONS = ("booking_approved", "delivery_declined", "booking_rejected")
+
+
+def _log_key(log):
+    return (log.created_at, log.id)
+
+
+def assignment_logging_started_at():
+    """When the approve/decline/reject actions first logged anything, or ``None``."""
+    first = ActivityLog.objects.filter(action__in=ASSIGNMENT_LOG_ACTIONS).order_by("created_at", "id").first()
+    return first.created_at if first else None
+
+
+def staff_handovers(user):
+    """``{booking_id: ActivityLog}`` — the latest re-assignment that took each booking away
+    from ``user``, for bookings whose Delivery is not ``user``'s now.
+
+    A booking ``user`` holds again (A -> B -> A) is left out: its current Delivery row
+    already covers it, so every booking appears at most once in a staff history.
+    """
+    handovers = {}
+    logs = ActivityLog.objects.filter(
+        action="booking_approved", metadata__previous_staff_id=user.id
+    ).order_by("created_at", "id")
+    for log in logs:
+        booking_id = log.metadata.get("booking_id")
+        if booking_id is not None and log.metadata.get("staff_id") != user.id:
+            handovers[booking_id] = log
+    held = set(Delivery.objects.filter(booking_id__in=list(handovers), staff=user).values_list("booking_id", flat=True))
+    return {booking_id: log for booking_id, log in handovers.items() if booking_id not in held}
+
+
+def staff_assignment_details(user, booking_ids, handovers):
+    """What the logs add to ``user``'s history rows for ``booking_ids``.
+
+    Handed-over bookings get ``handover`` (outcome, previous delivery status, decline
+    reason, when, to whom). Bookings ``user`` holds get ``reassigned_from`` (the staff it
+    came from) and ``previous_decline`` (a decline by ``user`` that a later re-approval
+    cleared from the Delivery row). Only facts present in the logs are returned.
+    """
+    events = {}
+    logs = ActivityLog.objects.filter(
+        action__in=("booking_approved", "delivery_declined"), metadata__booking_id__in=list(booking_ids)
+    ).order_by("created_at", "id")
+    for log in logs:
+        events.setdefault(log.metadata.get("booking_id"), []).append(log)
+
+    def last_decline_before(booking_events, before):
+        declines = [
+            log for log in booking_events
+            if log.action == "delivery_declined" and log.metadata.get("staff_id") == user.id and _log_key(log) < before
+        ]
+        return declines[-1] if declines else None
+
+    details = {}
+    for booking_id in booking_ids:
+        booking_events = events.get(booking_id, [])
+        handover = handovers.get(booking_id)
+        if handover is not None:
+            previous_status = handover.metadata.get("previous_delivery_status")
+            decline = last_decline_before(booking_events, _log_key(handover)) if previous_status == Delivery.Status.REJECTED else None
+            details[booking_id] = {
+                "handover": {
+                    "outcome": "declined" if previous_status == Delivery.Status.REJECTED else "reassigned",
+                    "previous_status": previous_status,
+                    "reason": decline.metadata.get("reason") if decline else None,
+                    "handed_over_at": handover.created_at,
+                    "to_staff_id": handover.metadata.get("staff_id"),
+                },
+            }
+            continue
+        assignments = [
+            log for log in booking_events
+            if log.action == "booking_approved" and log.metadata.get("staff_id") == user.id
+        ]
+        if not assignments:
+            continue
+        assigned = assignments[-1]
+        from_id = assigned.metadata.get("previous_staff_id")
+        decline = last_decline_before(booking_events, _log_key(assigned))
+        details[booking_id] = {
+            "reassigned_from_id": from_id if from_id not in (None, user.id) else None,
+            "previous_decline": (
+                {"reason": decline.metadata.get("reason"), "declined_at": decline.created_at} if decline else None
+            ),
+        }
+    return details
+
+
+# ---------------------------------------------------------------------------
 # Deletion / deactivation policy (finalSpec §6)
 #
 # A party with history is never deleted — only deactivated. Hard delete is reserved

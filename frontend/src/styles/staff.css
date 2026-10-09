@@ -58,3 +58,188 @@
     padding-left: 56px;
   }
 }
+
+/* Keeps the action columns aligned on rows without a Delivery History button */
+.staff-actions__spacer {
+  flex: 0 0 auto;
+  width: 36px;
+}
+
+/* Staff delivery history (pages/admin/StaffHistory.tsx) */
+.sh-title {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.sh-name {
+  overflow-wrap: anywhere;
+}
+
+.sh-header .ui-page-header__meta > span {
+  overflow-wrap: anywhere;
+}
+
+.sh-header .ui-page-header__meta svg {
+  color: var(--text-placeholder);
+}
+
+.sh-header .ui-page-header__actions {
+  justify-content: flex-end;
+}
+
+.sh-stats,
+.sh-stats-skeleton {
+  margin-bottom: var(--space-5);
+}
+
+.sh-stats {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sh-filters {
+  display: grid;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+
+.sh-filters__row {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.sh-filters__search {
+  flex: 2 1 260px;
+  min-width: 0;
+}
+
+.sh-filters__date {
+  flex: 1 1 150px;
+}
+
+.sh-filters__clear {
+  flex: 0 0 auto;
+}
+
+.sh-filters__error {
+  margin: 0;
+}
+
+.sh-error {
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+/* Fits the narrowest content area from 680px up (tablet and sidebar layouts) without scrolling. */
+.sh-table {
+  min-width: 720px;
+}
+
+.sh-table .sh-col-order { width: 15%; }
+.sh-table .sh-col-customer { width: 17%; }
+.sh-table .sh-col-cylinder { width: 12%; }
+.sh-table .sh-col-amount { width: 11%; }
+.sh-table .sh-col-payment { width: 16%; }
+.sh-table .sh-col-status { width: 16%; }
+.sh-table .sh-col-delivered { width: 13%; }
+
+.sh-table td {
+  vertical-align: top;
+}
+
+.sh-table .ui-table__num {
+  white-space: nowrap;
+}
+
+.sh-cell-name {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.sh-stack {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sh-reason {
+  color: var(--danger-text);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.sh-due {
+  color: var(--danger-text);
+}
+
+/* Handed-over bookings read as past involvement, not current work */
+.sh-table tbody tr.sh-row--previous td {
+  background: var(--surface-muted);
+}
+
+.sh-table tbody tr.sh-row--previous td:first-child {
+  box-shadow: inset 3px 0 0 var(--border-strong);
+}
+
+@media (min-width: 480px) {
+  .sh-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 480px) and (max-width: 1279px) {
+  .sh-stats > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (min-width: 1280px) {
+  .sh-stats {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+/* Phones: each delivery becomes a card; labels sit above values so long text uses the full width. */
+@media (max-width: 679px) {
+  .sh-header .ui-page-header__actions {
+    justify-content: flex-start;
+  }
+
+  .sh-table {
+    min-width: 0;
+  }
+
+  .sh-table.ui-table--cards td {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+    text-align: left;
+  }
+
+  .sh-table.ui-table--cards td:first-child {
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+    padding-bottom: 10px;
+  }
+
+  .sh-table.ui-table--cards tr.sh-row--previous {
+    background: var(--surface-muted);
+    border-style: dashed;
+  }
+
+  .sh-table.ui-table--cards tr.sh-row--previous td,
+  .sh-table.ui-table--cards tr.sh-row--previous td:first-child {
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .sh-filters__clear {
+    flex: 1 1 100%;
+  }
+}
