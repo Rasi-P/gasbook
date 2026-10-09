@@ -9,7 +9,7 @@ from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
-from rest_framework import permissions, viewsets, filters
+from rest_framework import permissions, viewsets, filters, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
@@ -629,7 +629,15 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(NotificationSerializer(notification).data)
 
 
-class BookingViewSet(viewsets.ModelViewSet):
+class BookingViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Bookings change only through customer ``create`` and the approve/reject actions;
+    there are no generic update/delete routes (they bypassed the workflow and its log)."""
+
     queryset = Booking.objects.select_related(
         "customer__user", "cylinder_type", "assigned_staff", "sale", "delivery", "delivery__staff"
     ).prefetch_related(
@@ -964,7 +972,10 @@ class BookingViewSet(viewsets.ModelViewSet):
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
 
-class DeliveryViewSet(viewsets.ModelViewSet):
+class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
+    """Deliveries change only through the accept/reject/start/complete actions; there are
+    no generic create/update/delete routes (they bypassed the workflow and its log)."""
+
     queryset = Delivery.objects.select_related("booking__customer__user", "booking__cylinder_type", "staff").prefetch_related(
         "booking__customer__custom_rates",
         "booking__customer__cylinder_discounts__cylinder_type",

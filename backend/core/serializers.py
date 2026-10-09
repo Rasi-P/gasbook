@@ -697,7 +697,11 @@ class BookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = "__all__"
-        read_only_fields = ["customer", "approved_by", "approved_at", "delivered_at", "sale", "rejected_by", "rejected_at"]
+        # Workflow fields are set by the approve/reject/delivery actions, never by the create payload.
+        read_only_fields = [
+            "customer", "status", "payment_status", "assigned_staff", "rejection_reason",
+            "approved_by", "approved_at", "delivered_at", "sale", "rejected_by", "rejected_at",
+        ]
 
     def _get_delivery(self, obj):
         try:
