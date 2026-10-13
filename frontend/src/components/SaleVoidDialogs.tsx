@@ -6,6 +6,7 @@ import { Button } from './ui/Button';
 import { ChoiceChips } from './ui/ChoiceChips';
 import { Field, Input, Textarea } from './ui/Field';
 import { Modal } from './ui/Modal';
+import { formatDateTime } from '../lib/dateTime';
 
 /** The cancellation of a sale, as SaleSerializer.void returns it. */
 export type SaleVoidInfo = {
@@ -24,6 +25,7 @@ export type SaleVoidInfo = {
 export type SalePaymentRow = { id: number; amount: number | string; mode: string; kind: 'payment' | 'refund' | 'credit_reversal' | 'reversal' };
 
 type VoidPreview = {
+  created_at?: string;
   can_void: boolean;
   blockers: { code: string; detail: string }[];
   location: { id: number; name: string };
@@ -131,6 +133,7 @@ function VoidSaleDialog({ saleId, onClose, onDone }: { saleId: number; onClose: 
         )}
         {preview && (
           <div className="sv-effects" aria-label="What cancelling does">
+            <span className="event-times">Recorded {formatDateTime(preview.created_at)}</span>
             <div>
               <span className="sv-effects__label">Stock at {preview.location.name}</span>
               <ul className="sv-list">
@@ -183,7 +186,7 @@ function VoidSaleDialog({ saleId, onClose, onDone }: { saleId: number; onClose: 
 }
 
 /** Record that the refund owed for a cancelled sale has been paid back, all at once. */
-type RefundSale = { id: number; void: SaleVoidInfo | null; payments: SalePaymentRow[] };
+type RefundSale = { id: number; created_at?: string; void: SaleVoidInfo | null; payments: SalePaymentRow[] };
 
 export function ConfirmRefundModal({ sale, onClose, onDone }: { sale: RefundSale | null; onClose: () => void; onDone: () => void }) {
   return sale === null ? null : <ConfirmRefundDialog key={sale.id} sale={sale} onClose={onClose} onDone={onDone} />;
@@ -232,6 +235,10 @@ function ConfirmRefundDialog({ sale, onClose, onDone }: { sale: RefundSale; onCl
       )}
     >
       <div className="form-stack">
+        <span className="event-times">
+          <span>Recorded {formatDateTime(sale.created_at)}</span>
+          <span>Cancelled {formatDateTime(sale.void?.voided_at)}</span>
+        </span>
         {modes.map((mode) => (
           <Field key={mode} label={`${MODE_LABELS[mode] ?? mode} ${money(byMode.get(mode) ?? 0)}`}
             hint={mode === 'cash' ? 'Reference optional.' : 'Transaction reference required.'}>

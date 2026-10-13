@@ -462,6 +462,7 @@ def void_preview(sale):
     blockers = void_blockers(sale)
     return {
         "sale_id": sale.pk,
+        "created_at": sale.created_at.isoformat(),
         "can_void": not blockers,
         "blockers": blockers,
         "location": {"id": sale.location_id, "name": sale.location.name},

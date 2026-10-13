@@ -1,3 +1,5 @@
+import { formatDateTime } from '../../lib/dateTime';
+import { StaffHistory } from '../../components/StaffHistory';
 import { useState, useEffect, type ReactNode } from 'react';
 import {
   AlertTriangle,
@@ -59,6 +61,9 @@ type Delivery = {
   deposit_cylinders: number;
   booking_payment_method?: string;
   booking_payment_status?: string;
+  booked_at?: string | null;
+  completed_at?: string | null;
+  cancelled_at?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -95,6 +100,14 @@ function money(v: number | string) {
 // The order number shown to staff is the booking's id (GB{booking}), never the delivery row id.
 function orderRef(d: Delivery) {
   return d.order_id || `GB${d.booking}`;
+}
+
+function DeliveryTimes({ delivery }: { delivery: Delivery }) {
+  return <span className="event-times">
+    <span>Booked {formatDateTime(delivery.booked_at)}</span>
+    {delivery.status === 'delivered' && <span>Delivered {formatDateTime(delivery.completed_at)}</span>}
+    {delivery.status === 'cancelled' && <span>Cancelled {formatDateTime(delivery.cancelled_at)}</span>}
+  </span>;
 }
 
 function originalAmount(delivery: Delivery) {
@@ -617,6 +630,7 @@ export default function StaffMobileLayout() {
 
     return (
       <>
+        <DeliveryTimes delivery={order} />
         <div className="sa-cylinder">
           <img src={cylinderImg} className="sa-cylinder__img" alt="Cylinder" />
           <div className="sa-cylinder__text">
@@ -690,6 +704,7 @@ export default function StaffMobileLayout() {
             <strong className="sa-order__ref">Order #{orderRef(order)}</strong>
             <StatusBadge status={order.status} />
           </span>
+          <DeliveryTimes delivery={order} />
           <span className="sa-ocard__name">{order.customer_name}</span>
           <span className="sa-ocard__line">
             <MapPin size={14} aria-hidden="true" />
@@ -917,6 +932,7 @@ export default function StaffMobileLayout() {
                   <div>
                     <div className="sa-order__ref">Order #{orderRef(recentCompleted)}</div>
                     <div className="sa-muted">{recentCompleted.cylinder_type_name}</div>
+                    <DeliveryTimes delivery={recentCompleted} />
                   </div>
                   <Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>
                 </Card>
@@ -966,28 +982,21 @@ export default function StaffMobileLayout() {
 
         {/* ── History ── */}
         {activeTab === 'history' && !isLoading && !loadError && (
-          <section className="sa-stack sa-stack--tight">
-            <h3 className="sa-page-title">Delivery History</h3>
-            <div className="sa-list">
-              {completedDeliveries.map((d) => (
-                <Card key={d.id} padding="sm" className="sa-list-card">
-                  <div className="sa-order__top">
-                    <strong className="sa-order__ref">Order #{orderRef(d)}</strong>
-                    <Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>
-                  </div>
-                  <div className="sa-list-card__text">{d.cylinder_type_name} ({d.quantity} qty)</div>
-                  <div className="sa-muted">{d.customer_name}</div>
-                  <div className="sa-amount-row sa-amount-row--footer">
-                    <span className="sa-amount-row__label">Amount Collected:</span>
-                    <AmountToCollect delivery={d} showOriginal={false} tone="neutral" />
-                  </div>
-                </Card>
-              ))}
-              {completedDeliveries.length === 0 && (
-                <Card><EmptyState compact icon={<History size={24} />} title="No completed history yet." /></Card>
-              )}
-            </div>
-          </section>
+          <StaffHistory<Delivery> renderDelivery={(d) => (
+            <Card key={d.id} padding="sm" className="sa-list-card">
+              <div className="sa-order__top">
+                <strong className="sa-order__ref">Order #{orderRef(d)}</strong>
+                <Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>
+              </div>
+              <DeliveryTimes delivery={d} />
+              <div className="sa-list-card__text">{d.cylinder_type_name} ({d.quantity} qty)</div>
+              <div className="sa-muted">{d.customer_name}</div>
+              <div className="sa-amount-row sa-amount-row--footer">
+                <span className="sa-amount-row__label">Amount Collected:</span>
+                <AmountToCollect delivery={d} showOriginal={false} tone="neutral" />
+              </div>
+            </Card>
+          )} />
         )}
 
         {/* ── Profile ── */}
@@ -1075,7 +1084,7 @@ export default function StaffMobileLayout() {
             >
               <span className="sa-notif__head">
                 <strong>{n.title}</strong>
-                <small>{new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
+                <small>{formatDateTime(n.created_at)}</small>
               </span>
               <span className="sa-notif__body">{n.body}</span>
             </button>

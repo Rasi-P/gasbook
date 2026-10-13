@@ -10,7 +10,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Exists, OuterRef, Q, Sum
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from rest_framework import permissions, viewsets, filters, mixins
@@ -78,6 +78,7 @@ from .serializers import (
     StockMovementSerializer,
     StockSerializer,
     StaffDeliveryHistorySerializer,
+    StaffDirectSaleHistorySerializer,
     StaffHandoverBookingSerializer,
     StaffProfileSerializer,
     UserSerializer,
@@ -172,6 +173,7 @@ def build_direct_sale_history_entry(sale):
     void = sale_void(sale) if status == Booking.Status.CANCELLED else None
     if void is not None:
         payment_status = "CANCELLED"
+    refund = getattr(void, "refund", None) if void is not None else None
 
     return {
         "id": sale.id,
@@ -181,6 +183,8 @@ def build_direct_sale_history_entry(sale):
         "display_reference": f"Direct Sale #{sale.id}",
         "status": status,
         "created_at": sale.created_at.isoformat(),
+        "cancelled_at": void.created_at.isoformat() if void is not None else None,
+        "refunded_at": refund.created_at.isoformat() if refund is not None else None,
         "updated_at": sale.updated_at.isoformat(),
         "approved_at": None,
         "delivered_at": sale.created_at.isoformat() if status == Booking.Status.DELIVERED else None,
@@ -922,7 +926,13 @@ class BookingViewSet(
 
             history_entries = [entry for entry in history_entries if matches_search(entry)]
 
-        history_entries.sort(key=lambda entry: str(entry.get("created_at") or ""), reverse=True)
+        # BookingSerializer emits local offsets; direct sales emit UTC. Sort actual
+        # instants, not ISO strings, before paginating the combined history.
+        timestamp_field = DateTimeField()
+        history_entries.sort(key=lambda entry: (
+            timestamp_field.to_internal_value(entry["created_at"]),
+            entry["history_source"], entry["source_id"],
+        ), reverse=True)
 
         page = self.paginate_queryset(history_entries)
         if page is not None:
@@ -1184,6 +1194,41 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
         if status_param:
             queryset = queryset.filter(status=status_param)
         return queryset
+
+    @action(detail=False, methods=["get"])
+    def history(self, request):
+        """The signed-in staff member's completed deliveries and eligible direct sales.
+
+        Payment.received_by is collection attribution, not sale visibility. Keep the
+        sold_by OR handover_staff rule used by SaleViewSet, without opening /sales/.
+        """
+        if getattr(getattr(request.user, "role", None), "code", "") != "staff":
+            raise PermissionDenied("Only staff can view their sales and delivery history.")
+
+        deliveries = self.queryset.filter(staff=request.user, status=Delivery.Status.DELIVERED)
+        billed_items = SaleItem.objects.filter(sale_id=OuterRef("pk")).filter(Q(quantity__gt=0) | Q(total_amount__gt=0))
+        sales = Sale.objects.filter(
+            Q(sold_by=request.user) | Q(handover_staff=request.user), booking__isnull=True,
+        ).filter(Exists(billed_items)).select_related("customer__user", "void").prefetch_related("items__cylinder_type")
+
+        # Merge model records before pagination. A delivery's event is its completion;
+        # a direct sale's is its recording, even if later cancelled. Unknown legacy
+        # completion times sort last and stay null rather than being fabricated.
+        entries = [("delivery", row, row.completed_at) for row in deliveries]
+        entries.extend(("sale", row, row.created_at) for row in sales)
+        entries.sort(key=lambda entry: (entry[2] is not None, entry[2], entry[0], entry[1].pk), reverse=True)
+        page = self.paginate_queryset(entries)
+        timestamp_field = DateTimeField()
+        data = []
+        for source, record, occurred_at in page if page is not None else entries:
+            serializer = DeliverySerializer if source == "delivery" else StaffDirectSaleHistorySerializer
+            data.append({
+                "history_source": source,
+                "source_id": record.pk,
+                "occurred_at": timestamp_field.to_representation(occurred_at) if occurred_at else None,
+                source: serializer(record, context={"request": request}).data,
+            })
+        return self.get_paginated_response(data) if page is not None else Response(data)
 
     def _check_ownership(self, request, delivery):
         if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
@@ -2396,9 +2441,10 @@ def reports(request):
                     "total_amount": serialize_decimal(void.sale.total_amount),
                     "outcome": void.outcome,
                     "refund_due": serialize_decimal(void.refund_due),
-                    "refunded": SaleRefund.objects.filter(void=void).exists(),
+                    "refunded": getattr(void, "refund", None) is not None,
+                    "refunded_at": void.refund.created_at if getattr(void, "refund", None) else None,
                 }
-                for void in range_voids.select_related("sale__customer__user", "sale__location", "voided_by").order_by("created_at")
+                for void in range_voids.select_related("sale__customer__user", "sale__location", "voided_by", "refund").order_by("created_at")
             ],
             # Gross, like summary.sales: a sale cancelled later stays here on its own day.
             "cylinder_sales": list(cylinder_sales),

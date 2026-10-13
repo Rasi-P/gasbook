@@ -1,3 +1,4 @@
+import { formatDateTime } from '../../lib/dateTime';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRightLeft, AtSign, Ban, Car, CircleCheck, ClipboardList, FilterX, Mail, MapPin, Phone, Truck } from 'lucide-react';
 import { api, extractApiError, type Paginated } from '../../lib/api';
@@ -62,6 +63,7 @@ type CurrentRow = BookingFields & {
   status: string;
   started_at: string | null;
   completed_at: string | null;
+  cancelled_at?: string | null;
   booking_payment_status: string;
   payment_method: string;
   payment_collected: string;
@@ -143,7 +145,7 @@ function fmtDate(iso: string) {
 }
 
 function fmtDateTime(iso: string) {
-  return new Date(iso).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return formatDateTime(iso);
 }
 
 function fmtDay(iso: string) {
@@ -519,7 +521,7 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
                         </div>
                       </Td>
                       <Td label="Delivered">
-                        {row.completed_at ? fmtDateTime(row.completed_at) : (
+                        {row.status === 'cancelled' ? `Cancelled ${formatDateTime(row.cancelled_at)}` : row.status === 'delivered' ? `Delivered ${formatDateTime(row.completed_at)}` : (
                           row.started_at ? <span className="ui-cell-sub">Started {fmtDateTime(row.started_at)}</span> : '—'
                         )}
                       </Td>

@@ -1,3 +1,4 @@
+import { formatDateTime } from '../lib/dateTime';
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
@@ -919,7 +920,7 @@ export default function Sales() {
                     <Th>Mode</Th>
                     <Th>Recorded by</Th>
                     <Th>Handed over by</Th>
-                    <Th>Date</Th>
+                    <Th>Date &amp; time</Th>
                     <Th className="sv-actions">Actions</Th>
                   </tr>
                 </thead>
@@ -956,9 +957,10 @@ export default function Sales() {
                       </Td>
                       <Td className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
                       <Td className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
-                      <Td className="sh-meta sh-nowrap">
-                        {new Date(sale.created_at).toLocaleDateString('en-IN')}
-                        {sale.void && <span className="ui-cell-sub sv-reason" title={sale.void.reason}>Cancelled {new Date(sale.void.voided_at).toLocaleDateString('en-IN')}</span>}
+                      <Td className="sh-meta">
+                        {formatDateTime(sale.created_at)}
+                        {sale.void && <span className="ui-cell-sub sv-reason" title={sale.void.reason}>Cancelled {formatDateTime(sale.void.voided_at)}</span>}
+                        {sale.void?.refund && <span className="ui-cell-sub">Refunded {formatDateTime(sale.void.refund.confirmed_at)}</span>}
                       </Td>
                       <Td className="sh-nowrap sv-actions">
                         {!sale.void && sale.is_direct && (

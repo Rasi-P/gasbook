@@ -1,3 +1,5 @@
+import { BookingTimes } from '../components/BookingTimes';
+import { formatDateTime } from '../lib/dateTime';
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
 import { ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag, ClipboardList, Truck, UserX, UserCheck, Receipt, Wallet } from 'lucide-react';
@@ -135,6 +137,8 @@ type Booking = {
   delivery_staff_name?: string | null;
   delivery_rejection_reason?: string | null;
   needs_reassignment?: boolean;
+  delivered_at?: string | null;
+  rejected_at?: string | null;
 };
 
 type Staff = { id: number; username: string; full_name: string; assigned_area: string; user: number };
@@ -144,7 +148,7 @@ function money(v: number | string) {
 }
 
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return formatDateTime(iso);
 }
 
 function hasActiveDiscount(customer: Customer) {
@@ -1371,8 +1375,7 @@ export default function Customers() {
                       <span className="cd-meta-value">{booking.assigned_staff_name || 'Unassigned'}</span>
                     </span>
                     <span>
-                      <span className="cd-meta-label">Date: </span>
-                      <span className="cd-meta-value">{fmtDate(booking.created_at)}</span>
+                      <BookingTimes booking={booking} />
                     </span>
                     <Button type="button" variant="secondary" size="sm" className="cd-booking__view" onClick={() => alert('View booking detail component not implemented in existing codebase')}>View</Button>
                   </div>
@@ -1493,7 +1496,7 @@ export default function Customers() {
                         </div>
                         {s.payments.map((p, idx) => (
                           <div key={`pay-${idx}`} className="cd-breakdown__row">
-                            <span>{p.date ? new Date(p.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : ''} · {p.mode.toUpperCase()}</span>
+                            <span>{formatDateTime(p.date)} · {p.mode.toUpperCase()}</span>
                             <span className="ui-num-success">{money(p.amount)}</span>
                           </div>
                         ))}

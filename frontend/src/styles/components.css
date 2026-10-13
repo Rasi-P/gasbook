@@ -1987,3 +1987,5 @@
     animation-duration: 1.6s;
   }
 }
+
+.event-times { display: flex; flex-direction: column; gap: 4px; min-width: 0; white-space: normal; overflow-wrap: anywhere; color: var(--text-muted); font-size: 12px; line-height: 1.5; }

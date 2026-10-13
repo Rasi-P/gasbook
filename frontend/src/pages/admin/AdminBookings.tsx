@@ -1,3 +1,4 @@
+import { BookingTimes } from '../../components/BookingTimes';
 import { useCallback, useEffect, useState } from 'react';
 import { Check, ClipboardList, Truck, X } from 'lucide-react';
 import { api, extractApiError, fetchAllPages, LIMITS } from '../../lib/api';
@@ -41,6 +42,8 @@ type Booking = {
   delivery_staff_name?: string | null;
   delivery_rejection_reason?: string | null;
   needs_reassignment?: boolean;
+  delivered_at?: string | null;
+  rejected_at?: string | null;
 };
 
 type Staff = { id: number; username: string; full_name: string; assigned_area: string; user: number };
@@ -212,6 +215,7 @@ export default function AdminBookings() {
                   </Td>
                   <Td label="Cylinder">
                     <strong>{booking.quantity} x {booking.cylinder_type_name}</strong>
+                    <BookingTimes booking={booking} />
                     <span className="ui-cell-sub">{money(booking.rate)} each</span>
                     {discountAmount(booking) > 0 && (
                       <span className="bk-price">

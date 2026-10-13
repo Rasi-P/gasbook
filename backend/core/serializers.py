@@ -1154,7 +1154,33 @@ class BookingSerializer(serializers.ModelSerializer):
         return booking
 
 
+class StaffDirectSaleHistorySerializer(serializers.ModelSerializer):
+    """Minimal read-only sale details for an already staff-scoped history query."""
+
+    customer_name = serializers.SerializerMethodField()
+    items = SaleItemSerializer(many=True, read_only=True)
+    status = serializers.SerializerMethodField()
+    cancelled_at = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Sale
+        fields = ["id", "customer_name", "items", "total_amount", "created_at", "status", "cancelled_at"]
+        read_only_fields = fields
+
+    def get_customer_name(self, obj):
+        return display_name(obj.customer.user) if obj.customer_id else "Walk-in customer"
+
+    def get_status(self, obj):
+        return "cancelled" if sale_void(obj) else "completed"
+
+    def get_cancelled_at(self, obj):
+        void = sale_void(obj)
+        return serializers.DateTimeField().to_representation(void.created_at) if void else None
+
+
 class DeliverySerializer(serializers.ModelSerializer):
+    booked_at = serializers.DateTimeField(source="booking.created_at", read_only=True)
+    cancelled_at = serializers.SerializerMethodField()
     customer_name = serializers.SerializerMethodField()
     customer_phone = serializers.CharField(source="booking.customer.user.phone", read_only=True)
     customer_address = serializers.CharField(source="booking.customer.user.address", read_only=True)
@@ -1181,6 +1207,12 @@ class DeliverySerializer(serializers.ModelSerializer):
 
     def _get_pricing(self, obj):
         return get_booking_pricing_snapshot(obj.booking)
+
+    def get_cancelled_at(self, obj):
+        # Admin rejection cancels the delivery; its event is recorded on Booking.
+        if obj.status == Delivery.Status.CANCELLED and obj.booking.rejected_at:
+            return serializers.DateTimeField().to_representation(obj.booking.rejected_at)
+        return None
 
     def get_customer_name(self, obj):
         user = obj.booking.customer.user
@@ -1214,6 +1246,7 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
     order_id = serializers.CharField(source="booking.order_id", read_only=True)
     booking_status = serializers.CharField(source="booking.status", read_only=True)
     booked_at = serializers.DateTimeField(source="booking.created_at", read_only=True)
+    cancelled_at = serializers.SerializerMethodField()
     customer_name = serializers.SerializerMethodField()
     customer_phone = serializers.CharField(source="booking.customer.user.phone", read_only=True)
     customer_area = serializers.CharField(source="booking.customer.area", read_only=True)
@@ -1231,7 +1264,7 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
         model = Delivery
         fields = [
             "id", "booking", "order_id", "status", "booking_status", "booked_at",
-            "started_at", "completed_at",
+            "started_at", "completed_at", "cancelled_at",
             "customer_name", "customer_phone", "customer_area",
             "cylinder_type_name", "quantity",
             "original_amount", "discount_amount", "final_amount",
@@ -1243,6 +1276,11 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
 
     def _get_pricing(self, obj):
         return get_booking_pricing_snapshot(obj.booking)
+
+    def get_cancelled_at(self, obj):
+        if obj.status == Delivery.Status.CANCELLED and obj.booking.rejected_at:
+            return serializers.DateTimeField().to_representation(obj.booking.rejected_at)
+        return None
 
     def get_customer_name(self, obj):
         return display_name(obj.booking.customer.user)

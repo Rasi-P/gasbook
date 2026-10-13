@@ -1,3 +1,4 @@
+import { formatDateTime } from '../../lib/dateTime';
 import { useEffect, useState } from 'react';
 import {
   IndianRupee, WalletCards, XCircle,
@@ -55,7 +56,7 @@ type LoadRow = { cylinder_type__name: string; to_location__name: string; total_q
 type Cancellation = {
   sale_id: number; customer_name: string | null; location_name: string; sale_date: string; voided_at: string;
   voided_by_name: string | null; reason: string; total_amount: string; outcome: 'none' | 'refund' | 'credit';
-  refund_due: string; refunded: boolean;
+  refund_due: string; refunded: boolean; refunded_at?: string | null;
 };
 type ReportsData = {
   range: { start: string; end: string };
@@ -409,7 +410,7 @@ export default function Reports() {
                       <Th>Mode</Th>
                       <Th>Recorded by</Th>
                       <Th>Handed over by</Th>
-                      <Th>Date</Th>
+                      <Th>Date &amp; time</Th>
                     </tr>
                   </thead>
                   <tbody>
@@ -445,8 +446,8 @@ export default function Reports() {
                         </Td>
                         <Td className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
                         <Td className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
-                        <Td className="sh-meta sh-nowrap">
-                          {new Date(sale.created_at).toLocaleDateString('en-IN')}
+                        <Td className="sh-meta">
+                          {formatDateTime(sale.created_at)}
                         </Td>
                       </tr>
                       );
@@ -474,15 +475,16 @@ export default function Reports() {
                     <tbody>
                       {data.cancellation_list.map((c) => (
                         <tr key={c.sale_id}>
-                          <Td><strong>#{c.sale_id}</strong><span className="ui-cell-sub">{new Date(c.sale_date).toLocaleDateString('en-IN')} · {c.location_name}</span></Td>
+                          <Td><strong>#{c.sale_id}</strong><span className="ui-cell-sub">{formatDateTime(c.sale_date)} · {c.location_name}</span></Td>
                           <Td>{c.customer_name || '-'}</Td>
                           <Td numeric>{money(c.total_amount)}</Td>
                           <Td>
                             {c.outcome === 'refund'
                               ? <Badge tone={c.refunded ? 'neutral' : 'warning'}>{c.refunded ? 'Refunded' : `Refund owed ${money(c.refund_due)}`}</Badge>
                               : c.outcome === 'credit' ? <Badge>Kept as credit</Badge> : <Badge>Nothing paid</Badge>}
+                            {c.refunded && <span className="ui-cell-sub">Refunded {formatDateTime(c.refunded_at)}</span>}
                           </Td>
-                          <Td className="sh-meta">{new Date(c.voided_at).toLocaleDateString('en-IN')}{c.voided_by_name && <span className="ui-cell-sub">{c.voided_by_name}</span>}</Td>
+                          <Td className="sh-meta">{formatDateTime(c.voided_at)}{c.voided_by_name && <span className="ui-cell-sub">{c.voided_by_name}</span>}</Td>
                           <Td className="sh-meta">{c.reason}</Td>
                         </tr>
                       ))}
