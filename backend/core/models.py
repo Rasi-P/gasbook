@@ -261,7 +261,17 @@ class Sale(TimeStampedModel):
     delivery_staff = models.CharField(max_length=80, blank=True)
     note = models.CharField(max_length=300, blank=True)
     sold_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
-    
+    # The staff member who physically handed the cylinders over, when known. Separate from
+    # sold_by (who recorded the sale) and from Payment.received_by (who took the money).
+    # delivery_staff keeps the name as text, as before.
+    handover_staff = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="handover_sales"
+    )
+    # Idempotency key the client sends with each new sale: a retry with the same key returns
+    # the original sale instead of recording it twice. Null for sales made by completing a
+    # delivery and for sales made before the key existed.
+    client_ref = models.UUIDField(null=True, blank=True, unique=True, editable=False)
+
     objects = models.Manager()
 
     class Meta:
@@ -290,11 +300,108 @@ class Payment(TimeStampedModel):
     received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     note = models.CharField(max_length=200, blank=True)
     empty_collected = models.PositiveIntegerField(default=0)
-    
+
     objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]
+
+
+# A cancelled direct sale and what happens to its money. These three tables are insert-only:
+# the original sale, its lines and its payments are never edited or deleted. A voided sale
+# stays in its own day's gross sales; it no longer counts towards what the customer owes or
+# towards their empty cylinders. See services.void_sale and services.confirm_refund.
+class SaleVoid(TimeStampedModel):
+    class Outcome(models.TextChoices):
+        NONE = "none", "Nothing was paid"
+        REFUND = "refund", "Refund"
+        CREDIT = "credit", "Customer credit"
+
+    sale = models.OneToOneField(Sale, on_delete=models.PROTECT, related_name="void")
+    reason = models.CharField(max_length=300)
+    outcome = models.CharField(max_length=10, choices=Outcome.choices)
+    # At the moment of the void: money the customer had paid on the sale, the unpaid balance
+    # that stops being due, and (refund outcome only) the money owed back to the customer.
+    paid_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    cancelled_balance = models.DecimalField(max_digits=10, decimal_places=2)
+    refund_due = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    voided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="sale_voids")
+
+    objects = models.Manager()
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(paid_amount__gte=0, cancelled_balance__gte=0, refund_due__gte=0),
+                name="salevoid_amounts_non_negative",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(outcome="none", paid_amount=0, refund_due=0)
+                    | models.Q(outcome="refund", paid_amount__gt=0, refund_due=models.F("paid_amount"))
+                    | models.Q(outcome="credit", paid_amount__gt=0, refund_due=0)
+                ),
+                name="salevoid_outcome_matches_amounts",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Void of sale #{self.sale_id} ({self.outcome})"
+
+
+class SaleRefund(TimeStampedModel):
+    """The refund owed by a SaleVoid, actually paid back: once, in full."""
+
+    void = models.OneToOneField(SaleVoid, on_delete=models.PROTECT, related_name="refund")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Transaction reference per payment mode, e.g. {"gpay": "UTR…"}; cash may have none.
+    references = models.JSONField(default=dict, blank=True)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="sale_refunds")
+
+    objects = models.Manager()
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name="salerefund_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"Refund of Rs. {self.amount} for void #{self.void_id}"
+
+
+class PaymentReversal(TimeStampedModel):
+    """Links an original payment to the negative payment that reverses it.
+
+    A credit outcome also links the unlinked positive payment that keeps the money as customer
+    credit; a refund links the SaleRefund instead. Each payment can be reversed once only.
+    """
+
+    original = models.OneToOneField(Payment, on_delete=models.PROTECT, related_name="reversal_link")
+    reversal = models.OneToOneField(Payment, on_delete=models.PROTECT, related_name="reverses_link")
+    credit = models.OneToOneField(Payment, on_delete=models.PROTECT, null=True, blank=True, related_name="credit_link")
+    sale_void = models.ForeignKey(SaleVoid, on_delete=models.PROTECT, related_name="payment_reversals")
+    sale_refund = models.ForeignKey(SaleRefund, on_delete=models.PROTECT, null=True, blank=True, related_name="payment_reversals")
+
+    objects = models.Manager()
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            # Either a refund (money paid back) or a credit (money kept for the customer), never both.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(sale_refund__isnull=False, credit__isnull=True)
+                    | models.Q(sale_refund__isnull=True, credit__isnull=False)
+                ),
+                name="paymentreversal_refund_xor_credit",
+            ),
+            models.CheckConstraint(condition=~models.Q(original=models.F("reversal")), name="paymentreversal_distinct_rows"),
+        ]
+
+    def __str__(self):
+        return f"Reversal of payment #{self.original_id} by #{self.reversal_id}"
 
 
 class Expense(TimeStampedModel):

@@ -4,11 +4,12 @@ import {
   AlertTriangle, Banknote, Building2, CheckCircle2, CreditCard, Plus,
   Receipt, RotateCcw, Smartphone, Trash2, User,
 } from 'lucide-react';
-import { api, extractApiError, fetchAllPages, LIMITS } from '../lib/api';
+import { api, extractApiError, fetchAllPages, getApiErrorCode, LIMITS, newClientRef } from '../lib/api';
 import { ErrorState, LoadingState } from '../components/AsyncState';
 import { Pager } from '../components/Pager';
 import { usePager } from '../hooks/usePager';
 import { SaleItemsCell } from '../components/SaleItemsCell';
+import { ConfirmRefundModal, VoidSaleModal, VoidStatusBadges, type SalePaymentRow, type SaleVoidInfo } from '../components/SaleVoidDialogs';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Alert } from '../components/ui/Alert';
@@ -26,10 +27,16 @@ import { Tabs } from '../components/ui/Tabs';
 type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
 type SaleItem = { cylinder_type: number; quantity: number | string; rate: string; empty_returned: number | string; rate_type: 'custom' | 'refill' | 'new' };
+// can_hand_over: an active user with an active staff profile, as the server requires for handover_staff.
+type StaffOption = { id: number; user: number; username: string; first_name: string; last_name: string; can_hand_over: boolean };
 type HistorySale = {
   id: number;
   customer_name: string;
   sold_by_name: string;
+  sold_by_full_name: string;
+  handover_staff_name: string | null;
+  is_direct: boolean;
+  void: SaleVoidInfo | null;
   note?: string;
   items: { cylinder_type_name: string; quantity: number; rate: number; empty_returned: number }[];
   total_amount: number;
@@ -37,7 +44,7 @@ type HistorySale = {
   balance_due: number;
   payment_mode: string;
   created_at: string;
-  payments: { amount: number; mode: string }[];
+  payments: SalePaymentRow[];
 };
 
 const PAYMENT_MODES = [
@@ -50,6 +57,28 @@ const PAYMENT_MODES = [
 
 function money(v: number | string) {
   return `Rs. ${Number(v || 0).toLocaleString('en-IN')}`;
+}
+
+/** The payments that paid for a sale (refunds and credit reversals are shown with its cancellation). */
+function originalPayments(sale: { payments: SalePaymentRow[] }) {
+  return (sale.payments ?? []).filter((p) => p.kind === 'payment');
+}
+
+function staffName(s: StaffOption) {
+  return `${s.first_name || ''} ${s.last_name || ''}`.trim() || s.username;
+}
+
+type ExistingCustomer = { id: number; name: string; phone: string };
+
+/** The customer already using a phone number, when a new-customer sale was refused for it. */
+function duplicateCustomerFrom(err: unknown): ExistingCustomer | null {
+  if (getApiErrorCode(err) !== 'duplicate_phone') return null;
+  return (err as { response?: { data?: { existing_customer?: ExistingCustomer } } }).response?.data?.existing_customer ?? null;
+}
+
+/** A request whose client_ref already recorded a sale: an earlier attempt went through. */
+function isReusedClientRef(err: unknown): boolean {
+  return getApiErrorCode(err) === 'client_ref_reused';
 }
 
 export default function Sales() {
@@ -66,6 +95,11 @@ export default function Sales() {
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
   const [location, setLocation] = useState(0);
+  // Who physically handed the cylinders over (optional). The server accepts only active staff.
+  const [staffOptions, setStaffOptions] = useState<StaffOption[]>([]);
+  const handoverOptions = staffOptions.filter((s) => s.can_hand_over);
+  const [staffLoadError, setStaffLoadError] = useState('');
+  const [handoverStaff, setHandoverStaff] = useState('');
 
   // Sale items (start empty — user adds as needed)
   const [items, setItems] = useState<SaleItem[]>([]);
@@ -86,6 +120,9 @@ export default function Sales() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  // Identifies this sale for the server; kept across retries, renewed after each saved sale.
+  const [clientRef, setClientRef] = useState(newClientRef);
+  const [existingCustomer, setExistingCustomer] = useState<ExistingCustomer | null>(null);
   const [refStatus, setRefStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [refError, setRefError] = useState('');
 
@@ -99,7 +136,13 @@ export default function Sales() {
   const [historyError, setHistoryError] = useState('');
   const [search, setSearch] = useState('');
   const [filterPending, setFilterPending] = useState(false);
-  const historyPager = usePager(sales, 10, `${search}|${filterPending}`);
+  const [filterHandover, setFilterHandover] = useState('');
+  const [filterVoid, setFilterVoid] = useState('');
+  const historyPager = usePager(sales, 10, `${search}|${filterPending}|${filterHandover}|${filterVoid}`);
+  // Cancelling a sale and confirming its refund (components/SaleVoidDialogs).
+  const [voidSaleId, setVoidSaleId] = useState<number | null>(null);
+  const [refundSale, setRefundSale] = useState<HistorySale | null>(null);
+  const [historyNotice, setHistoryNotice] = useState('');
 
   function loadReferenceData() {
     Promise.all([fetchAllPages<CylinderType>('/cylinder-types/'), fetchAllPages<Location>('/locations/')])
@@ -124,6 +167,13 @@ export default function Sales() {
   }
 
   useEffect(() => { loadReferenceData(); }, []);
+
+  // Optional field: if the list cannot load, the sale can still be recorded without it.
+  useEffect(() => {
+    fetchAllPages<StaffOption>('/staff-profiles/')
+      .then((rows) => { setStaffOptions(rows); setStaffLoadError(''); })
+      .catch((err) => setStaffLoadError(extractApiError(err, [], 'Could not load the staff list.')));
+  }, []);
 
   useEffect(() => {
     if (location) localStorage.setItem('lastSalesLoc', String(location));
@@ -161,6 +211,8 @@ export default function Sales() {
     const params: Record<string, string> = {};
     if (search) params.search = search;
     if (filterPending) params.pending = '1';
+    if (filterHandover) params.handover_staff = filterHandover;
+    if (filterVoid) params.void_status = filterVoid;
     fetchAllPages<HistorySale>('/sales/', params)
       .then((rows) => { setSales(rows); setHistoryError(''); setHistoryStatus('ready'); })
       .catch((err) => {
@@ -171,7 +223,7 @@ export default function Sales() {
 
   useEffect(() => {
     if (tab === 'history') fetchHistory();
-  }, [tab, search, filterPending]);
+  }, [tab, search, filterPending, filterHandover, filterVoid]);
 
   // ── Item helpers ──────────────────────────────────────────────────────────
 
@@ -262,7 +314,7 @@ export default function Sales() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (saving) return;
-    setMessage(''); setError('');
+    setMessage(''); setError(''); setExistingCustomer(null);
     if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
     if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
       setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
@@ -270,8 +322,7 @@ export default function Sales() {
     }
     setSaving(true);
     try {
-      let customerId: number | null = selectedCustomerId;
-      if (!customerId) {
+      if (!selectedCustomerId) {
         if (!customerName.trim()) {
           setError('Please select a customer or enter details to register a new one.');
           return;
@@ -280,14 +331,15 @@ export default function Sales() {
           setError('Phone number is required to register a new customer.');
           return;
         }
-        const res = await api.post('/customers/', { name: customerName.trim(), phone, address });
-        customerId = res.data.id;
       }
+      // One request records everything (a new customer, the sale, its payments, past dues) or
+      // nothing; client_ref makes a retry of the same request return the saved sale.
       const salePayload: any = {
-        customer: customerId,
+        client_ref: clientRef,
         location,
         payment_mode: paymentMode,
-        paid_amount: paid,
+        // 2-decimal string: float maths turns 899.99 × 3 into 2699.9700000000003, which the server rejects.
+        paid_amount: paid.toFixed(2),
         sale_items: items.map((item) => ({
           cylinder_type: item.cylinder_type,
           quantity: Number(item.quantity) || 1,
@@ -295,6 +347,9 @@ export default function Sales() {
           empty_returned: Number(item.empty_returned) || 0,
         })),
       };
+      if (handoverStaff) salePayload.handover_staff = Number(handoverStaff);
+      if (selectedCustomerId) salePayload.customer = selectedCustomerId;
+      else salePayload.new_customer = { name: customerName.trim(), phone: phone.trim(), address };
 
       if (paymentMode === 'split') {
         salePayload.split_payments = [];
@@ -305,32 +360,47 @@ export default function Sales() {
         salePayload.paid_payment_mode = paidPaymentMode;
       }
 
-      await api.post('/sales/', salePayload);
-
-      if (pastTotal > 0 && customerId) {
-        if (pastPaymentMode === 'split') {
-          if (Number(pastSplit.cash) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.cash), payment_mode: 'cash', note: 'Past pending collected during sale' });
-          if (Number(pastSplit.gpay) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.gpay), payment_mode: 'gpay', note: 'Past pending collected during sale' });
-          if (Number(pastSplit.bank) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.bank), payment_mode: 'bank', note: 'Past pending collected during sale' });
-        } else {
-          await api.post('/payments/', {
-            customer: customerId,
-            amount: pastTotal,
-            payment_mode: pastPaymentMode,
-            note: 'Past pending collected during sale',
-          });
-        }
+      // Settles the customer's older dues only, never this sale.
+      if (pastTotal > 0 && selectedCustomerId) {
+        salePayload.past_due_payments = pastPaymentMode === 'split'
+          ? (['cash', 'gpay', 'bank'] as const)
+              .filter((mode) => Number(pastSplit[mode]) > 0)
+              .map((mode) => ({ mode, amount: Number(pastSplit[mode]).toFixed(2) }))
+          : [{ mode: pastPaymentMode, amount: pastTotal.toFixed(2) }];
       }
+
+      await api.post('/sales/', salePayload);
 
       setMessage(`Sale saved! Total ${money(total)}, Balance ${money(balance)}${pastTotal > 0 ? `, and collected ${money(pastTotal)} for past dues` : ''}.`);
       setCustomerName(''); setPhone(''); setAddress(''); setSelectedCustomerId(null); setSelectedCustomer(null);
       setPaidAmount(''); setPaymentMode('cash'); setPaidPaymentMode('cash'); setSaleSplit({ cash: '', gpay: '', bank: '' });
       setPastAmount(''); setPastPaymentMode('cash'); setPastSplit({ cash: '', gpay: '', bank: '' });
       setItems([]);
+      setHandoverStaff('');
+      setClientRef(newClientRef());
     } catch (err: unknown) {
-      setError(extractApiError(err, ['name', 'phone', 'address', 'customer', 'location', 'sale_items', 'paid_amount', 'split_payments', 'non_field_errors'], 'Failed to save sale. Check backend connection.'));
+      setExistingCustomer(duplicateCustomerFrom(err));
+      if (isReusedClientRef(err)) {
+        setClientRef(newClientRef());
+        setError('An earlier attempt of this sale was already saved. Check Sales history before entering it again.');
+      } else {
+        setError(extractApiError(err, ['name', 'phone', 'address', 'customer', 'location', 'sale_items', 'paid_amount', 'split_payments', 'handover_staff', 'non_field_errors'], 'Failed to save sale. Check backend connection.'));
+      }
     } finally {
       setSaving(false);
+    }
+  }
+
+  /** After a duplicate-phone refusal, switch the form to the customer who has that number. */
+  async function selectExistingCustomer() {
+    if (!existingCustomer) return;
+    try {
+      const { data } = await api.get(`/customers/${existingCustomer.id}/`);
+      setCustomerName(data.name); setPhone(data.phone); setAddress(data.address);
+      setSelectedCustomerId(data.id); setSelectedCustomer(data);
+      setExistingCustomer(null); setError('');
+    } catch (err: unknown) {
+      setError(extractApiError(err, [], 'Could not load that customer.'));
     }
   }
 
@@ -346,6 +416,7 @@ export default function Sales() {
     setSaving(true);
     try {
       await api.post('/sales/', {
+        client_ref: clientRef,
         customer: selectedCustomerId,
         location,
         payment_mode: 'cash',
@@ -363,7 +434,13 @@ export default function Sales() {
       setCustomerName(''); setPhone(''); setAddress(''); setSelectedCustomerId(null); setSelectedCustomer(null);
       setReturnEmpties([]);
       setReturnMode(false);
+      setClientRef(newClientRef());
     } catch (err: unknown) {
+      if (isReusedClientRef(err)) {
+        setClientRef(newClientRef());
+        setError('An earlier attempt of this return was already saved. Check Sales history before entering it again.');
+        return;
+      }
       setError(extractApiError(err, ['customer', 'location', 'sale_items', 'non_field_errors'], 'Failed to record return.'));
     } finally {
       setSaving(false);
@@ -461,6 +538,16 @@ export default function Sales() {
                 </Select>
               </Field>
             </div>
+            {!returnMode && (
+              <div className="grid-2 sale-card__row">
+                <Field label="Handed over by" hint={staffLoadError || 'Optional. The staff member who gave the cylinders to the customer.'}>
+                  <Select value={handoverStaff} onChange={(e) => setHandoverStaff(e.target.value)}>
+                    <option value="">Not specified</option>
+                    {handoverOptions.map((s) => <option key={s.id} value={s.user}>{staffName(s)}</option>)}
+                  </Select>
+                </Field>
+              </div>
+            )}
 
             {selectedCustomer && (
               <div className="sale-summary">
@@ -468,6 +555,8 @@ export default function Sales() {
                   <span className="ui-tile__label">Payment Due</span>
                   {Number(selectedCustomer.pending_balance) > 0 ? (
                     <strong className="ui-tile__value sale-summary__due">{money(selectedCustomer.pending_balance)}</strong>
+                  ) : Number(selectedCustomer.credit_balance) > 0 ? (
+                    <span className="sale-summary__ok">Credit {money(selectedCustomer.credit_balance)}</span>
                   ) : (
                     <span className="sale-summary__ok">Settled</span>
                   )}
@@ -763,6 +852,11 @@ export default function Sales() {
               )}
 
               {error && <Alert tone="danger" role="alert">{error}</Alert>}
+              {existingCustomer && (
+                <Button type="button" variant="secondary" icon={<User />} onClick={selectExistingCustomer}>
+                  Use existing customer: {existingCustomer.name} ({existingCustomer.phone})
+                </Button>
+              )}
               {message && <Alert tone="success">{message}</Alert>}
 
               <div className="sale-submit">
@@ -789,7 +883,20 @@ export default function Sales() {
             >
               Pending only
             </Button>
+            <Select aria-label="Handed over by" value={filterHandover} onChange={(e) => setFilterHandover(e.target.value)}>
+              <option value="">Handed over by: anyone</option>
+              <option value="none">Handed over by: not specified</option>
+              {/* Every staff member, so older sales handed over by someone now inactive can be found. */}
+              {staffOptions.map((s) => <option key={s.id} value={s.user}>{s.can_hand_over ? staffName(s) : `${staffName(s)} (inactive)`}</option>)}
+            </Select>
+            <Select aria-label="Sale status" value={filterVoid} onChange={(e) => setFilterVoid(e.target.value)}>
+              <option value="">All sales</option>
+              <option value="active">Active</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="refund_pending">Refund owed</option>
+            </Select>
           </div>
+          {historyNotice && <Alert tone="success" compact>{historyNotice}</Alert>}
 
           {historyStatus === 'error' && <ErrorState message={historyError} onRetry={() => { setHistoryStatus('loading'); fetchHistory(); }} />}
           {historyStatus !== 'error' && (
@@ -810,8 +917,10 @@ export default function Sales() {
                     <Th align="right">Total</Th>
                     <Th align="right">Balance</Th>
                     <Th>Mode</Th>
-                    <Th>Staff</Th>
+                    <Th>Recorded by</Th>
+                    <Th>Handed over by</Th>
                     <Th>Date</Th>
+                    <Th className="sv-actions">Actions</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -825,7 +934,7 @@ export default function Sales() {
                         {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
                       </Td>
                       <Td align="right">
-                        {isReturn ? <span className="ui-num-placeholder">-</span> : (
+                        {sale.void ? <VoidStatusBadges saleVoid={sale.void} /> : isReturn ? <span className="ui-num-placeholder">-</span> : (
                           Number(sale.balance_due) > 0
                             ? <Badge tone="warning">{money(sale.balance_due)}</Badge>
                             : <Badge tone="success">Paid</Badge>
@@ -837,17 +946,31 @@ export default function Sales() {
                         ) : (
                           <div className="sh-mode">
                             <Badge variant="outline">{sale.payment_mode}</Badge>
-                            {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && sale.payments && sale.payments.length > 0 && (
+                            {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && originalPayments(sale).length > 0 && (
                               <span className="ui-cell-sub">
-                                {sale.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
+                                {originalPayments(sale).map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
                               </span>
                             )}
                           </div>
                         )}
                       </Td>
-                      <Td className="sh-meta">{sale.sold_by_name}</Td>
+                      <Td className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
+                      <Td className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
                       <Td className="sh-meta sh-nowrap">
                         {new Date(sale.created_at).toLocaleDateString('en-IN')}
+                        {sale.void && <span className="ui-cell-sub sv-reason" title={sale.void.reason}>Cancelled {new Date(sale.void.voided_at).toLocaleDateString('en-IN')}</span>}
+                      </Td>
+                      <Td className="sh-nowrap sv-actions">
+                        {!sale.void && sale.is_direct && (
+                          <Button type="button" size="sm" variant="secondary" onClick={() => { setHistoryNotice(''); setVoidSaleId(sale.id); }}>
+                            Cancel
+                          </Button>
+                        )}
+                        {sale.void?.status === 'refund_pending' && (
+                          <Button type="button" size="sm" onClick={() => { setHistoryNotice(''); setRefundSale(sale); }}>
+                            Confirm refund
+                          </Button>
+                        )}
                       </Td>
                     </tr>
                     );
@@ -863,6 +986,16 @@ export default function Sales() {
             )}
           </Card>
           )}
+          <VoidSaleModal
+            saleId={voidSaleId}
+            onClose={() => setVoidSaleId(null)}
+            onDone={() => { setHistoryNotice(`Sale #${voidSaleId} cancelled.`); setVoidSaleId(null); fetchHistory(); }}
+          />
+          <ConfirmRefundModal
+            sale={refundSale}
+            onClose={() => setRefundSale(null)}
+            onDone={() => { setHistoryNotice(`Refund for sale #${refundSale?.id} confirmed.`); setRefundSale(null); fetchHistory(); }}
+          />
         </div>
       )}
     </div>

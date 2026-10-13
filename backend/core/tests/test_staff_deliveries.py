@@ -222,7 +222,7 @@ class StaffHandoverHistoryTests(GasBookTestCase):
         booking = self.decline_and_reassign(self.staff_a, self.staff_b, reason="Vehicle issue")
         for action in ("accept", "start"):
             self.delivery_action(self.staff_b, booking, action)
-        self.delivery_action(self.staff_b, booking, "complete", payment_collected="1800", empty_collected=1)
+        self.delivery_action(self.staff_b, booking, "complete", payment_method="cash", payment_collected="1800", empty_collected=1)
         handover_log = ActivityLog.objects.get(action="booking_approved", metadata__previous_staff_id=self.staff_a.pk)
 
         data = self.history(self.staff_a)

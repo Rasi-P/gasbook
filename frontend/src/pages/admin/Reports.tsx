@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react';
 import {
-  IndianRupee, WalletCards,
+  IndianRupee, WalletCards, XCircle,
   AlertTriangle, Package, Boxes, CheckCircle2, Receipt, Truck, Users,
 } from 'lucide-react';
-import { api, extractApiError } from '../../lib/api';
+import { api, extractApiError, fetchAllPages } from '../../lib/api';
 import { ErrorState, LoadingState } from '../../components/AsyncState';
 import { FilledEmpty } from '../../components/FilledEmpty';
 import { SaleItemsCell } from '../../components/SaleItemsCell';
+import { VoidStatusBadges, type SaleVoidInfo } from '../../components/SaleVoidDialogs';
 import { Alert } from '../../components/ui/Alert';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Card, CardHeader } from '../../components/ui/Card';
 import { ChoiceChips } from '../../components/ui/ChoiceChips';
 import { EmptyState } from '../../components/ui/EmptyState';
-import { Field, Input } from '../../components/ui/Field';
+import { Field, Input, Select } from '../../components/ui/Field';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { SkeletonRows, SkeletonStatGrid } from '../../components/ui/Skeleton';
 import { StatCard } from '../../components/ui/StatCard';
@@ -23,6 +24,7 @@ import { Tabs } from '../../components/ui/Tabs';
 type SaleItem = { cylinder_type_name: string; quantity: number; rate: number };
 type Sale = {
   id: number; created_at: string; customer_name: string; sold_by_name: string;
+  sold_by_full_name: string; handover_staff_name: string | null; void?: SaleVoidInfo | null;
   total_amount: number; paid_amount: number; balance_due: number;
   payment_mode: string; location_name: string; items: SaleItem[];
   payments?: { amount: number; mode: string; date: string }[];
@@ -40,7 +42,9 @@ type PendingDue = {
   customer__user__first_name: string; customer__user__last_name: string; customer__user__phone: string;
   total_due: number; sale_count: number;
 };
-type CylinderSale = { cylinder_type__name: string; sale__location__name?: string; sale__sold_by__role?: string; total_qty: number; total_amount: number };
+type CylinderSale = { cylinder_type__name: string; sale__location__name?: string; total_qty: number; total_amount: number };
+type StaffTotal = { user_id: number | null; name: string | null; username: string | null; role: string | null; count: number; amount: number | string };
+type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
 type StockRow = {
   type: string; shop_filled: number; shop_empty: number;
   kandam_filled: number; kandam_empty: number;
@@ -48,11 +52,22 @@ type StockRow = {
   supplier_stock: number; physical_stock: number; total: number;
 };
 type LoadRow = { cylinder_type__name: string; to_location__name: string; total_qty: number };
+type Cancellation = {
+  sale_id: number; customer_name: string | null; location_name: string; sale_date: string; voided_at: string;
+  voided_by_name: string | null; reason: string; total_amount: string; outcome: 'none' | 'refund' | 'credit';
+  refund_due: string; refunded: boolean;
+};
 type ReportsData = {
   range: { start: string; end: string };
-  summary: { sales: number; collection: number; expenses: number; movements: number; pending: number };
-  monthly: { sales: number; collection: number; expenses: number };
+  // sales: gross by sale date; cancelled: by void date; net_sales = sales - cancelled.
+  summary: {
+    sales: number; cancelled: number; net_sales: number; collection: number; refunds_paid: number; refunds_owed: number;
+    expenses: number; movements: number; pending: number;
+  };
+  monthly: { sales: number; cancelled: number; net_sales: number; collection: number; expenses: number };
+  cancellation_list: Cancellation[];
   cylinder_sales: CylinderSale[];
+  staff_breakdown: { recorded_by: StaffTotal[]; handed_over_by: StaffTotal[]; collections_by_receiver: StaffTotal[] };
   pending_dues: PendingDue[];
   sales_list: Sale[];
   expense_list: Expense[];
@@ -88,15 +103,17 @@ export default function Reports() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('summary');
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [location, setLocation] = useState('');
 
   // ISO yyyy-mm-dd strings compare lexicographically.
   const rangeError = start && end && start > end ? 'From date must be on or before To date.' : '';
 
-  function fetchData(s: string, e: string) {
+  function fetchData(s: string, e: string, loc = location) {
     if (!s || !e || s > e) return;
     setLoading(true);
     setError('');
-    api.get('/reports/', { params: { start: s, end: e } })
+    api.get('/reports/', { params: { start: s, end: e, ...(loc ? { location: loc } : {}) } })
       .then((r) => setData(r.data as ReportsData))
       .catch((err) => {
         setError(extractApiError(err, [], 'Could not load report.'));
@@ -106,6 +123,13 @@ export default function Reports() {
   }
 
   useEffect(() => { fetchData(start, end); }, []);
+
+  // The location filter is optional; without the list the report still covers every location.
+  useEffect(() => {
+    fetchAllPages<Location>('/locations/')
+      .then((rows) => setLocations(rows.filter((l) => !l.is_main_supplier && l.code !== 'supplier')))
+      .catch(() => setLocations([]));
+  }, []);
 
   function applyRange(s: string, e: string) {
     setStart(s); setEnd(e); fetchData(s, e);
@@ -147,6 +171,14 @@ export default function Reports() {
             Go
           </Button>
         </div>
+        {locations.length > 0 && (
+          <Field label="Location" className="rp-range__field" hint={location ? 'Filters gross sales, cancellations and net sales in this range. Collections, refunds, expenses, stock, pending dues and This Month cover every location.' : undefined}>
+            <Select value={location} onChange={(e) => { setLocation(e.target.value); fetchData(start, end, e.target.value); }}>
+              <option value="">All locations</option>
+              {locations.map((l) => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+            </Select>
+          </Field>
+        )}
         {rangeError && <Alert tone="danger" role="alert" compact className="rp-range__error">{rangeError}</Alert>}
         <ChoiceChips
           ariaLabel="Quick ranges"
@@ -189,22 +221,44 @@ export default function Reports() {
           {tab === 'summary' && (
             <>
               <section className="rp-stats">
-                <StatCard label="Sales" value={money(data.summary.sales)} icon={<IndianRupee />} />
-                <StatCard label="Collection" value={money(data.summary.collection)} icon={<WalletCards />} />
+                <StatCard label="Gross sales" value={money(data.summary.sales)} hint="Sales made in this range" icon={<IndianRupee />} />
+                <StatCard label="Cancelled" value={money(data.summary.cancelled)} hint="Sales cancelled in this range" icon={<XCircle />} />
+                <StatCard label="Net sales" value={money(data.summary.net_sales)} hint="Gross sales minus cancelled" icon={<IndianRupee />} />
+                <StatCard label="Collection" value={money(data.summary.collection)} hint="Money in, less refunds paid" icon={<WalletCards />} />
                 <StatCard label="Pending Dues" value={money(data.summary.pending)} icon={<AlertTriangle />} />
               </section>
 
+              <Card className="rp-section">
+                <CardHeader title="Refunds" description="A refund owed is not yet paid out; it reaches the collection only when it is confirmed." />
+                <div className="ui-tiles">
+                  <div className="ui-tile"><span className="ui-tile__label">Refunds owed (now)</span><strong className="ui-tile__value">{money(data.summary.refunds_owed)}</strong></div>
+                  <div className="ui-tile"><span className="ui-tile__label">Refunds paid (this range)</span><strong className="ui-tile__value">{money(data.summary.refunds_paid)}</strong></div>
+                </div>
+              </Card>
+
               {data.cylinder_sales.length > 0 && (
                 <Card padding="none" className="rp-section">
-                  <CardHeader title="Cylinder-wise Sales" meta={<Package size={18} className="ui-card-icon" aria-hidden="true" />} />
+                  <CardHeader title="Cylinder-wise Sales" description="Gross: includes sales cancelled later." meta={<Package size={18} className="ui-card-icon" aria-hidden="true" />} />
                   <CylinderSalesTable rows={data.cylinder_sales} />
                 </Card>
               )}
 
+              <Card padding="none" className="rp-section">
+                <CardHeader
+                  title="By Person"
+                  description="Three separate views. Recorded by and Handed over by add up to gross sales (cancelled sales included); Collections by receiver adds up to the collection (refunds paid out and credit moves included); never add them together."
+                  meta={<Users size={18} className="ui-card-icon" aria-hidden="true" />}
+                />
+                <StaffTotalsTable heading="Recorded by" unit="Sales" rows={data.staff_breakdown.recorded_by} />
+                <StaffTotalsTable heading="Handed over by" unit="Sales" rows={data.staff_breakdown.handed_over_by} />
+                <StaffTotalsTable heading="Collections by receiver" unit="Entries" rows={data.staff_breakdown.collections_by_receiver} />
+              </Card>
+
               <Card className="rp-section">
                 <CardHeader title="This Month" />
                 <div className="ui-tiles">
-                  <div className="ui-tile"><span className="ui-tile__label">Sales</span><strong className="ui-tile__value">{money(data.monthly.sales)}</strong></div>
+                  <div className="ui-tile"><span className="ui-tile__label">Gross sales</span><strong className="ui-tile__value">{money(data.monthly.sales)}</strong></div>
+                  <div className="ui-tile"><span className="ui-tile__label">Net sales</span><strong className="ui-tile__value">{money(data.monthly.net_sales)}</strong></div>
                   <div className="ui-tile"><span className="ui-tile__label">Collection</span><strong className="ui-tile__value">{money(data.monthly.collection)}</strong></div>
                 </div>
               </Card>
@@ -330,7 +384,7 @@ export default function Reports() {
               {/* Cylinder-wise sold in range */}
               {data.cylinder_sales.length > 0 && (
                 <Card padding="none">
-                  <CardHeader title="Sold in Range" meta={<Package size={18} className="ui-card-icon" aria-hidden="true" />} />
+                  <CardHeader title="Sold in Range" description="Gross: includes sales cancelled later." meta={<Package size={18} className="ui-card-icon" aria-hidden="true" />} />
                   <CylinderSalesTable rows={data.cylinder_sales} />
                 </Card>
               )}
@@ -339,6 +393,7 @@ export default function Reports() {
 
           {/* SALES TAB */}
           {tab === 'sales' && (
+            <div className="rp-stack">
             <Card padding="none">
               {data.sales_list.length === 0 ? (
                 <EmptyState icon={<Receipt size={24} />} title="No sales found in this range." />
@@ -352,7 +407,8 @@ export default function Reports() {
                       <Th align="right">Total</Th>
                       <Th align="right">Balance</Th>
                       <Th>Mode</Th>
-                      <Th>Staff</Th>
+                      <Th>Recorded by</Th>
+                      <Th>Handed over by</Th>
                       <Th>Date</Th>
                     </tr>
                   </thead>
@@ -367,7 +423,7 @@ export default function Reports() {
                           {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
                         </Td>
                         <Td align="right">
-                          {isReturn ? <span className="ui-num-placeholder">-</span> : (
+                          {sale.void ? <VoidStatusBadges saleVoid={sale.void} /> : isReturn ? <span className="ui-num-placeholder">-</span> : (
                             Number(sale.balance_due) > 0
                               ? <Badge tone="warning">{money(sale.balance_due)}</Badge>
                               : <Badge tone="success">Paid</Badge>
@@ -387,7 +443,8 @@ export default function Reports() {
                             </div>
                           )}
                         </Td>
-                        <Td className="sh-meta">{sale.sold_by_name}</Td>
+                        <Td className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
+                        <Td className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
                         <Td className="sh-meta sh-nowrap">
                           {new Date(sale.created_at).toLocaleDateString('en-IN')}
                         </Td>
@@ -399,6 +456,42 @@ export default function Reports() {
               </TableWrap>
               )}
             </Card>
+            {data.cancellation_list.length > 0 && (
+              <Card padding="none">
+                <CardHeader title="Cancelled in this range" description="Counted on the day each sale was cancelled; the sale stays in its own day's gross sales." />
+                <TableWrap fade>
+                  <Table stickyFirst className="rp-table">
+                    <thead>
+                      <tr>
+                        <Th>Sale</Th>
+                        <Th>Customer</Th>
+                        <Th align="right">Amount</Th>
+                        <Th>Outcome</Th>
+                        <Th>Cancelled</Th>
+                        <Th>Reason</Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.cancellation_list.map((c) => (
+                        <tr key={c.sale_id}>
+                          <Td><strong>#{c.sale_id}</strong><span className="ui-cell-sub">{new Date(c.sale_date).toLocaleDateString('en-IN')} · {c.location_name}</span></Td>
+                          <Td>{c.customer_name || '-'}</Td>
+                          <Td numeric>{money(c.total_amount)}</Td>
+                          <Td>
+                            {c.outcome === 'refund'
+                              ? <Badge tone={c.refunded ? 'neutral' : 'warning'}>{c.refunded ? 'Refunded' : `Refund owed ${money(c.refund_due)}`}</Badge>
+                              : c.outcome === 'credit' ? <Badge>Kept as credit</Badge> : <Badge>Nothing paid</Badge>}
+                          </Td>
+                          <Td className="sh-meta">{new Date(c.voided_at).toLocaleDateString('en-IN')}{c.voided_by_name && <span className="ui-cell-sub">{c.voided_by_name}</span>}</Td>
+                          <Td className="sh-meta">{c.reason}</Td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                </TableWrap>
+              </Card>
+            )}
+            </div>
           )}
 
           {/* PENDING TAB */}
@@ -432,6 +525,44 @@ export default function Reports() {
         </>
       )}
     </div>
+  );
+}
+
+/** One person-wise view of the report. Rows add up to that view's own total only. */
+function StaffTotalsTable({ heading, unit, rows }: { heading: string; unit: string; rows: StaffTotal[] }) {
+  const totalCount = rows.reduce((sum, r) => sum + r.count, 0);
+  const totalAmount = rows.reduce((sum, r) => sum + Number(r.amount), 0);
+  return (
+    <TableWrap fade>
+      <Table stickyFirst className="rp-table">
+        <thead>
+          <tr>
+            <Th>{heading}</Th>
+            <Th align="right">{unit}</Th>
+            <Th align="right">Amount</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && (
+            <tr><Td><span className="ui-num-placeholder">None in this range</span></Td><Td numeric>-</Td><Td numeric>-</Td></tr>
+          )}
+          {rows.map((r) => (
+            <tr key={r.user_id ?? 'none'}>
+              <Td>{r.name}{r.role === 'admin' && <> <Badge size="sm" variant="outline">Admin</Badge></>}</Td>
+              <Td numeric>{r.count}</Td>
+              <Td numeric>{money(r.amount)}</Td>
+            </tr>
+          ))}
+          {rows.length > 1 && (
+            <tr>
+              <Td><strong>Total</strong></Td>
+              <Td numeric><strong>{totalCount}</strong></Td>
+              <Td numeric><strong>{money(totalAmount)}</strong></Td>
+            </tr>
+          )}
+        </tbody>
+      </Table>
+    </TableWrap>
   );
 }
 

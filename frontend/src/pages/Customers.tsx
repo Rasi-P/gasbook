@@ -21,6 +21,7 @@ import { IconButton } from '../components/ui/IconButton';
 import { PageHeader } from '../components/ui/PageHeader';
 import { SearchInput } from '../components/ui/SearchInput';
 import { SkeletonRows } from '../components/ui/Skeleton';
+import { VoidStatusBadges, type SaleVoidInfo } from '../components/SaleVoidDialogs';
 
 type Customer = {
   id: number;
@@ -30,6 +31,7 @@ type Customer = {
   address: string;
   opening_balance: number;
   pending_balance: number;
+  credit_balance?: string;  // money the customer holds as credit; it offsets later dues
   global_discount_type?: 'percentage' | 'fixed' | null;
   global_discount_value?: string;
   global_discount_is_active?: boolean;
@@ -80,8 +82,11 @@ type Sale = {
   payment_mode: string;
   location_name: string;
   delivery_type: string;
+  sold_by_full_name?: string;
+  handover_staff_name?: string | null;
+  void?: SaleVoidInfo | null;
   items: SaleItem[];
-  payments?: { amount: number; mode: string; date: string }[];
+  payments?: { amount: number; mode: string; date: string; kind?: string }[];
 };
 
 type Payment = {
@@ -92,6 +97,7 @@ type Payment = {
   note: string;
   empty_collected: number;
   sale: number | null;
+  kind?: 'payment' | 'refund' | 'credit_reversal' | 'credit' | 'reversal';
 };
 
 type Ledger = {
@@ -1192,8 +1198,9 @@ export default function Customers() {
         {/* Summary cards */}
         <section className="cd-stats" aria-label="Customer summary">
           <StatCard
-            label="Pending"
-            value={money(customer.pending_balance)}
+            label={Number(customer.credit_balance) > 0 ? 'Credit' : 'Pending'}
+            value={money(Number(customer.credit_balance) > 0 ? Number(customer.credit_balance) : customer.pending_balance)}
+            hint={Number(customer.credit_balance) > 0 ? 'Held for the customer; it offsets what they owe next.' : undefined}
             icon={<IndianRupee />}
             footer={customer.pending_balance > 0 ? (
               <Button
@@ -1384,13 +1391,14 @@ export default function Customers() {
               if (entry.kind === 'payment_group') {
                 const g = entry.group;
                 const isSplit = g.payments.length > 1;
+                const isCredit = g.payments.every((p) => p.kind === 'credit');
                 return (
                   <div className="cd-entry" key={`payg-${g.payments[0].id}`}>
                     <div className="cd-entry__head">
                       <div className="cd-entry__title">
                         <span className="cd-entry__icon cd-entry__icon--success" aria-hidden="true"><Wallet size={16} /></span>
                         <div>
-                          <strong className="cd-entry__name cd-entry__name--success">Payment Received</strong>
+                          <strong className="cd-entry__name cd-entry__name--success">{isCredit ? 'Kept as Credit' : 'Payment Received'}</strong>
                           <p className="cd-entry__meta">
                             {fmtDate(g.date)}
                             {isSplit
@@ -1427,15 +1435,23 @@ export default function Customers() {
                         <strong className="cd-entry__name">{isPureReturn ? `Empty Return #${s.id}` : `Sale #${s.id}`}</strong>
                         <p className="cd-entry__meta">
                           {fmtDate(s.created_at)} · {s.location_name} · {s.payment_mode.toUpperCase()}
+                          {s.sold_by_full_name && ` · Recorded by ${s.sold_by_full_name}`}
+                          {s.handover_staff_name && ` · Handed over by ${s.handover_staff_name}`}
                           {(s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0 && (
-                            <Badge size="sm" className="cd-entry__count">{s.payments.length} Payments</Badge>
+                            <Badge size="sm" className="cd-entry__count">{s.payments.filter((p) => !p.kind || p.kind === 'payment').length} Payments</Badge>
                           )}
                         </p>
+                        {s.void && (
+                          <p className="cd-entry__meta">
+                            Cancelled {fmtDate(s.void.voided_at)}{s.void.voided_by_name && ` by ${s.void.voided_by_name}`} · {s.void.reason}
+                            {s.void.refund && ` · Refunded ${fmtDate(s.void.refund.confirmed_at)}`}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="cd-entry__side">
                       {!isPureReturn && <strong className="cd-entry__amount">{money(s.total_amount)}</strong>}
-                      {Number(s.balance_due) > 0
+                      {s.void ? <VoidStatusBadges saleVoid={s.void} /> : Number(s.balance_due) > 0
                         ? <Badge tone="warning">On Credit {money(s.balance_due)}</Badge>
                         : <Badge tone="success">{isPureReturn ? 'Recorded' : 'Paid'}</Badge>}
                     </div>
@@ -1618,6 +1634,9 @@ export default function Customers() {
               <div className="ui-list-row__badges">
                 {Number(c.pending_balance) > 0 && (
                   <Badge tone="warning">{money(c.pending_balance)}</Badge>
+                )}
+                {Number(c.credit_balance) > 0 && (
+                  <Badge tone="success">Credit {money(Number(c.credit_balance))}</Badge>
                 )}
                 {hasActiveDiscount(c) && (
                   <Badge tone="primary">{formatCustomerDiscount(c)}</Badge>

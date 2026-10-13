@@ -142,6 +142,19 @@ export function getApiErrorCode(err: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * A new random UUID (v4) for one form submission. The server records a request with a given
+ * client_ref once, so retrying the same submission cannot save it twice. Uses getRandomValues,
+ * which also works on plain http where crypto.randomUUID is unavailable.
+ */
+export function newClientRef(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Returns the HTTP status for an axios error, if any. */
 export function getApiStatus(err: unknown): number | undefined {
   return (err as ErrorLike)?.response?.status;

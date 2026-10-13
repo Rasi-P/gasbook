@@ -2,9 +2,13 @@
 
 This module must not import from ``serializers`` or ``views`` (they import it).
 """
+import hashlib
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Q
+from django.db import IntegrityError, connection, transaction
+from django.db.models import Q, Sum
+from django.utils import timezone
+from django.utils.crypto import get_random_string
 
 from .exceptions import ApiError
 from .models import (
@@ -15,7 +19,12 @@ from .models import (
     Expense,
     Notification,
     Payment,
+    PaymentReversal,
+    Role,
     Sale,
+    SaleRefund,
+    SaleVoid,
+    Stock,
     StockMovement,
     User,
 )
@@ -116,6 +125,565 @@ def lock_booking_and_delivery(booking_id):
     booking = Booking.objects.select_for_update().get(pk=booking_id)
     delivery = Delivery.objects.select_for_update().filter(booking_id=booking_id).first()
     return booking, delivery
+
+
+# ---- sales, payments and stock -----------------------------------------------
+
+# Where a direct sale may take cylinders from, by location code; ids are looked up at run
+# time. "With customers" is a figure calculated from sales, not a location, so it can never
+# be a source.
+DIRECT_SALE_LOCATION_CODES = ("shop", "kandam")
+
+# Ways money is actually received; "credit" and "split" describe a sale, not a payment.
+RECEIPT_MODES = (Sale.PaymentMode.CASH, Sale.PaymentMode.GPAY, Sale.PaymentMode.BANK)
+
+# The name customers see for what the business itself did, such as a direct sale; internal
+# screens and reports name the actual users.
+BUSINESS_DISPLAY_NAME = "Sabco Gas"
+
+
+def is_admin_user(user):
+    return getattr(getattr(user, "role", None), "code", "") == "admin" or user.is_superuser
+
+
+def is_active_staff(user):
+    """An active staff user whose staff profile (if any) is active: who can be named as
+    having handed cylinders over. The staff list reports this as can_hand_over."""
+    profile = getattr(user, "staff_profile", None)
+    return (
+        getattr(getattr(user, "role", None), "code", "") == "staff"
+        and user.is_active
+        and (profile is None or profile.is_active)
+    )
+
+
+def check_handover_staff(handover, requester):
+    """Who may be recorded as having physically handed the cylinders over.
+
+    Admins may name any active staff member, or nobody; staff may name only themselves, or
+    nobody. The person named must be an active staff user (and active staff profile).
+    """
+    if handover is None:
+        return None
+    if not is_admin_user(requester) and handover.pk != requester.pk:
+        raise ApiError(
+            "Staff can record only themselves as the person who handed over the cylinders.",
+            code="handover_self_only",
+            status=403,
+            field="handover_staff",
+        )
+    if not is_active_staff(handover):
+        raise ApiError(f"{display_name(handover)} is not an active staff member.", code="invalid_handover", field="handover_staff")
+    return handover
+
+# Largest values a DecimalField(max_digits=10, decimal_places=2) / PositiveIntegerField hold.
+MAX_MONEY = Decimal("99999999.99")
+MAX_COUNT = 2147483647
+
+# Lock order for every write that touches a customer's money or stock, so no two requests
+# ever wait on each other in opposite orders (a deadlock):
+#   0. advisory locks on keys with no row yet: a sale's client_ref, then a new customer's
+#      phone number                                       advisory_lock
+#   1. the customer row                                    lock_customer
+#   2. that customer's unpaid sales, oldest first          record_customer_payment
+#   3. stock rows by cylinder type id, filled before empty lock_sale_stock / get_stock_row
+# Voiding a sale locks the customer, then that sale, then its stock rows as in 3; confirming
+# its refund locks the customer, then the sale's void. Delivery completion locks its booking
+# and delivery, then the customer, then stock in the same order, and never a customer after
+# stock. Nothing that holds a customer lock goes on to lock a booking or delivery.
+
+
+def advisory_lock(namespace, value):
+    """Hold a PostgreSQL advisory lock on (namespace, value) until the transaction ends.
+
+    For things that have no row to lock yet, such as a sale's client_ref or a phone number
+    being registered. Must run inside transaction.atomic; outside one it is released at once.
+    """
+    if connection.vendor != "postgresql":
+        return
+    key = int.from_bytes(hashlib.sha256(f"{namespace}:{value}".encode()).digest()[:8], "big", signed=True)
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", [key])
+
+
+def get_stock_row(cylinder_type, location, status):
+    stock, _ = Stock.objects.select_for_update().get_or_create(
+        cylinder_type=cylinder_type,
+        location=location,
+        status=status,
+        defaults={"quantity": 0},
+    )
+    return stock
+
+
+def lock_customer(customer_id):
+    return CustomerProfile.objects.select_for_update().get(pk=customer_id)
+
+
+def lock_stock_row(cylinder_type, location, status):
+    """Lock an existing stock row (None if there is none); unlike get_stock_row, never creates one."""
+    return Stock.objects.select_for_update().filter(cylinder_type=cylinder_type, location=location, status=status).first()
+
+
+def lock_sale_stock(location, needed):
+    """Lock the stock rows a sale touches and check there is enough filled stock.
+
+    ``needed`` maps a CylinderType to (filled going out, empties coming back), already
+    totalled across the sale's lines. The filled row must exist; no row means none in
+    stock. Raises 400 ``insufficient_stock`` naming every short type before anything is
+    written. Returns {cylinder type id: (filled row or None, empty row or None)}.
+    """
+    locked, shortages = {}, []
+    for cylinder_type in sorted(needed, key=lambda ct: ct.pk):
+        going_out, coming_back = needed[cylinder_type]
+        filled = None
+        if going_out:
+            filled = (
+                Stock.objects.select_for_update()
+                .filter(cylinder_type=cylinder_type, location=location, status=Stock.Status.FILLED)
+                .first()
+            )
+        empty = get_stock_row(cylinder_type, location, Stock.Status.EMPTY) if coming_back else None
+        available = filled.quantity if filled else 0
+        if going_out > available:
+            shortages.append(
+                {"cylinder_type": cylinder_type.pk, "name": cylinder_type.name, "required": going_out, "available": available}
+            )
+        if empty is not None and empty.quantity + coming_back > MAX_COUNT:
+            raise ApiError("Too many empty cylinders returned.", code="invalid", field="sale_items")
+        locked[cylinder_type.pk] = (filled, empty)
+    if shortages:
+        detail = "; ".join(f"{s['name']} needs {s['required']}, {s['available']} available" for s in shortages)
+        raise ApiError(
+            f"Not enough filled stock at {location.name}: {detail}.",
+            code="insufficient_stock",
+            field="sale_items",
+            location_code=location.code,
+            location_name=location.name,
+            shortages=shortages,
+        )
+    return locked
+
+
+def customer_outstanding(profile):
+    """What the customer owes: opening balance + Σ sale balances − payments not linked to a sale.
+
+    Same formula as CustomerProfileSerializer.get_pending_amount and integrity.customer_balances.
+    Voided sales are left out: their unpaid balance is no longer due. A negative result is
+    customer credit, which offsets any later dues automatically.
+    """
+    sales_due = not_voided(profile.sales.all()).aggregate(total=Sum("balance_due"))["total"] or Decimal("0")
+    unallocated = profile.payments.filter(sale__isnull=True).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    return profile.opening_balance + sales_due - unallocated
+
+
+def not_voided(sales):
+    """``sales`` without voided ones (a subquery, so it also works with select_for_update)."""
+    return sales.exclude(pk__in=SaleVoid.objects.values("sale_id"))
+
+
+def sale_void(sale):
+    """The sale's SaleVoid, or None."""
+    try:
+        return sale.void
+    except SaleVoid.DoesNotExist:
+        return None
+
+
+@transaction.atomic
+def record_customer_payment(customer, amount, mode, received_by, *, sale=None, note="", empty_collected=0):
+    """Record money received from a customer and settle what it pays for.
+
+    With ``sale`` the whole amount goes to that sale, which must belong to the customer and
+    still owe at least that much. Without it, the amount settles the customer's unpaid sales
+    oldest first, and anything left over reduces the opening balance (a payment not linked
+    to a sale). The amount may never exceed what is owed. The customer and the affected sales
+    are locked first, so concurrent payments cannot both spend the same balance.
+
+    Returns the Payment rows created, the first one first.
+    """
+    customer = lock_customer(customer.pk)
+    if sale is not None:
+        sale = Sale.objects.select_for_update().get(pk=sale.pk)
+        if sale.customer_id != customer.pk:
+            raise ApiError("This sale belongs to another customer.", code="sale_customer_mismatch", field="sale")
+        if SaleVoid.objects.filter(sale_id=sale.pk).exists():
+            raise ApiError("This sale was cancelled; nothing can be paid against it.", code="sale_voided", status=409, field="sale")
+        if amount > sale.balance_due:
+            raise ApiError(
+                f"Amount is more than this sale's balance of Rs. {sale.balance_due}.",
+                code="exceeds_balance",
+                field="amount",
+                balance_due=str(sale.balance_due),
+            )
+        allocations, remainder = [(sale, amount)], Decimal("0")
+    else:
+        outstanding = customer_outstanding(customer)
+        if amount > outstanding:
+            raise ApiError(
+                f"Amount is more than the customer owes (Rs. {max(outstanding, Decimal('0'))}).",
+                code="exceeds_balance",
+                field="amount",
+                outstanding=str(max(outstanding, Decimal("0"))),
+            )
+        allocations, remainder = [], amount
+        unpaid = not_voided(Sale.objects.select_for_update().filter(customer=customer, balance_due__gt=0)).order_by("created_at", "id")
+        for unpaid_sale in unpaid:
+            if remainder <= 0:
+                break
+            part = min(remainder, unpaid_sale.balance_due)
+            allocations.append((unpaid_sale, part))
+            remainder -= part
+
+    payments = []
+    for target, part in allocations:
+        target.paid_amount += part
+        target.balance_due -= part
+        target.save(update_fields=["paid_amount", "balance_due", "updated_at"])
+        payments.append(Payment.objects.create(
+            customer=customer, sale=target, amount=part, payment_mode=mode, received_by=received_by,
+            note=note, empty_collected=0 if payments else empty_collected,
+        ))
+    if remainder > 0:
+        payments.append(Payment.objects.create(
+            customer=customer, sale=None, amount=remainder, payment_mode=mode, received_by=received_by,
+            note=note, empty_collected=0 if payments else empty_collected,
+        ))
+
+    ActivityLog.objects.create(
+        action="payment_received",
+        description=f"Payment received: Rs. {amount}",
+        user=received_by,
+        metadata={
+            "payment_id": payments[0].id,
+            "payment_ids": [payment.id for payment in payments],
+            "customer_id": customer.pk,
+            "mode": mode,
+            "amount": str(amount),
+            "allocations": [{"sale_id": target.pk, "amount": str(part)} for target, part in allocations],
+            "unallocated": str(remainder),
+        },
+    )
+    return payments
+
+
+# ---- voids, refunds and customer credit --------------------------------------
+#
+# A direct sale is corrected by voiding it and recording a new one; it is never edited. A void
+# returns the stock, stops the unpaid balance being due, and settles any money paid in one of
+# two ways, chosen by the admin:
+#   refund  the money is owed back. Nothing changes in collections until the refund is
+#           confirmed; confirm_refund then records one negative payment per original payment,
+#           in its mode, as money paid out by the confirming admin.
+#   credit  each original payment is reversed (negative, on the sale) and the same amount is
+#           recorded again as a payment not linked to any sale, in the same mode, by the same
+#           admin, at the same moment: collections net to zero and the customer keeps credit,
+#           which the existing balance formula offsets against what they owe.
+# PaymentReversal links every negative payment to the payment it reverses (once only).
+
+VOID_REASON_MAX = 300
+REFUND_REFERENCE_MAX = 100
+REFERENCE_REQUIRED_MODES = (Sale.PaymentMode.GPAY, Sale.PaymentMode.BANK)
+
+
+def original_payments(sale):
+    """The payments that paid for ``sale``: positive and linked to it (reversals are negative,
+    credit is never linked to a sale)."""
+    return sale.payments.filter(amount__gt=0).order_by("id")
+
+
+def void_stock_changes(sale):
+    """{cylinder type: (filled coming back, empties going back out)} at the sale's location."""
+    changes = {}
+    for item in sale.items.select_related("cylinder_type").order_by("id"):
+        filled_back, empties_out = changes.get(item.cylinder_type, (0, 0))
+        changes[item.cylinder_type] = (filled_back + item.quantity, empties_out + item.empty_returned)
+    return changes
+
+
+def later_sales_of_same_types(sale):
+    """Ids of the customer's later, not voided sales with any of this sale's cylinder types.
+
+    The empty-cylinder balance is a running total in date order, so a later sale may rely on
+    this one (for instance on empties returned here); the latest sale must be voided first.
+    """
+    type_ids = list(sale.items.values_list("cylinder_type_id", flat=True))
+    later = (
+        Sale.objects.filter(customer_id=sale.customer_id, items__cylinder_type_id__in=type_ids)
+        .filter(Q(created_at__gt=sale.created_at) | Q(created_at=sale.created_at, pk__gt=sale.pk))
+        .exclude(pk=sale.pk)
+    )
+    return sorted(set(not_voided(later).values_list("pk", flat=True)))
+
+
+def void_blockers(sale):
+    """Why ``sale`` cannot be voided, as a list of {code, detail, ...}; empty when it can.
+
+    Shared by the preview and by void_sale, which repeats it under its locks. Stock is checked
+    against the current quantities, which void_sale re-reads under lock.
+    """
+    if Booking.objects.filter(sale_id=sale.pk).exists():
+        return [{"code": "booking_sale", "detail": "Sales created by delivering a booking cannot be cancelled here."}]
+    if SaleVoid.objects.filter(sale_id=sale.pk).exists():
+        return [{"code": "already_voided", "detail": "This sale has already been cancelled."}]
+    if sale.customer_id is None:
+        return [{"code": "guest_sale", "detail": "This sale has no customer, so it cannot be cancelled here."}]
+    blockers = []
+    if not sale.location.is_active:
+        blockers.append({"code": "location_inactive", "detail": f"{sale.location.name} is inactive; reactivate it before cancelling."})
+    paid = original_payments(sale).aggregate(total=Sum("amount"))["total"] or Decimal("0")
+    if paid != sale.paid_amount or sale.payments.filter(amount__lte=0).exists():
+        blockers.append({"code": "payments_mismatch",
+                         "detail": f"This sale's payments (Rs. {paid}) do not match its paid amount (Rs. {sale.paid_amount})."})
+    later = later_sales_of_same_types(sale)
+    if later:
+        blockers.append({"code": "later_sales", "sale_ids": later,
+                         "detail": "The customer has later sales of the same cylinder type "
+                                   f"(#{', #'.join(map(str, later))}); cancel the latest sale first."})
+    for cylinder_type, (_filled_back, empties_out) in sorted(void_stock_changes(sale).items(), key=lambda kv: kv[0].pk):
+        if not empties_out:
+            continue
+        row = Stock.objects.filter(cylinder_type=cylinder_type, location=sale.location, status=Stock.Status.EMPTY).first()
+        available = row.quantity if row else 0
+        if available < empties_out:
+            blockers.append({
+                "code": "insufficient_empty_stock", "cylinder_type": cylinder_type.pk, "required": empties_out, "available": available,
+                "detail": f"{sale.location.name} has {available} empty {cylinder_type.name} but this sale took in {empties_out}; "
+                          "the empties to hand back are no longer there.",
+            })
+    return blockers
+
+
+def void_preview(sale):
+    """What voiding ``sale`` would do and whether it is allowed now. Not authoritative:
+    void_sale repeats every check under lock."""
+    paid_rows = list(original_payments(sale))
+    paid = sum((p.amount for p in paid_rows), Decimal("0"))
+    blockers = void_blockers(sale)
+    return {
+        "sale_id": sale.pk,
+        "can_void": not blockers,
+        "blockers": blockers,
+        "location": {"id": sale.location_id, "name": sale.location.name},
+        "stock_changes": [
+            {"cylinder_type": ct.pk, "name": ct.name, "filled_back": filled_back, "empties_out": empties_out}
+            for ct, (filled_back, empties_out) in sorted(void_stock_changes(sale).items(), key=lambda kv: kv[0].pk)
+        ],
+        "total": str(sale.total_amount),
+        "paid": str(paid),
+        "payments": [{"id": p.pk, "mode": p.payment_mode, "amount": str(p.amount)} for p in paid_rows],
+        "cancelled_balance": str(sale.balance_due),
+        "outcomes": [SaleVoid.Outcome.REFUND, SaleVoid.Outcome.CREDIT] if paid > 0 else [SaleVoid.Outcome.NONE],
+    }
+
+
+def _sale_label(sale):
+    return f"purchase #{sale.pk} on {timezone.localtime(sale.created_at).strftime('%d %b %Y')}"
+
+
+def void_notification_body(sale, void):
+    unpaid = f" The unpaid balance of Rs. {void.cancelled_balance} is no longer due." if void.cancelled_balance > 0 else ""
+    head = f"Your {_sale_label(sale)} has been cancelled."
+    if void.outcome == SaleVoid.Outcome.REFUND:
+        return f"{head} A refund of Rs. {void.refund_due} is owed to you and will be sent.{unpaid}"
+    if void.outcome == SaleVoid.Outcome.CREDIT:
+        return f"{head} The Rs. {void.paid_amount} you paid is kept as credit on your account.{unpaid}"
+    return f"{head}{unpaid}" if unpaid else f"{head} Nothing is due."
+
+
+@transaction.atomic
+def void_sale(sale, actor, reason, outcome):
+    """Void a direct sale. Every check is repeated here under lock; see the section comment.
+
+    Lock order: the customer, the sale, then its stock rows by cylinder type id, filled before
+    empty. A second void of the same sale waits on the customer lock and is then refused; the
+    one-to-one SaleVoid.sale is the database's own guard.
+    """
+    if not isinstance(reason, str) or not reason.strip():
+        raise ApiError("A reason is required to cancel a sale.", code="reason_required", field="reason")
+    reason = reason.strip()
+    if len(reason) > VOID_REASON_MAX:
+        raise ApiError(f"Reason must be {VOID_REASON_MAX} characters or fewer.", code="max_length", field="reason")
+    if outcome in (None, ""):
+        outcome = None
+    elif outcome not in SaleVoid.Outcome.values:
+        raise ApiError("Outcome must be refund or credit.", code="invalid_outcome", field="outcome")
+
+    if sale.customer_id is None:
+        raise ApiError("This sale has no customer, so it cannot be cancelled here.", code="guest_sale", status=409)
+    customer = lock_customer(sale.customer_id)
+    sale = Sale.objects.select_for_update().get(pk=sale.pk)
+
+    blockers = [b for b in void_blockers(sale) if b["code"] != "insufficient_empty_stock"]
+    if blockers:
+        raise ApiError(blockers[0]["detail"], code=blockers[0]["code"], status=409, blockers=blockers)
+
+    payments = list(original_payments(sale))
+    paid = sum((p.amount for p in payments), Decimal("0"))
+    if paid == 0:
+        if outcome not in (None, SaleVoid.Outcome.NONE):
+            raise ApiError("Nothing was paid on this sale, so there is nothing to refund or keep as credit.",
+                           code="nothing_paid", field="outcome")
+        outcome = SaleVoid.Outcome.NONE
+    elif outcome not in (SaleVoid.Outcome.REFUND, SaleVoid.Outcome.CREDIT):
+        raise ApiError(f"Rs. {paid} was paid on this sale: choose a refund or customer credit.",
+                       code="outcome_required", field="outcome", paid=str(paid))
+
+    # Stock, under lock: filled cylinders come back, the empties taken in go back out.
+    changes = void_stock_changes(sale)
+    stock_before, stock_after, shortages = {}, {}, []
+    rows = {}
+    for cylinder_type in sorted(changes, key=lambda ct: ct.pk):
+        filled_back, empties_out = changes[cylinder_type]
+        filled = get_stock_row(cylinder_type, sale.location, Stock.Status.FILLED) if filled_back else None
+        empty = None
+        if empties_out:
+            empty = lock_stock_row(cylinder_type, sale.location, Stock.Status.EMPTY)
+            available = empty.quantity if empty else 0
+            if available < empties_out:
+                shortages.append({"cylinder_type": cylinder_type.pk, "name": cylinder_type.name,
+                                  "required": empties_out, "available": available})
+        rows[cylinder_type] = (filled, empty)
+    if shortages:
+        detail = "; ".join(f"{s['available']} empty {s['name']} at {sale.location.name}, {s['required']} to hand back" for s in shortages)
+        raise ApiError(f"The empties this sale took in are no longer there ({detail}).",
+                       code="insufficient_empty_stock", status=409, shortages=shortages)
+    for cylinder_type, (filled, empty) in rows.items():
+        filled_back, empties_out = changes[cylinder_type]
+        key = str(cylinder_type.pk)
+        stock_before[key] = {"filled": filled.quantity if filled else None, "empty": empty.quantity if empty else None}
+        if filled:
+            filled.quantity += filled_back
+            filled.save(update_fields=["quantity", "updated_at"])
+        if empty:
+            empty.quantity -= empties_out
+            empty.save(update_fields=["quantity", "updated_at"])
+        stock_after[key] = {"filled": filled.quantity if filled else None, "empty": empty.quantity if empty else None}
+
+    try:
+        with transaction.atomic():
+            void = SaleVoid.objects.create(
+                sale=sale, reason=reason, outcome=outcome, paid_amount=paid, cancelled_balance=sale.balance_due,
+                refund_due=paid if outcome == SaleVoid.Outcome.REFUND else Decimal("0"), voided_by=actor,
+            )
+    except IntegrityError:
+        raise ApiError("This sale has already been cancelled.", code="already_voided", status=409)
+
+    reversal_ids, credit_ids = [], []
+    if outcome == SaleVoid.Outcome.CREDIT:
+        for original in payments:
+            reversal = Payment.objects.create(
+                customer=customer, sale=sale, amount=-original.amount, payment_mode=original.payment_mode, received_by=actor,
+                note=f"Reversal of payment #{original.pk}: sale #{sale.pk} cancelled, kept as credit",
+            )
+            credit = Payment.objects.create(
+                customer=customer, sale=None, amount=original.amount, payment_mode=original.payment_mode, received_by=actor,
+                note=f"Credit from cancelled sale #{sale.pk} (payment #{original.pk})",
+            )
+            PaymentReversal.objects.create(original=original, reversal=reversal, credit=credit, sale_void=void)
+            reversal_ids.append(reversal.pk)
+            credit_ids.append(credit.pk)
+
+    ActivityLog.objects.create(
+        action="sale_voided",
+        description=f"Sale #{sale.pk} cancelled ({void.get_outcome_display().lower()})",
+        user=actor,
+        metadata={
+            "sale_id": sale.pk, "void_id": void.pk, "customer_id": customer.pk, "outcome": outcome, "reason": reason,
+            "paid": str(paid), "cancelled_balance": str(void.cancelled_balance), "refund_due": str(void.refund_due),
+            "location": sale.location.code, "stock_before": stock_before, "stock_after": stock_after,
+            "reversal_payment_ids": reversal_ids, "credit_payment_ids": credit_ids,
+        },
+    )
+    notify(customer.user, None, "DIRECT_SALE_CANCELLED", "Purchase cancelled", void_notification_body(sale, void), dedupe=False)
+    return void
+
+
+@transaction.atomic
+def confirm_refund(sale, actor, references, amount=None):
+    """Record that the refund owed by a voided sale was paid back: all of it, once.
+
+    One negative payment per original payment, in its mode, received_by the confirming admin.
+    GPay and bank need a transaction reference; cash may have one. Lock order: the customer,
+    then the sale's void. SaleRefund.void is one-to-one, so a second confirmation is refused.
+    """
+    if references in (None, ""):
+        references = {}
+    if not isinstance(references, dict):
+        raise ApiError("References must be given per payment mode.", code="invalid", field="references")
+    if sale.customer_id is None:
+        raise ApiError("This sale has no refund to confirm.", code="no_refund_owed", status=409)
+    customer = lock_customer(sale.customer_id)
+    void = SaleVoid.objects.select_for_update().filter(sale_id=sale.pk).first()
+    if void is None:
+        raise ApiError("This sale has not been cancelled.", code="not_voided", status=409)
+    if void.outcome != SaleVoid.Outcome.REFUND:
+        raise ApiError("This cancellation did not owe a refund.", code="no_refund_owed", status=409, void_outcome=void.outcome)
+    if SaleRefund.objects.filter(void=void).exists():
+        raise ApiError("This refund has already been confirmed.", code="refund_already_confirmed", status=409)
+
+    payments = list(original_payments(sale))
+    total = sum((p.amount for p in payments), Decimal("0"))
+    if total != void.refund_due or PaymentReversal.objects.filter(original__in=payments).exists():
+        raise ApiError("This sale's payments no longer match the refund owed; it cannot be confirmed.",
+                       code="refund_mismatch", status=409, refund_due=str(void.refund_due))
+    if amount not in (None, ""):
+        try:
+            requested = Decimal(str(amount))
+        except (InvalidOperation, ValueError):
+            raise ApiError("Amount must be a valid amount.", code="invalid", field="amount")
+        if requested != void.refund_due:
+            raise ApiError(f"The whole refund of Rs. {void.refund_due} is confirmed at once.",
+                           code="amount_mismatch", field="amount", refund_due=str(void.refund_due))
+
+    modes = {p.payment_mode for p in payments}
+    unknown = set(references) - modes
+    if unknown:
+        raise ApiError(f"No refund is due in {', '.join(sorted(unknown))}.", code="invalid", field="references")
+    clean = {}
+    for mode in sorted(modes):
+        value = references.get(mode, "")
+        if not isinstance(value, str):
+            raise ApiError("Each reference must be text.", code="invalid", field="references")
+        value = value.strip()
+        if len(value) > REFUND_REFERENCE_MAX:
+            raise ApiError(f"References must be {REFUND_REFERENCE_MAX} characters or fewer.", code="max_length", field="references")
+        if not value and mode in REFERENCE_REQUIRED_MODES:
+            raise ApiError(f"A transaction reference is required for the {Sale.PaymentMode(mode).label} refund.",
+                           code="reference_required", field="references", mode=mode)
+        if value:
+            clean[mode] = value
+
+    try:
+        with transaction.atomic():
+            refund = SaleRefund.objects.create(void=void, amount=total, references=clean, confirmed_by=actor)
+    except IntegrityError:
+        raise ApiError("This refund has already been confirmed.", code="refund_already_confirmed", status=409)
+    reversal_ids = []
+    for original in payments:
+        ref = clean.get(original.payment_mode)
+        reversal = Payment.objects.create(
+            customer=customer, sale=sale, amount=-original.amount, payment_mode=original.payment_mode, received_by=actor,
+            note=f"Refund of payment #{original.pk}: sale #{sale.pk} cancelled" + (f", ref {ref}" if ref else ""),
+        )
+        PaymentReversal.objects.create(original=original, reversal=reversal, sale_void=void, sale_refund=refund)
+        reversal_ids.append(reversal.pk)
+
+    ActivityLog.objects.create(
+        action="refund_confirmed",
+        description=f"Refund of Rs. {total} for cancelled sale #{sale.pk}",
+        user=actor,
+        metadata={"sale_id": sale.pk, "void_id": void.pk, "refund_id": refund.pk, "customer_id": customer.pk,
+                  "amount": str(total), "references": clean, "reversal_payment_ids": reversal_ids},
+    )
+    sent = ", ".join(
+        f"{Sale.PaymentMode(mode).label} Rs. {sum((p.amount for p in payments if p.payment_mode == mode), Decimal('0'))}"
+        + (f" (ref {clean[mode]})" if mode in clean else "")
+        for mode in sorted(modes)
+    )
+    notify(customer.user, None, "REFUND_COMPLETED", "Refund completed",
+           f"Your refund of Rs. {total} for cancelled {_sale_label(sale)} has been sent: {sent}.", dedupe=False)
+    return refund
 
 
 def user_search_q(term, prefix=""):
@@ -291,9 +859,83 @@ def customer_has_history(profile, counts=None):
 
 def customer_pending_amount(profile):
     """Same formula as ``CustomerProfileSerializer.get_pending_amount``."""
-    sales_due = sum((sale.balance_due for sale in profile.sales.all()), Decimal("0"))
-    payments = sum((p.amount for p in profile.payments.filter(sale__isnull=True)), Decimal("0"))
-    return str(profile.opening_balance + sales_due - payments)
+    return str(customer_outstanding(profile))
+
+
+def ensure_customer_phone_free(phone):
+    """Lock the phone number and refuse it (400 duplicate_phone) if a customer already uses it.
+
+    Two requests registering the same new number queue on the lock, so only one of them
+    creates a customer. An existing customer is never merged or reused silently; the error
+    names it so the caller can choose it instead.
+    """
+    advisory_lock("customer-phone", phone)
+    existing = User.objects.filter(phone=phone, role__code="customer").select_related("customer_profile").first()
+    if existing is None:
+        return
+    message = (
+        f"This mobile number is already in the system. The user is: "
+        f"{display_name(existing)} ({existing.username})."
+    )
+    extra = {}
+    profile = getattr(existing, "customer_profile", None)
+    if profile is not None:
+        extra["existing_customer"] = {"id": profile.pk, "name": display_name(existing), "phone": existing.phone}
+    raise ApiError(message, code="duplicate_phone", field="phone", errors={"phone": [message]}, phone=[message], **extra)
+
+
+@transaction.atomic
+def create_customer(contact, actor, via):
+    """Create a customer's login and profile from contact fields already validated with
+    ``validate_user_contact``. ``via`` records where it happened ("customers" or "sale").
+
+    The phone number is required and must not belong to another customer (checked under a
+    lock on the number). The login has no usable password and must change it on first use.
+    Logs customer_created. Returns the CustomerProfile.
+    """
+    phone = contact.get("phone", "")
+    if not phone:
+        message = "Phone number is required to register a new customer."
+        raise ApiError(message, code="required", field="phone", errors={"phone": [message]}, phone=[message])
+    ensure_customer_phone_free(phone)
+
+    name = contact.get("full_name", "")
+    parts = name.split(" ", 1)
+    base_name = "_".join(parts).lower() if parts else "customer"
+    username = f"{base_name}_{phone[-4:]}"
+    customer_role = Role.objects.filter(code="customer").first()
+    user = None
+    for attempt in range(5):
+        candidate = username if attempt == 0 else f"{username}_{get_random_string(4)}"
+        if User.objects.filter(username=candidate).exists():
+            continue
+        try:
+            with transaction.atomic():
+                user = User.objects.create_user(
+                    username=candidate,
+                    first_name=parts[0] if parts else "",
+                    last_name=parts[1] if len(parts) > 1 else "",
+                    email=contact.get("email", ""),
+                    phone=phone,
+                    address=contact.get("address", ""),
+                    role=customer_role,
+                    must_change_password=True,
+                    is_active=True,
+                )
+            break
+        except IntegrityError:  # the username was taken by a concurrent request
+            continue
+    if user is None:
+        raise ApiError("Could not choose a unique username for this customer; please try again.", code="conflict", status=409)
+
+    profile = CustomerProfile.objects.create(user=user)
+    ActivityLog.objects.create(
+        action="customer_created",
+        description=f"Created customer {display_name(user)}"[:255],
+        user=actor,
+        metadata={"customer_id": profile.pk, "user_id": user.pk, "username": user.username, "via": via},
+    )
+    return profile
 
 
 def delete_customer(profile, actor):
@@ -366,6 +1008,9 @@ def user_history_counts(user):
     return {
         "deliveries": user.deliveries.count(),
         "sales": Sale.objects.filter(sold_by=user).count(),
+        "handover_sales": Sale.objects.filter(handover_staff=user).count(),
+        "sale_voids": SaleVoid.objects.filter(voided_by=user).count(),
+        "sale_refunds": SaleRefund.objects.filter(confirmed_by=user).count(),
         "payments": Payment.objects.filter(received_by=user).count(),
         "expenses": Expense.objects.filter(spent_by=user).count(),
         "movements": StockMovement.objects.filter(moved_by=user).count(),

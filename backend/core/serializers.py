@@ -9,10 +9,29 @@ from rest_framework import serializers
 from .exceptions import ApiError
 from .models import (
     ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
-    CylinderType, Delivery, Expense, Notification, Payment, Role, Sale, SaleItem,
-    StaffProfile, Stock, StockLocation, StockMovement, User, quantize_money,
+    CylinderType, Delivery, Expense, Notification, Payment, PaymentReversal, Role, Sale, SaleItem,
+    SaleRefund, StaffProfile, Stock, StockLocation, StockMovement, User, quantize_money,
 )
-from .services import display_name, notify
+from .services import (
+    DIRECT_SALE_LOCATION_CODES,
+    MAX_COUNT,
+    MAX_MONEY,
+    RECEIPT_MODES,
+    check_handover_staff,
+    is_active_staff,
+    create_customer,
+    customer_outstanding,
+    display_name,
+    get_stock_row,
+    lock_customer,
+    lock_sale_stock,
+    not_voided,
+    notify,
+    record_customer_payment,
+    sale_void,
+)
+
+RECEIPT_MODE_CHOICES = [(mode.value, mode.label) for mode in RECEIPT_MODES]
 
 phone_validator = RegexValidator(regex=r"^\d+$", message="Phone number must contain only digits.")
 
@@ -239,16 +258,6 @@ class StockSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-def get_stock_row(cylinder_type, location, status):
-    stock, _ = Stock.objects.select_for_update().get_or_create(
-        cylinder_type=cylinder_type,
-        location=location,
-        status=status,
-        defaults={"quantity": 0},
-    )
-    return stock
-
-
 class StockMovementSerializer(serializers.ModelSerializer):
     moved_by_name = serializers.CharField(source="moved_by.username", read_only=True)
     cylinder_type_name = serializers.CharField(source="cylinder_type.name", read_only=True)
@@ -325,31 +334,149 @@ class SaleItemSerializer(serializers.ModelSerializer):
 
 class SaleItemWriteSerializer(serializers.Serializer):
     cylinder_type = serializers.PrimaryKeyRelatedField(queryset=CylinderType.objects.all())
-    quantity = serializers.IntegerField(min_value=0)
-    rate = serializers.DecimalField(max_digits=10, decimal_places=2)
-    empty_returned = serializers.IntegerField(min_value=0, default=0)
+    quantity = serializers.IntegerField(min_value=0, max_value=MAX_COUNT)
+    rate = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"))
+    empty_returned = serializers.IntegerField(min_value=0, max_value=MAX_COUNT, default=0)
+
+
+class SplitPaymentSerializer(serializers.Serializer):
+    mode = serializers.ChoiceField(choices=RECEIPT_MODE_CHOICES)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"))
+
+
+class NewCustomerSerializer(serializers.Serializer):
+    """A customer registered as part of a sale; contact formats are checked like POST /customers/."""
+
+    name = serializers.CharField()
+    phone = serializers.CharField()
+    address = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.CharField(required=False, allow_blank=True)
+
+
+def receipt_parts(parts, field):
+    """Validated (mode, amount) pairs from a list of SplitPaymentSerializer parts: one to three
+    parts, each mode at most once."""
+    if not parts:
+        raise ApiError("Enter at least one payment part.", code="invalid_payment", field=field)
+    modes = [part["mode"] for part in parts]
+    if len(set(modes)) != len(modes):
+        raise ApiError("Each payment mode can appear only once.", code="invalid_payment", field=field)
+    return [(part["mode"], part["amount"]) for part in parts]
+
+
+# Set by the server; a request that tries to send them is refused rather than silently ignored.
+SALE_SERVER_FIELDS = frozenset({
+    "total_amount", "final_amount", "balance_due", "original_amount", "discount_amount", "has_discount",
+    "applied_discount_type", "applied_discount_value", "sold_by", "sold_by_name", "delivery_staff", "payments",
+    "sold_by_full_name", "sold_by_role", "handover_staff_name", "is_direct", "void",
+})
+
+
+def payment_kind(payment):
+    """What a payment row is: payment, refund (money paid back), credit_reversal (taken off a
+    cancelled sale and kept as credit) or credit (that money, kept for the customer)."""
+    if payment.amount < 0:
+        try:
+            link = payment.reverses_link
+        except PaymentReversal.DoesNotExist:
+            return "reversal"
+        return "refund" if link.sale_refund_id else "credit_reversal"
+    if payment.sale_id is None:
+        try:
+            payment.credit_link
+        except PaymentReversal.DoesNotExist:
+            return "payment"
+        return "credit"
+    return "payment"
+
+
+def void_summary(void):
+    """A SaleVoid for the screens: who cancelled it, why, and where its money stands."""
+    try:
+        refund = void.refund
+    except SaleRefund.DoesNotExist:
+        refund = None
+    if void.outcome == void.Outcome.REFUND:
+        status = "refunded" if refund else "refund_pending"
+    else:
+        status = "credited" if void.outcome == void.Outcome.CREDIT else "cancelled"
+    return {
+        "id": void.pk,
+        "outcome": void.outcome,
+        "status": status,
+        "reason": void.reason,
+        "voided_at": void.created_at,
+        "voided_by_name": display_name(void.voided_by),
+        "paid_amount": serialize_decimal(void.paid_amount),
+        "cancelled_balance": serialize_decimal(void.cancelled_balance),
+        "refund_due": serialize_decimal(void.refund_due),
+        "refund": refund and {
+            "amount": serialize_decimal(refund.amount),
+            "references": refund.references,
+            "confirmed_at": refund.created_at,
+            "confirmed_by_name": display_name(refund.confirmed_by),
+        },
+    }
 
 
 class SaleSerializer(serializers.ModelSerializer):
+    # Exactly one of customer (an existing customer) or new_customer (registered with the sale).
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=CustomerProfile.objects.select_related("user"), required=False, allow_null=True
+    )
+    new_customer = NewCustomerSerializer(required=False, write_only=True)
+    # Money collected for the customer's older dues in the same request; never for this sale.
+    past_due_payments = SplitPaymentSerializer(many=True, required=False, write_only=True)
+    # Who physically handed the cylinders over (optional); see services.check_handover_staff.
+    handover_staff = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.select_related("role", "staff_profile"), required=False, allow_null=True
+    )
     customer_name = serializers.CharField(source="customer.user.username", read_only=True, default="Guest")
     sold_by_name = serializers.CharField(source="sold_by.username", read_only=True)
+    sold_by_full_name = serializers.SerializerMethodField()
+    sold_by_role = serializers.SerializerMethodField()
+    handover_staff_name = serializers.SerializerMethodField()
+    is_direct = serializers.SerializerMethodField()
     location_name = serializers.CharField(source="location.name", read_only=True)
     items = SaleItemSerializer(many=True, read_only=True)
     sale_items = SaleItemWriteSerializer(many=True, write_only=True)
-    paid_payment_mode = serializers.CharField(max_length=10, required=False, write_only=True)
-    split_payments = serializers.ListField(child=serializers.DictField(), required=False, write_only=True)
+    paid_amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
+    paid_payment_mode = serializers.ChoiceField(choices=RECEIPT_MODE_CHOICES, required=False, write_only=True)
+    split_payments = SplitPaymentSerializer(many=True, required=False, write_only=True)
     payments = serializers.SerializerMethodField()
     final_amount = serializers.SerializerMethodField()
     has_discount = serializers.SerializerMethodField()
+    # The cancellation, if any (see void_summary); the sale itself is never changed by it.
+    void = serializers.SerializerMethodField()
 
     def get_payments(self, obj):
-        return [{"amount": p.amount, "mode": p.payment_mode, "date": p.created_at} for p in obj.payments.order_by("created_at")]
+        return [
+            {"id": p.pk, "amount": p.amount, "mode": p.payment_mode, "date": p.created_at, "kind": payment_kind(p)}
+            for p in obj.payments.select_related("reverses_link").order_by("created_at", "id")
+        ]
+
+    def get_void(self, obj):
+        void = sale_void(obj)
+        return void_summary(void) if void else None
 
     def get_final_amount(self, obj):
         return serialize_decimal(get_sale_pricing_snapshot(obj)["final_amount"])
 
     def get_has_discount(self, obj):
         return get_sale_pricing_snapshot(obj)["has_discount"]
+
+    def get_sold_by_full_name(self, obj):
+        return display_name(obj.sold_by)
+
+    def get_sold_by_role(self, obj):
+        return getattr(obj.sold_by.role, "code", None)
+
+    def get_handover_staff_name(self, obj):
+        return display_name(obj.handover_staff) if obj.handover_staff_id else None
+
+    def get_is_direct(self, obj):
+        """True for a sale made directly; False for one created by completing a booking."""
+        return getattr(obj, "booking", None) is None
 
     class Meta:
         model = Sale
@@ -358,94 +485,235 @@ class SaleSerializer(serializers.ModelSerializer):
             "original_amount", "discount_amount", "total_amount", "final_amount", "has_discount",
             "applied_discount_type", "applied_discount_value", "paid_amount", "balance_due",
             "payment_mode", "paid_payment_mode", "split_payments", "delivery_type", "delivery_staff", "note",
-            "sold_by", "sold_by_name", "created_at", "items", "sale_items", "payments",
+            "sold_by", "sold_by_name", "sold_by_full_name", "sold_by_role", "handover_staff", "handover_staff_name",
+            "is_direct", "void", "created_at", "items", "sale_items", "payments",
+            "client_ref", "new_customer", "past_due_payments",
         ]
-        read_only_fields = ["total_amount", "balance_due", "sold_by"]
+        read_only_fields = [
+            "total_amount", "balance_due", "sold_by", "original_amount", "discount_amount",
+            "applied_discount_type", "applied_discount_value", "delivery_staff",
+        ]
 
     def validate(self, attrs):
-        items = attrs.get("sale_items", [])
-        if not items:
-            raise serializers.ValidationError("At least one cylinder item is required.")
-        if attrs.get("payment_mode") == Sale.PaymentMode.CREDIT and attrs.get("customer") is None:
-            raise serializers.ValidationError("Credit sales must be linked to a customer.")
-        if attrs.get("paid_amount", Decimal("0")) < 0:
-            raise serializers.ValidationError("Paid amount cannot be negative.")
+        """Every rule a direct sale must pass before anything is locked or written. Stock is
+        checked in create(), under lock."""
+        spoofed = sorted(SALE_SERVER_FIELDS.intersection(self.initial_data))
+        if spoofed:
+            raise ApiError(
+                f"These fields are set by the server and cannot be sent: {', '.join(spoofed)}.",
+                code="read_only_fields",
+                fields=spoofed,
+            )
+
+        attrs["handover_staff"] = check_handover_staff(attrs.get("handover_staff"), self.context["request"].user)
+
+        customer, new_customer = attrs.get("customer"), attrs.get("new_customer")
+        if customer is not None and new_customer is not None:
+            raise ApiError("Send either customer or new_customer, not both.", code="invalid", field="customer")
+        if customer is None and new_customer is None:
+            raise ApiError("Choose a customer or enter a new customer's details.", code="required", field="customer")
+        if new_customer is not None:
+            # Formats only; the duplicate-phone check runs in create(), under a lock on the number.
+            attrs["_new_customer"] = validate_user_contact(new_customer, name_key="name")
+        elif not (customer.is_active and customer.user.is_active):
+            raise ApiError("This customer is deactivated and cannot take new sales.", code="customer_inactive", field="customer")
+
+        past_due = attrs.get("past_due_payments")
+        attrs["_past_due"] = receipt_parts(past_due, "past_due_payments") if past_due is not None else []
+
+        location = attrs["location"]
+        if location.code not in DIRECT_SALE_LOCATION_CODES:
+            raise ApiError(
+                f"Direct sales take stock only from the shop or Kandam (godown), not {location.name}.",
+                code="invalid_location",
+                field="location",
+            )
+        if not location.is_active:
+            raise ApiError(f"{location.name} is inactive.", code="location_inactive", field="location")
+
+        attrs["sale_items"] = self.merge_lines(attrs.get("sale_items") or [])
+        total = sum((Decimal(line["quantity"]) * line["rate"] for line in attrs["sale_items"]), Decimal("0"))
+        if total > MAX_MONEY:
+            raise ApiError("The sale total is too large.", code="amount_too_large", field="sale_items")
+        attrs["_total"] = total
+        attrs["_receipts"] = self.receipts(attrs, total)
         return attrs
+
+    @staticmethod
+    def merge_lines(lines):
+        """Merge lines with the same cylinder type and rate, so a cylinder type split over
+        several lines is counted once; stock is later checked per type across all lines.
+
+        An inactive (discontinued) cylinder type may appear only on empties-only lines:
+        its filled cylinders cannot be sold, but customers can still return its empties.
+        Each line is checked before merging, so merging cannot hide a filled line."""
+        if not lines:
+            raise ApiError("Add at least one cylinder line.", code="no_lines", field="sale_items")
+        merged = {}
+        for line in lines:
+            cylinder_type = line["cylinder_type"]
+            if not cylinder_type.is_active and line["quantity"] > 0:
+                raise ApiError(
+                    f"{cylinder_type.name} is inactive and cannot be sold; only its empties can be returned.",
+                    code="cylinder_inactive",
+                    field="sale_items",
+                )
+            if line["quantity"] == 0 and line["empty_returned"] == 0:
+                raise ApiError("Each line needs cylinders sold or empties returned.", code="empty_line", field="sale_items")
+            key = (cylinder_type.pk, line["rate"])
+            if key in merged:
+                merged[key]["quantity"] += line["quantity"]
+                merged[key]["empty_returned"] += line["empty_returned"]
+            else:
+                merged[key] = dict(line)
+        if any(line["quantity"] > MAX_COUNT or line["empty_returned"] > MAX_COUNT for line in merged.values()):
+            raise ApiError("Too many cylinders on one line.", code="invalid", field="sale_items")
+        return list(merged.values())
+
+    @staticmethod
+    def receipts(attrs, total):
+        """The payment rows the sale will create, as (mode, amount); sets attrs["paid_amount"].
+
+        cash / gpay / bank: paid in full (paid_amount, if sent, must equal the total).
+        credit: 0 <= paid <= total, and anything paid needs paid_payment_mode.
+        split: one to three parts, each mode at most once; paid is their sum (paid_amount,
+        if sent, must match it).
+        """
+        mode = attrs["payment_mode"]
+        parts = attrs.get("split_payments")
+        sent_paid = attrs.get("paid_amount")
+        if parts and mode != Sale.PaymentMode.SPLIT:
+            raise ApiError("split_payments can only be sent with payment mode split.", code="invalid_payment", field="split_payments")
+
+        if mode == Sale.PaymentMode.SPLIT:
+            receipts = receipt_parts(parts, "split_payments")
+            paid = sum((amount for _, amount in receipts), Decimal("0"))
+            if sent_paid is not None and sent_paid != paid:
+                raise ApiError(f"paid_amount {sent_paid} does not match the split parts ({paid}).", code="paid_mismatch", field="paid_amount")
+        elif mode == Sale.PaymentMode.CREDIT:
+            paid = sent_paid if sent_paid is not None else Decimal("0")
+            receipts = []
+            if paid > 0:
+                if not attrs.get("paid_payment_mode"):
+                    raise ApiError(
+                        "Say how the amount received was paid: cash, gpay or bank.",
+                        code="required",
+                        field="paid_payment_mode",
+                    )
+                receipts = [(attrs["paid_payment_mode"], paid)]
+        else:
+            paid = total if sent_paid is None else sent_paid
+            if paid != total:
+                raise ApiError(
+                    f"A {Sale.PaymentMode(mode).label} sale is paid in full: paid_amount must be {total}.",
+                    code="paid_mismatch",
+                    field="paid_amount",
+                )
+            receipts = [(mode, paid)] if paid > 0 else []
+
+        if paid > total:
+            raise ApiError(f"Amount paid ({paid}) is more than the sale total ({total}).", code="overpayment", field="paid_amount")
+        attrs["paid_amount"] = paid
+        return receipts
 
     @transaction.atomic
     def create(self, validated_data):
+        """Everything below runs in one transaction: a failure at any step leaves no customer,
+        sale, line, payment, stock change, log or notification behind."""
         user = self.context["request"].user
-        items_data = validated_data.pop("sale_items")
-        paid_payment_mode = validated_data.pop("paid_payment_mode", "cash")
-        split_payments = validated_data.pop("split_payments", [])
+        lines = validated_data.pop("sale_items")
+        receipts = validated_data.pop("_receipts")
+        total = validated_data.pop("_total")
+        new_contact = validated_data.pop("_new_customer", None)
+        past_due = validated_data.pop("_past_due")
+        request_hash = validated_data.pop("request_hash", None)
+        for key in ("paid_payment_mode", "split_payments", "new_customer", "past_due_payments"):
+            validated_data.pop(key, None)
+        paid = validated_data["paid_amount"]
         location = validated_data["location"]
-        payment_mode = validated_data["payment_mode"]
-        
-        paid = Decimal("0")
-        if split_payments:
-            paid = sum(Decimal(str(p.get("amount", 0))) for p in split_payments)
-            validated_data["paid_amount"] = paid
+        handover = validated_data.get("handover_staff")
+        # The name as text too, as delivery completion has always written it.
+        validated_data["delivery_staff"] = display_name(handover) if handover else ""
+
+        # Lock order (see services): a new customer's phone number, the customer, their older
+        # unpaid sales (past dues), then stock rows.
+        if new_contact is not None:
+            customer_id = create_customer(new_contact, user, via="sale").pk
         else:
-            paid = validated_data.get("paid_amount", Decimal("0"))
+            customer_id = validated_data["customer"].pk
+        customer = lock_customer(customer_id)
+        if not (customer.is_active and customer.user.is_active):
+            raise ApiError("This customer is deactivated and cannot take new sales.", code="customer_inactive", field="customer")
+        validated_data["customer"] = customer
 
-        total = Decimal("0")
-        stock_rows = []
-        for item in items_data:
-            ctype = item["cylinder_type"]
-            qty = item["quantity"]
-            stock = get_stock_row(ctype, location, Stock.Status.FILLED)
-            if stock.quantity < qty:
-                raise serializers.ValidationError(f"Not enough filled stock for {ctype.name} at {location.name}.")
-            total += Decimal(qty) * item["rate"]
-            stock_rows.append((stock, qty, item))
+        # Past dues are settled before this sale exists, so none of that money can reach it,
+        # and each part is capped by what the customer owed before this sale.
+        past_due_ids = []
+        for mode, amount in past_due:
+            payments = record_customer_payment(customer, amount, mode, user, note="Past pending collected during sale")
+            past_due_ids.extend(payment.id for payment in payments)
 
-        if paid > total:
-            raise serializers.ValidationError("Paid amount cannot exceed total amount.")
+        needed = {}
+        for line in lines:
+            going_out, coming_back = needed.get(line["cylinder_type"], (0, 0))
+            needed[line["cylinder_type"]] = (going_out + line["quantity"], coming_back + line["empty_returned"])
+        locked = lock_sale_stock(location, needed)
 
-        for stock, qty, item in stock_rows:
-            stock.quantity -= qty
-            stock.save(update_fields=["quantity", "updated_at"])
-            returned = item.get("empty_returned", 0)
-            if returned > 0:
-                empty_stock = get_stock_row(item["cylinder_type"], location, Stock.Status.EMPTY)
-                empty_stock.quantity += returned
-                empty_stock.save(update_fields=["quantity", "updated_at"])
+        stock_after = {}
+        for cylinder_type, (going_out, coming_back) in needed.items():
+            filled, empty = locked[cylinder_type.pk]
+            if going_out:
+                filled.quantity -= going_out
+                filled.save(update_fields=["quantity", "updated_at"])
+            if coming_back:
+                empty.quantity += coming_back
+                empty.save(update_fields=["quantity", "updated_at"])
+            stock_after[str(cylinder_type.pk)] = {
+                "filled": filled.quantity if filled else None,
+                "empty": empty.quantity if empty else None,
+            }
 
         sale = Sale.objects.create(sold_by=user, total_amount=total, balance_due=total - paid, **validated_data)
-
-        for stock, qty, item in stock_rows:
+        for line in lines:
             SaleItem.objects.create(
-                sale=sale, cylinder_type=item["cylinder_type"], quantity=qty,
-                rate=item["rate"], total_amount=Decimal(qty) * item["rate"],
-                empty_returned=item.get("empty_returned", 0),
+                sale=sale, cylinder_type=line["cylinder_type"], quantity=line["quantity"], rate=line["rate"],
+                total_amount=Decimal(line["quantity"]) * line["rate"], empty_returned=line["empty_returned"],
             )
-
-        if paid > 0 and sale.customer:
-            if split_payments:
-                for sp in split_payments:
-                    amt = Decimal(str(sp.get("amount", 0)))
-                    mode = sp.get("mode", Sale.PaymentMode.CASH)
-                    if amt > 0:
-                        Payment.objects.create(
-                            customer=sale.customer, sale=sale, amount=amt,
-                            payment_mode=mode, received_by=user, note="Sale payment (split)",
-                        )
-            else:
-                actual_payment_mode = paid_payment_mode if payment_mode == Sale.PaymentMode.CREDIT and paid_payment_mode else payment_mode
-                Payment.objects.create(
-                    customer=sale.customer, sale=sale, amount=paid,
-                    payment_mode=actual_payment_mode, received_by=user, note="Sale payment",
-                )
+        note = "Sale payment (split)" if sale.payment_mode == Sale.PaymentMode.SPLIT else "Sale payment"
+        for mode, amount in receipts:
+            Payment.objects.create(customer=customer, sale=sale, amount=amount, payment_mode=mode, received_by=user, note=note)
 
         ActivityLog.objects.create(
             action="sale_created",
-            description=f"Sale of Rs. {total} ({len(items_data)} item(s))",
-            user=user, metadata={"sale_id": sale.id},
+            description=f"Sale of Rs. {total} ({len(lines)} item(s))",
+            user=user,
+            metadata={
+                "sale_id": sale.id,
+                "customer_id": customer.pk,
+                "location": location.code,
+                "payment_mode": sale.payment_mode,
+                "total": str(total),
+                "paid": str(paid),
+                "balance": str(sale.balance_due),
+                "lines": [
+                    {"cylinder_type": line["cylinder_type"].pk, "quantity": line["quantity"], "rate": str(line["rate"]),
+                     "empty_returned": line["empty_returned"]}
+                    for line in lines
+                ],
+                "payments": [{"mode": mode, "amount": str(amount)} for mode, amount in receipts],
+                "stock_after": stock_after,
+                "new_customer": new_contact is not None,
+                "handover_staff_id": handover.pk if handover else None,
+                "past_due_payment_ids": past_due_ids,
+                # SaleViewSet.create compares a retry against these to tell a retry from a reuse.
+                "client_ref": str(sale.client_ref) if sale.client_ref else None,
+                "request_hash": request_hash,
+            },
         )
 
-        if sale.customer and any(item["quantity"] > 0 for item in items_data):
+        if any(line["quantity"] > 0 for line in lines):
             notify(
-                sale.customer.user,
+                customer.user,
                 None,
                 "DIRECT_SALE_COMPLETED",
                 "Direct Sale Completed",
@@ -456,8 +724,18 @@ class SaleSerializer(serializers.ModelSerializer):
         return sale
 
 
+# Set by the server on payments.
+PAYMENT_SERVER_FIELDS = frozenset({"received_by"})
+
+
 class PaymentSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.user.username", read_only=True)
+    amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"))
+    payment_mode = serializers.ChoiceField(choices=RECEIPT_MODE_CHOICES)
+    kind = serializers.SerializerMethodField()
+
+    def get_kind(self, obj):
+        return payment_kind(obj)
 
     class Meta:
         model = Payment
@@ -465,14 +743,28 @@ class PaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ["received_by"]
         extra_kwargs = {"empty_collected": {"required": False}}
 
+    def validate(self, attrs):
+        spoofed = sorted(PAYMENT_SERVER_FIELDS.intersection(self.initial_data))
+        if spoofed:
+            raise ApiError(
+                f"These fields are set by the server and cannot be sent: {', '.join(spoofed)}.",
+                code="read_only_fields",
+                fields=spoofed,
+            )
+        return attrs
+
     def create(self, validated_data):
-        payment = Payment.objects.create(received_by=self.context["request"].user, **validated_data)
-        ActivityLog.objects.create(
-            action="payment_received",
-            description=f"Payment received: Rs. {payment.amount}",
-            user=payment.received_by, metadata={"payment_id": payment.id},
+        # Locks the customer and the sales it settles; see services.record_customer_payment.
+        payments = record_customer_payment(
+            validated_data["customer"],
+            validated_data["amount"],
+            validated_data["payment_mode"],
+            self.context["request"].user,
+            sale=validated_data.get("sale"),
+            note=validated_data.get("note", ""),
+            empty_collected=validated_data.get("empty_collected", 0),
         )
-        return payment
+        return payments[0]
 
 
 class ExpenseSerializer(serializers.ModelSerializer):
@@ -552,10 +844,13 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     sales_count = serializers.SerializerMethodField()
     empty_credits = serializers.SerializerMethodField()
+    credit_balance = serializers.SerializerMethodField()
 
     class Meta:
         model = CustomerProfile
         fields = "__all__"
+        # The linked account is set when the customer is created and never re-pointed.
+        read_only_fields = ["user"]
 
     def validate(self, attrs):
         discount_type = attrs.get("global_discount_type", getattr(self.instance, "global_discount_type", None))
@@ -577,9 +872,11 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         return obj.user.get_full_name() or obj.user.username
 
     def get_pending_amount(self, obj):
-        sales_due = sum(sale.balance_due for sale in obj.sales.all())
-        payments = sum(p.amount for p in obj.payments.filter(sale__isnull=True))
-        return str(obj.opening_balance + sales_due - payments)
+        return str(customer_outstanding(obj))
+
+    def get_credit_balance(self, obj):
+        """Credit the customer holds (a negative pending amount); it offsets later dues."""
+        return str(max(Decimal("0.00"), -customer_outstanding(obj)))
 
     def get_pending_balance(self, obj):
         return self.get_pending_amount(obj)
@@ -588,7 +885,8 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         balances = {}
         custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in obj.custom_rates.all()}
         
-        for sale in obj.sales.prefetch_related('items__cylinder_type').order_by('created_at'):
+        # Voided sales never happened as far as empty cylinders go.
+        for sale in not_voided(obj.sales.all()).prefetch_related('items__cylinder_type').order_by('created_at'):
             for item in sale.items.all():
                 tid = item.cylinder_type_id
                 tname = item.cylinder_type.name
@@ -653,6 +951,9 @@ class StaffProfileSerializer(serializers.ModelSerializer):
     is_active = serializers.BooleanField(source="user.is_active", read_only=True)
     vehicle_location_name = serializers.CharField(source="vehicle_location.name", read_only=True)
     user_id = serializers.IntegerField(source="user.id", read_only=True)
+    # is_active above is the user's flag; this also needs an active profile and the staff role,
+    # exactly as the server requires of a sale's handover_staff.
+    can_hand_over = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffProfile
@@ -660,6 +961,9 @@ class StaffProfileSerializer(serializers.ModelSerializer):
 
     def get_full_name(self, obj):
         return obj.user.get_full_name() or obj.user.username
+
+    def get_can_hand_over(self, obj):
+        return is_active_staff(obj.user)
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -901,10 +1205,7 @@ class DeliverySerializer(serializers.ModelSerializer):
         return self._get_pricing(obj)["has_discount"]
 
     def get_pending_amount(self, obj):
-        customer = obj.booking.customer
-        sales_due = sum(sale.balance_due for sale in customer.sales.all())
-        payments = sum(p.amount for p in customer.payments.filter(sale__isnull=True))
-        return str(customer.opening_balance + sales_due - payments)
+        return str(customer_outstanding(obj.booking.customer))
 
 
 class StaffDeliveryHistorySerializer(serializers.ModelSerializer):

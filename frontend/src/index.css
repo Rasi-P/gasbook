@@ -9,6 +9,7 @@
 @import "./styles/bookings.css";
 @import "./styles/customers.css";
 @import "./styles/sales.css";
+@import "./styles/sale-void.css";
 @import "./styles/stock.css";
 @import "./styles/staff.css";
 @import "./styles/reports.css";
