@@ -31,6 +31,7 @@ type DashboardData = {
   total_cylinders: number; filled_cylinders: number; empty_cylinders: number;
   shop_stock: number; kandam_stock: number;
   today_sales: number; today_collection: number; pending_payments: number;
+  today_cancelled?: number; today_net_sales?: number;
   low_stock: { cylinder_type: string; location: string; status: string; quantity: number; threshold: number }[];
   stock_rows: { id: number; type: string; shop_filled: number; shop_empty: number; kandam_filled: number; kandam_empty: number; total: number; with_customers: number }[];
   recent_activity: { id: number; action: string; description: string; user_name: string }[];
@@ -43,6 +44,11 @@ function money(value: number | string) {
 function percent(value: number, total: number) {
   if (!total) return 0;
   return Math.min(100, Math.round((value / total) * 100));
+}
+
+/** Amounts of 13+ characters (Rs. 10 lakh and up) get a size that fits narrow cards; see dashboard.css. */
+function valueSize(value: ReactNode) {
+  return typeof value === 'string' && value.length >= 13 ? 'dash-value--long' : undefined;
 }
 
 export default function Dashboard() {
@@ -111,14 +117,19 @@ export default function Dashboard() {
       {header}
 
       {error && (
-        <InlineWarning message={`Showing the last loaded data. Refresh failed: ${error}`} onRetry={loadDashboard} />
+        <div className="dash-alert">
+          <InlineWarning message={`Showing the last loaded data. Refresh failed: ${error}`} onRetry={loadDashboard} />
+        </div>
       )}
 
       <section className="dash-stats" aria-label="Key figures">
         <StatCard
           label="Today sales"
+          className={valueSize(money(data.today_sales))}
           value={money(data.today_sales)}
-          hint={`${money(data.today_collection)} collected`}
+          hint={Number(data.today_cancelled) > 0
+            ? `${money(data.today_collection)} collected · ${money(data.today_cancelled ?? 0)} cancelled`
+            : `${money(data.today_collection)} collected`}
           icon={<IndianRupee />}
         />
         <StatCard
@@ -135,10 +146,11 @@ export default function Dashboard() {
         />
         <StatCard
           label="Pending payments"
+          className={valueSize(money(data.pending_payments))}
           value={money(data.pending_payments)}
           hint={lowStockCount === 0 ? 'No stock warnings' : undefined}
           attention={lowStockCount > 0 ? (
-            <Badge tone="warning" size="sm">{lowStockCount} stock warning{lowStockCount === 1 ? '' : 's'}</Badge>
+            <Badge tone="warning">{lowStockCount} stock warning{lowStockCount === 1 ? '' : 's'}</Badge>
           ) : undefined}
           icon={<AlertTriangle />}
         />
@@ -185,7 +197,7 @@ export default function Dashboard() {
       <section className="dash-section">
         <SectionHeader icon={<ShieldCheck />} title="Operations overview" description="Sales readiness, pending payments, and quick actions" />
 
-        <div className="dash-grid-2">
+        <div className="dash-grid-2 dash-grid-2--wide-first">
           <Card>
             <CardHeader title="Readiness" meta={<Badge tone="primary">{filledPercent}% filled</Badge>} />
             <Bar label="Filled cylinders" value={data.filled_cylinders} total={data.total_cylinders} />
@@ -252,7 +264,7 @@ export default function Dashboard() {
 
 function Tile({ label, value, tone }: { label: string; value: ReactNode; tone?: 'warning' }) {
   return (
-    <div className={`ui-tile${tone ? ` ui-tile--${tone}` : ''}`}>
+    <div className={['ui-tile', tone && `ui-tile--${tone}`, valueSize(value)].filter(Boolean).join(' ')}>
       <span className="ui-tile__label">{label}</span>
       <strong className="ui-tile__value">{value}</strong>
     </div>
@@ -265,11 +277,11 @@ function Bar({ label, value, total }: { label: string; value: number; total: num
   return (
     <div className="dash-bar">
       <div className="dash-bar__row">
-        <span className="dash-bar__label">{label}</span>
+        <span className="dash-bar__label" title={label}>{label}</span>
         <span className="dash-bar__value">{value} <small>/ {total}</small></span>
       </div>
       <div className="dash-bar__track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={width}>
-        <span className="dash-bar__fill" style={{ width: `${width}%` }} />
+        <span className={`dash-bar__fill${width === 0 ? ' dash-bar__fill--zero' : ''}`} style={{ width: `${width}%` }} />
       </div>
     </div>
   );

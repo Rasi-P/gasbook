@@ -3,8 +3,8 @@ from django.contrib.auth.admin import UserAdmin
 
 from .models import (
     ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
-    CylinderType, Delivery, Expense, Notification, Payment, Role, Sale, SaleItem,
-    StaffProfile, Stock, StockLocation, StockMovement, User,
+    CylinderType, Delivery, Expense, Notification, Payment, PaymentReversal, Role, Sale, SaleItem,
+    SaleRefund, SaleVoid, StaffProfile, Stock, StockLocation, StockMovement, User,
 )
 
 
@@ -14,10 +14,7 @@ class GasBookUserAdmin(UserAdmin):
     list_display = ("username", "email", "role", "is_staff", "is_active")
 
 
-@admin.register(ActivityLog)
-class ActivityLogAdmin(admin.ModelAdmin):
-    """Audit trail: viewable here, written only by the application."""
-
+class ViewOnlyAdmin(admin.ModelAdmin):
     def has_add_permission(self, request):
         return False
 
@@ -28,14 +25,20 @@ class ActivityLogAdmin(admin.ModelAdmin):
         return False
 
 
+@admin.register(ActivityLog)
+class ActivityLogAdmin(ViewOnlyAdmin):
+    """Audit trail: viewable here, written only by the application."""
+
+
+@admin.register(Sale, SaleItem, Payment, Stock, StockMovement, SaleVoid, SaleRefund, PaymentReversal)
+class FinancialRecordAdmin(ViewOnlyAdmin):
+    """Sales, payments and stock change only through the app's workflows, which keep them
+    consistent with each other and log the change; editing them here would bypass both."""
+
+
 admin.site.register(Role)
 admin.site.register(CylinderType)
 admin.site.register(StockLocation)
-admin.site.register(Stock)
-admin.site.register(StockMovement)
-admin.site.register(Sale)
-admin.site.register(SaleItem)
-admin.site.register(Payment)
 admin.site.register(Expense)
 admin.site.register(CustomerProfile)
 admin.site.register(StaffProfile)

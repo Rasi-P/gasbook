@@ -1,4 +1,8 @@
+import hashlib
+import json
 import re
+import uuid
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 
@@ -19,31 +23,44 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
     ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
-    CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
+    CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem, SaleRefund, SaleVoid,
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
 from .exceptions import ApiError
 from .pagination import StandardPagination
 from .services import (
     OPEN_DELIVERY_STATUSES,
+    BUSINESS_DISPLAY_NAME,
+    RECEIPT_MODES,
     admin_users,
+    advisory_lock,
     assignment_logging_started_at,
     clean_reason,
+    confirm_refund,
+    create_customer,
     deactivate_customer,
     deactivate_user,
     default_staff_customers,
     delete_customer,
     delete_user,
     display_name,
+    ensure_customer_phone_free,
+    get_stock_row,
+    is_admin_user,
     lock_booking_and_delivery,
+    lock_customer,
+    not_voided,
     notify,
     parse_money,
     parse_non_negative_int,
     reactivate_customer,
     reactivate_user,
+    sale_void,
     staff_assignment_details,
     staff_handovers,
     user_search_q,
+    void_preview,
+    void_sale,
 )
 from .serializers import (
     ActivityLogSerializer,
@@ -67,7 +84,6 @@ from .serializers import (
     get_booking_pricing_snapshot,
     get_customer_pricing_snapshot,
     get_sale_pricing_snapshot,
-    get_stock_row,
     serialize_decimal,
     split_full_name,
     validate_user_contact,
@@ -122,15 +138,40 @@ def build_sale_history_display(sale):
     }
 
 
+def direct_sale_history_status(sale):
+    """Status a direct sale shows in the customer's history: cancelled once voided. Booking
+    entries never come through here."""
+    return Booking.Status.CANCELLED if sale_void(sale) else Booking.Status.DELIVERED
+
+
+def direct_sale_cancellation_message(void):
+    """What the customer is told about a cancelled direct sale, matching what was committed."""
+    head = f"Direct sale by {BUSINESS_DISPLAY_NAME} was cancelled."
+    if void.outcome == SaleVoid.Outcome.REFUND:
+        try:
+            void.refund
+        except SaleRefund.DoesNotExist:
+            return f"{head} A refund of Rs. {serialize_decimal(void.refund_due)} is owed to you."
+        return f"{head} Rs. {serialize_decimal(void.refund_due)} has been refunded."
+    if void.outcome == SaleVoid.Outcome.CREDIT:
+        return f"{head} Rs. {serialize_decimal(void.paid_amount)} is kept as credit on your account."
+    return f"{head} Nothing is due."
+
+
 def build_direct_sale_history_entry(sale):
+    """A direct sale as the customer sees it. Customers see the business name, never which
+    user recorded or handed over the sale; booking entries keep their delivery partner."""
     billed_items = [item for item in sale.items.all() if item.quantity > 0 or item.total_amount > 0]
     if not billed_items:
         return None
 
     pricing = get_sale_pricing_snapshot(sale)
     display = build_sale_history_display(sale)
-    sold_by_name = sale.sold_by.get_full_name() or sale.sold_by.username
     payment_status = "PAID" if sale.balance_due <= 0 else "PENDING"
+    status = direct_sale_history_status(sale)
+    void = sale_void(sale) if status == Booking.Status.CANCELLED else None
+    if void is not None:
+        payment_status = "CANCELLED"
 
     return {
         "id": sale.id,
@@ -138,11 +179,11 @@ def build_direct_sale_history_entry(sale):
         "source_id": sale.id,
         "order_id": f"SALE-{sale.id}",
         "display_reference": f"Direct Sale #{sale.id}",
-        "status": Booking.Status.DELIVERED,
+        "status": status,
         "created_at": sale.created_at.isoformat(),
         "updated_at": sale.updated_at.isoformat(),
         "approved_at": None,
-        "delivered_at": sale.created_at.isoformat(),
+        "delivered_at": sale.created_at.isoformat() if status == Booking.Status.DELIVERED else None,
         "cylinder_type_id": display["cylinder_type_id"],
         "cylinder_type_name": display["cylinder_type_name"],
         "cylinder_type_weight": display["cylinder_type_weight"],
@@ -157,7 +198,7 @@ def build_direct_sale_history_entry(sale):
         "has_discount": pricing["has_discount"],
         "applied_discount_type": pricing["applied_discount_type"],
         "applied_discount_value": serialize_decimal(pricing["applied_discount_value"]),
-        "assigned_staff_name": sale.delivery_staff or sold_by_name,
+        "assigned_staff_name": BUSINESS_DISPLAY_NAME,
         "assigned_staff_phone": None,
         "payment_method": sale.payment_mode.upper(),
         "payment_status": payment_status,
@@ -167,8 +208,8 @@ def build_direct_sale_history_entry(sale):
         "can_order_again": bool(display["cylinder_type_id"]),
         "item_count": display["item_count"],
         "note": sale.note,
-        "detail_message": (
-            f"Direct sale recorded by {sold_by_name}."
+        "detail_message": direct_sale_cancellation_message(void) if void is not None else (
+            f"Direct sale by {BUSINESS_DISPLAY_NAME}."
             + (f" Balance due: Rs. {serialize_decimal(sale.balance_due)}." if sale.balance_due > 0 else "")
         ),
     }
@@ -220,20 +261,59 @@ class IsStaffOrAdmin(permissions.BasePermission):
         return getattr(getattr(request.user, "role", None), "code", "") in ["admin", "staff"] or request.user.is_superuser
 
 
+def refuse_delete_while_holding_stock(stock_rows, name, kind):
+    """Deleting a location or cylinder type cascades to its Stock rows, erasing any cylinders
+    they hold without a movement or log. Refuse (409) while any row holds cylinders; rows at
+    zero do not block."""
+    held = {status: 0 for status in Stock.Status.values}
+    for status, quantity in stock_rows.filter(quantity__gt=0).values_list("status", "quantity"):
+        held[status] += quantity
+    total = sum(held.values())
+    if total:
+        raise ApiError(
+            f"{name} still has {total} cylinder(s) in stock ({held['filled']} filled, {held['empty']} empty). "
+            f"Deleting it would erase that stock without a record; deactivate the {kind} instead.",
+            code="has_stock",
+            status=409,
+            filled=held["filled"],
+            empty=held["empty"],
+        )
+
+
 class CylinderTypeViewSet(viewsets.ModelViewSet):
     queryset = CylinderType.objects.all()
     serializer_class = CylinderTypeSerializer
     permission_classes = [IsAdminOrReadOnly]
     search_fields = ["name"]
 
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        # Lock the row so stock cannot be added between the check and the delete.
+        cylinder = CylinderType.objects.select_for_update().get(pk=self.get_object().pk)
+        refuse_delete_while_holding_stock(cylinder.stocks.all(), cylinder.name, "cylinder type")
+        return super().destroy(request, *args, **kwargs)
+
 
 class StockLocationViewSet(viewsets.ModelViewSet):
+    """Staff may read locations; only admins change them, because a location's settings
+    decide where stock can be sold from."""
+
     queryset = StockLocation.objects.all()
     serializer_class = StockLocationSerializer
-    permission_classes = [IsStaffOrAdmin]
+    permission_classes = [IsStaffOrAdmin, IsAdminOrReadOnly]
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        # Lock the row so stock cannot be added between the check and the delete.
+        location = StockLocation.objects.select_for_update().get(pk=self.get_object().pk)
+        refuse_delete_while_holding_stock(location.stocks.all(), location.name, "location")
+        return super().destroy(request, *args, **kwargs)
 
 
-class StockViewSet(viewsets.ModelViewSet):
+class StockViewSet(viewsets.ReadOnlyModelViewSet):
+    """Quantities change only through stock movements, sales and deliveries, which log them;
+    there are no create/update/delete routes."""
+
     queryset = Stock.objects.select_related("cylinder_type", "location")
     serializer_class = StockSerializer
     permission_classes = [IsStaffOrAdmin]
@@ -249,10 +329,22 @@ class StockViewSet(viewsets.ModelViewSet):
         return queryset
 
 
-class StockMovementViewSet(viewsets.ModelViewSet):
+class StockMovementViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """A movement is recorded once, moving stock as it is created. Editing or deleting one
+    would change the record without moving the stock back, so those routes do not exist.
+
+    Admin-only by deliberate security decision, for reads, creates and supplier_pending alike:
+    a movement from the supplier adds filled stock with nothing owed, so staff could inflate
+    stock at will, and no staff screen uses movements. Admins use them from the Stock page."""
+
     queryset = StockMovement.objects.select_related("cylinder_type", "from_location", "to_location", "moved_by")
     serializer_class = StockMovementSerializer
-    permission_classes = [IsStaffOrAdmin]
+    permission_classes = [IsAdminUserRole]
 
     def create(self, request, *args, **kwargs):
         note = request.data.get("note", "")
@@ -319,6 +411,11 @@ class StockMovementViewSet(viewsets.ModelViewSet):
         return Response(pending_balances)
 
 
+# Customer fields staff may change. Balances, credit limit, discounts, default staff,
+# deposits and the linked user are admin-only.
+STAFF_EDITABLE_CUSTOMER_FIELDS = frozenset({"name", "phone", "email", "address", "area"})
+
+
 class CustomerProfileViewSet(viewsets.ModelViewSet):
     queryset = CustomerProfile.objects.select_related("user", "default_staff").prefetch_related(
         "custom_rates",
@@ -331,7 +428,8 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if getattr(self, "action", None) == "me":
             return [permissions.IsAuthenticated()]
-        if self.request.method == "DELETE" or getattr(self, "action", None) in ("deactivate", "reactivate"):
+        # Action-level permission_classes are not consulted here, so admin-only actions are listed.
+        if self.request.method == "DELETE" or getattr(self, "action", None) in ("deactivate", "reactivate", "ledger"):
             return [IsAdminUserRole()]
         if getattr(getattr(self.request.user, "role", None), "code", "") == "customer":
             if self.request.method == "POST":
@@ -361,32 +459,11 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        contact = validate_user_contact(request.data, name_key="name", check_duplicate_phone=True)
-        name = contact.get("full_name", "")
-        phone = contact.get("phone", "")
-        email = contact.get("email", "")
-        address = contact.get("address", "")
-        parts = name.split(" ", 1)
-
-        base_name = "_".join(parts).lower() if parts else "customer"
-        username_str = f"{base_name}_{phone[-4:]}" if phone else f"{base_name}_{get_random_string(8)}"
-        
-        if User.objects.filter(username=username_str).exists():
-            username_str = f"{username_str}_{get_random_string(4)}"
-
-        customer_role = Role.objects.filter(code="customer").first()
-        user = User.objects.create_user(
-            username=username_str,
-            first_name=parts[0] if parts else "",
-            last_name=parts[1] if len(parts) > 1 else "",
-            email=email,
-            phone=phone,
-            address=address,
-            role=customer_role,
-            must_change_password=True,
-            is_active=True
-        )
-        profile = CustomerProfile.objects.create(user=user)
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        contact = validate_user_contact(request.data, name_key="name")
+        # Phone is required and checked for duplicates under a lock on the number.
+        profile = create_customer(contact, request.user, via="customers")
         return Response(self.get_serializer(profile).data, status=drf_status.HTTP_201_CREATED)
 
     @action(detail=False, methods=["get"], url_path="me", permission_classes=[permissions.IsAuthenticated])
@@ -428,16 +505,26 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             {"detail": "Customer reactivated.", "mode": "reactivated", "customer": self.get_serializer(profile).data}
         )
 
-    @action(detail=True, methods=["get"], permission_classes=[IsStaffOrAdmin])
+    @action(detail=True, methods=["get"], permission_classes=[IsAdminUserRole])
     def ledger(self, request, pk=None):
         customer_profile = self.get_object()
-        sales = SaleSerializer(customer_profile.sales.prefetch_related("items__cylinder_type").all(), many=True).data
-        payments = PaymentSerializer(customer_profile.payments.all(), many=True).data
+        sales = SaleSerializer(
+            customer_profile.sales.select_related(
+                "location", "sold_by__role", "handover_staff", "booking", "void__voided_by", "void__refund__confirmed_by"
+            ).prefetch_related("items__cylinder_type"),
+            many=True,
+        ).data
+        payments = PaymentSerializer(
+            customer_profile.payments.select_related("reverses_link", "credit_link"), many=True
+        ).data
         bookings = BookingSerializer(customer_profile.bookings.select_related("assigned_staff", "cylinder_type").order_by("-created_at"), many=True, context={'request': request}).data
         return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments, "bookings": bookings})
 
     def update(self, request, *args, **kwargs):
-        if getattr(getattr(request.user, "role", None), "code", "") == "customer":
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object of fields to change.", code="invalid")
+        role = getattr(getattr(request.user, "role", None), "code", "")
+        if role == "customer":
             # Customers may only change their own contact details (name/phone/email/address);
             # every profile field (balances, discounts, default_staff, is_active...) is ignored.
             instance = self.get_object()
@@ -445,6 +532,17 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             serializer.is_valid(raise_exception=True)
             self.perform_update(serializer)
             return Response(self.get_serializer(instance).data)
+        if role == "staff":
+            # is_active is left to the admin-only account-status rule in perform_update.
+            forbidden = sorted(set(request.data) - STAFF_EDITABLE_CUSTOMER_FIELDS - {"is_active"})
+            if forbidden:
+                raise ApiError(
+                    "Staff can only change a customer's name, phone, email, address and area. "
+                    f"Not allowed: {', '.join(forbidden)}.",
+                    code="forbidden_fields",
+                    status=403,
+                    fields=forbidden,
+                )
         return super().update(request, *args, **kwargs)
 
     @transaction.atomic
@@ -481,88 +579,179 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
         user.save(update_fields=update_fields)
 
 
-class SaleViewSet(viewsets.ModelViewSet):
-    queryset = Sale.objects.select_related("customer__user", "location", "sold_by").prefetch_related("items__cylinder_type")
+def parse_id_param(raw, field):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ApiError(f"{field} must be a number.", code="invalid", field=field)
+
+
+def parse_date_range(start_raw, end_raw):
+    """Optional YYYY-MM-DD bounds; 400 if malformed or start is after end."""
+    try:
+        start = date.fromisoformat(start_raw) if start_raw else None
+        end = date.fromisoformat(end_raw) if end_raw else None
+    except ValueError:
+        raise ApiError("Invalid date. Use YYYY-MM-DD.", code="invalid_date")
+    if start and end and start > end:
+        raise ApiError("Start date must be on or before end date.", code="invalid_range")
+    return start, end
+
+
+def parse_client_ref(raw):
+    if raw in (None, ""):
+        raise ApiError(
+            "client_ref is required: a new UUID for each sale, reused only to retry that same request.",
+            code="required",
+            field="client_ref",
+        )
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        raise ApiError("client_ref must be a UUID.", code="invalid", field="client_ref")
+
+
+def sale_request_hash(data):
+    """Fingerprint of a sale request without its client_ref, to tell a retry from a reuse."""
+    body = {key: value for key, value in data.items() if key != "client_ref"}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+class SaleViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Admin-only. A sale is never edited or deleted through the API: that moved debt between
+    customers, left stock unrestored and (via Booking.sale) deleted bookings, all unlogged.
+    Staff create sales only by completing a delivery."""
+
+    queryset = Sale.objects.select_related(
+        "customer__user", "location", "sold_by__role", "handover_staff", "booking", "void__voided_by",
+        "void__refund__confirmed_by",
+    ).prefetch_related("items__cylinder_type")
     serializer_class = SaleSerializer
-    permission_classes = [IsStaffOrAdmin]
+    permission_classes = [IsAdminUserRole]
+
+    @action(detail=True, methods=["get"], url_path="void-preview", permission_classes=[IsAdminUserRole])
+    def void_preview(self, request, pk=None):
+        """What cancelling this sale would do, and whether it is allowed now. The void itself
+        repeats every check under lock."""
+        return Response(void_preview(self.get_object()))
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    def void(self, request, pk=None):
+        """Cancel a direct sale: {"reason": text, "outcome": "refund" | "credit"} (outcome only
+        when something was paid). See services.void_sale."""
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        void_sale(self.get_object(), request.user, request.data.get("reason"), request.data.get("outcome"))
+        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm-refund", permission_classes=[IsAdminUserRole])
+    def confirm_refund(self, request, pk=None):
+        """Record that a cancelled sale's refund was paid back, in full:
+        {"references": {"gpay": "...", "bank": "...", "cash": "..."}, "amount": optional check}."""
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        confirm_refund(self.get_object(), request.user, request.data.get("references"), request.data.get("amount"))
+        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+
+    def create(self, request, *args, **kwargs):
+        """Record a sale exactly once per client_ref.
+
+        The key is locked before anything else. If a sale already has it, the same user
+        repeating the same request gets that sale back (200) and nothing is written; any other
+        use of the key is a conflict (409). A key whose earlier attempt failed left nothing
+        behind and is free to use.
+        """
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        client_ref = parse_client_ref(request.data.get("client_ref"))
+        request_hash = sale_request_hash(request.data)
+        with transaction.atomic():
+            advisory_lock("sale-client-ref", client_ref)
+            existing = Sale.objects.filter(client_ref=client_ref).first()
+            if existing is not None:
+                return self.replay(existing, request, request_hash)
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            sale = serializer.save(client_ref=client_ref, request_hash=request_hash)
+        return Response(self.get_serializer(sale).data, status=drf_status.HTTP_201_CREATED)
+
+    def replay(self, sale, request, request_hash):
+        log = ActivityLog.objects.filter(action="sale_created", metadata__sale_id=sale.pk).first()
+        if log is None or log.metadata.get("request_hash") != request_hash or sale.sold_by_id != request.user.pk:
+            raise ApiError(
+                "This client_ref was already used for a different sale request. Start a new sale to get a new reference.",
+                code="client_ref_reused",
+                status=409,
+                field="client_ref",
+            )
+        return Response(self.get_serializer(sale).data, status=drf_status.HTTP_200_OK, headers={"Idempotent-Replay": "true"})
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        term = self.request.query_params.get("search")
-        payment_mode = self.request.query_params.get("payment_mode")
-        pending = self.request.query_params.get("pending")
+        user = self.request.user
+        if not is_admin_user(user):
+            # Staff see only sales they recorded or handed over. (The route is admin-only
+            # today; this scope stays in force whenever staff are let in.)
+            queryset = queryset.filter(Q(sold_by=user) | Q(handover_staff=user))
+        params = self.request.query_params
+        term = params.get("search")
+        payment_mode = params.get("payment_mode")
+        pending = params.get("pending")
         if term and term.split():
             queryset = queryset.filter(user_search_q(term, prefix="customer__user__"))
         if payment_mode:
             queryset = queryset.filter(payment_mode=payment_mode)
         if pending == "1":
-            queryset = queryset.filter(balance_due__gt=0)
+            queryset = not_voided(queryset.filter(balance_due__gt=0))
+        void_status = params.get("void_status")
+        if void_status == "active":
+            queryset = not_voided(queryset)
+        elif void_status == "cancelled":
+            queryset = queryset.filter(void__isnull=False)
+        elif void_status == "refund_pending":
+            queryset = queryset.filter(void__outcome=SaleVoid.Outcome.REFUND, void__refund__isnull=True)
+        elif void_status:
+            raise ApiError("void_status must be active, cancelled or refund_pending.", code="invalid", field="void_status")
+        if params.get("sold_by"):
+            queryset = queryset.filter(sold_by_id=parse_id_param(params["sold_by"], "sold_by"))
+        handover = params.get("handover_staff")
+        if handover == "none":
+            queryset = queryset.filter(handover_staff__isnull=True)
+        elif handover:
+            queryset = queryset.filter(handover_staff_id=parse_id_param(handover, "handover_staff"))
+        if params.get("location"):
+            queryset = queryset.filter(location_id=parse_id_param(params["location"], "location"))
+        source = params.get("source")
+        if source in ("direct", "booking"):
+            queryset = queryset.filter(booking__isnull=source == "direct")
+        elif source:
+            raise ApiError("source must be direct or booking.", code="invalid", field="source")
+        start, end = parse_date_range(params.get("start"), params.get("end"))
+        if start:
+            queryset = queryset.filter(created_at__date__gte=start)
+        if end:
+            queryset = queryset.filter(created_at__date__lte=end)
         return queryset
 
 
-class PaymentViewSet(viewsets.ModelViewSet):
+class PaymentViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Admin-only. A payment is never edited or deleted through the API: that left the
+    sale's paid amount and balance out of step with its payments. Staff record payments
+    only by completing a delivery."""
+
     queryset = Payment.objects.select_related("customer__user", "sale", "received_by")
     serializer_class = PaymentSerializer
-    permission_classes = [IsStaffOrAdmin]
-
-    @transaction.atomic
-    def perform_create(self, serializer):
-        payment = serializer.save()
-        if payment.sale:
-            sale = payment.sale
-            sale.paid_amount += payment.amount
-            sale.balance_due = max(Decimal(0), sale.total_amount - sale.paid_amount)
-            sale.save(update_fields=["paid_amount", "balance_due"])
-        else:
-            pending_sales = Sale.objects.filter(customer=payment.customer, balance_due__gt=0).order_by("created_at")
-            remaining_payment = payment.amount
-            first_allocation = True
-            for sale in pending_sales:
-                if remaining_payment <= 0:
-                    break
-                
-                allocated = sale.balance_due if remaining_payment >= sale.balance_due else remaining_payment
-                
-                sale.paid_amount += allocated
-                sale.balance_due -= allocated
-                sale.save(update_fields=["paid_amount", "balance_due"])
-                
-                if first_allocation:
-                    payment.sale = sale
-                    payment.amount = allocated
-                    payment.save(update_fields=["sale", "amount"])
-                    first_allocation = False
-                else:
-                    new_p = Payment.objects.create(
-                        customer=payment.customer,
-                        sale=sale,
-                        amount=allocated,
-                        payment_mode=payment.payment_mode,
-                        received_by=payment.received_by,
-                        note=payment.note,
-                        empty_collected=0,
-                    )
-                    # Sync created_at for grouping
-                    new_p.created_at = payment.created_at
-                    new_p.save(update_fields=["created_at"])
-                    
-                remaining_payment -= allocated
-
-            if remaining_payment > 0:
-                if first_allocation:
-                    pass # Left as generic
-                else:
-                    new_p = Payment.objects.create(
-                        customer=payment.customer,
-                        sale=None,
-                        amount=remaining_payment,
-                        payment_mode=payment.payment_mode,
-                        received_by=payment.received_by,
-                        note=payment.note,
-                        empty_collected=0,
-                    )
-                    new_p.created_at = payment.created_at
-                    new_p.save(update_fields=["created_at"])
+    permission_classes = [IsAdminUserRole]
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
@@ -578,7 +767,7 @@ class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class StaffProfileViewSet(viewsets.ModelViewSet):
-    queryset = StaffProfile.objects.select_related("user", "vehicle_location")
+    queryset = StaffProfile.objects.select_related("user__role", "vehicle_location")
     serializer_class = StaffProfileSerializer
     permission_classes = [IsStaffOrAdmin]
 
@@ -708,18 +897,17 @@ class BookingViewSet(
                 "detail_message": None,
             })
 
-        include_direct_sales = not statuses or Booking.Status.DELIVERED in statuses
-        if include_direct_sales:
-            direct_sales = (
-                Sale.objects.filter(customer=profile, booking__isnull=True)
-                .select_related("customer__user", "location", "sold_by")
-                .prefetch_related("items__cylinder_type")
-                .order_by("-created_at")
-            )
-            for sale in direct_sales:
-                entry = build_direct_sale_history_entry(sale)
-                if entry is not None:
-                    history_entries.append(entry)
+        direct_sales = (
+            Sale.objects.filter(customer=profile, booking__isnull=True)
+            .select_related("customer__user", "location", "sold_by", "void__refund")
+            .prefetch_related("items__cylinder_type")
+            .order_by("-created_at")
+        )
+        for sale in direct_sales:
+            entry = build_direct_sale_history_entry(sale)
+            # Filtered by each entry's own status, as booking entries are.
+            if entry is not None and (not statuses or entry["status"] in statuses):
+                history_entries.append(entry)
 
         if search_term:
             def matches_search(entry):
@@ -1176,7 +1364,9 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
                 status_value=delivery.status,
             )
 
-        profile = booking.customer
+        # The customer next (before stock, as every money write does), so a sale void cannot
+        # check this customer's later sales while this one is being created.
+        profile = lock_customer(booking.customer_id)
         pricing = get_booking_pricing_snapshot(booking)
         total = pricing["final_amount"]
 
@@ -1194,9 +1384,9 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
             amount = parse_money(item.get("amount"), "split_payments", "Split amount")
             if amount < 0:
                 raise ApiError("Split amount must be a valid amount.", code="invalid", field="split_payments")
-            mode = item.get("mode", Sale.PaymentMode.CASH)
-            if mode not in Sale.PaymentMode.values:
-                raise ApiError("Split payment mode is invalid.", code="invalid", field="split_payments")
+            mode = item.get("mode")
+            if mode not in RECEIPT_MODES:
+                raise ApiError("Split payment mode must be cash, gpay or bank.", code="invalid", field="split_payments")
             parsed_splits.append((amount, mode))
         if parsed_splits:
             payment_collected = sum((amount for amount, _mode in parsed_splits), Decimal("0"))
@@ -1204,10 +1394,27 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
         if payment_collected < 0 or payment_collected > total:
             raise ApiError("Collected amount must be between 0 and sale total.", code="invalid", field="payment_collected")
 
-        payment_method = data.get("payment_method") or booking.payment_method or "COD"
-        paid_payment_mode = data.get("paid_payment_mode") or Sale.PaymentMode.CASH
-        if paid_payment_mode not in Sale.PaymentMode.values:
+        # Collected money must say how it was paid (cash, gpay or bank); there is no default.
+        # paid_payment_mode is the mode of a partial collection; split parts carry their own.
+        payment_method = data.get("payment_method") or None
+        paid_payment_mode = data.get("paid_payment_mode") or None
+        if paid_payment_mode is not None and paid_payment_mode not in RECEIPT_MODES:
             raise ApiError("Payment mode is invalid.", code="invalid", field="paid_payment_mode")
+        if payment_method is not None and payment_method not in RECEIPT_MODES:
+            raise ApiError("Payment method must be cash, gpay or bank.", code="invalid", field="payment_method")
+        if parsed_splits:
+            payment_method = Sale.PaymentMode.SPLIT
+        elif payment_collected > 0:
+            if not (payment_method or paid_payment_mode):
+                raise ApiError(
+                    "Payment method is required when money is collected: cash, gpay or bank.",
+                    code="required",
+                    field="payment_method",
+                )
+            payment_method = payment_method or paid_payment_mode
+            paid_payment_mode = paid_payment_mode or payment_method
+        else:
+            payment_method = payment_method or (Sale.PaymentMode.CREDIT if total > 0 else Sale.PaymentMode.CASH)
         note = str(data.get("note", "") or "")[:300]
 
         # --- location ---
@@ -1256,6 +1463,7 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
             payment_mode=sale_payment_mode,
             delivery_type=Sale.DeliveryType.DELIVERY,
             delivery_staff=display_name(delivery.staff),
+            handover_staff=delivery.staff,
             sold_by=request.user,
             note=f"Booking #{booking.order_id}",
         )
@@ -1370,6 +1578,37 @@ def customer_credentials(request, pk):
 
 def money_sum(queryset, field):
     return queryset.aggregate(total=Sum(field))["total"] or 0
+
+
+def cancelled_sales_total(voids):
+    """Gross total of the sales cancelled by ``voids``, dated by the void, not the sale.
+
+    Net sales for a period = gross sales dated in it − sales cancelled in it. A voided sale
+    stays in its own day's gross sales and is taken off once, on the day it was voided.
+    """
+    return money_sum(Sale.objects.filter(pk__in=voids.values("sale_id")), "total_amount")
+
+
+def totals_by_user(queryset, user_field, amount_field, unassigned=None):
+    """Count and amount per user in ``user_field`` (a row named ``unassigned`` for blanks).
+
+    Grouped over the rows of one table with no join to a many-side, so no sale or payment
+    can be counted twice; the rows add up to the queryset's own total.
+    """
+    grouped = list(queryset.order_by().values(user_field).annotate(count=Count("id"), amount=Sum(amount_field)))
+    users = User.objects.select_related("role").in_bulk([row[user_field] for row in grouped if row[user_field]])
+    rows = []
+    for row in grouped:
+        user = users.get(row[user_field])
+        rows.append({
+            "user_id": row[user_field],
+            "name": display_name(user) if user else unassigned,
+            "username": user.username if user else None,
+            "role": getattr(user.role, "code", None) if user else None,
+            "count": row["count"],
+            "amount": row["amount"] or 0,
+        })
+    return sorted(rows, key=lambda r: (-r["amount"], r["name"] or ""))
 
 
 def serialize_me(request):
@@ -1780,6 +2019,8 @@ def register(request):
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if role not in [r.code for r in Role.objects.all()]:
         return Response({"detail": "Invalid role."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    if role == "customer":
+        ensure_customer_phone_free(phone)
     first_name, last_name = split_full_name(full_name)
     user = User.objects.create_user(
         username=username,
@@ -1819,9 +2060,9 @@ def register(request):
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard(request):
-    user_role_code = getattr(getattr(request.user, "role", None), "code", "")
-    if user_role_code not in ["admin", "staff"] and not request.user.is_superuser:
-        return Response({"detail": "Admin or staff only."}, status=drf_status.HTTP_403_FORBIDDEN)
+    # Admin-only: its totals and activity feed cover every sale, and staff see only their own work.
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     today = timezone.localdate()
     stocks = Stock.objects.select_related("cylinder_type", "location")
     filled = stocks.filter(status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0
@@ -1830,7 +2071,9 @@ def dashboard(request):
     kandam_stock = stocks.filter(location__code="kandam").aggregate(total=Sum("quantity"))["total"] or 0
     today_sales = Sale.objects.filter(created_at__date=today)
     today_payments = Payment.objects.filter(created_at__date=today)
-    pending = Sale.objects.aggregate(total=Sum("balance_due"))["total"] or 0
+    # Cancelled sales are dated by their void; see cancelled_sales_total.
+    today_cancelled = cancelled_sales_total(SaleVoid.objects.filter(created_at__date=today))
+    pending = not_voided(Sale.objects.all()).aggregate(total=Sum("balance_due"))["total"] or 0
     pending_deliveries = Booking.objects.filter(
         status__in=[Booking.Status.APPROVED, Booking.Status.ACCEPTED, Booking.Status.OUT_FOR_DELIVERY]
     ).count()
@@ -1869,8 +2112,9 @@ def dashboard(request):
     with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
     
     for customer in customers:
-        # We must process sales chronologically to maintain the correct running balance
-        sales = customer.sales.order_by("created_at")
+        # We must process sales chronologically to maintain the correct running balance.
+        # Voided sales are left out: their cylinders came back.
+        sales = not_voided(customer.sales.all()).order_by("created_at")
         balances = {} # tid -> debt
         
         for sale in sales:
@@ -1923,6 +2167,8 @@ def dashboard(request):
             "shop_stock": shop_stock,
             "kandam_stock": kandam_stock,
             "today_sales": money_sum(today_sales, "total_amount"),
+            "today_cancelled": today_cancelled,
+            "today_net_sales": money_sum(today_sales, "total_amount") - today_cancelled,
             "today_collection": money_sum(today_payments, "amount"),
             "pending_payments": pending,
             "staff_live_status": staff_live_status,
@@ -1960,20 +2206,29 @@ def reports(request):
             status=drf_status.HTTP_400_BAD_REQUEST,
         )
     month_start = today.replace(day=1)
+    location_id = parse_id_param(request.query_params["location"], "location") if request.query_params.get("location") else None
 
     range_sales = Sale.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
+    if location_id:
+        # Sales sections only; payments have no location, so collections are not filtered.
+        range_sales = range_sales.filter(location_id=location_id)
     range_payments = Payment.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
+    # Sales cancelled in the range, dated by the void (their gross stays on the sale's own day).
+    range_voids = SaleVoid.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
+    if location_id:
+        range_voids = range_voids.filter(sale__location_id=location_id)
+    range_cancelled = cancelled_sales_total(range_voids)
     range_expenses = Expense.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
     range_movements = StockMovement.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
     cylinder_sales = (
-        SaleItem.objects.filter(sale__created_at__date__gte=start, sale__created_at__date__lte=end)
-        .values("cylinder_type__name", "sale__location__name", "sale__sold_by__role")
+        SaleItem.objects.filter(sale__in=range_sales)
+        .values("cylinder_type__name", "sale__location__name")
         .annotate(total_qty=Sum("quantity"), total_amount=Sum("total_amount"))
-        .order_by("cylinder_type__name")
+        .order_by("cylinder_type__name", "sale__location__name")
     )
 
     pending_sales = (
-        Sale.objects.filter(balance_due__gt=0)
+        not_voided(Sale.objects.filter(balance_due__gt=0))
         .select_related("customer__user")
         .values("customer__user__first_name", "customer__user__last_name", "customer__user__phone")
         .annotate(total_due=Sum("balance_due"), sale_count=Count("id"))
@@ -1981,7 +2236,8 @@ def reports(request):
     )
 
     range_sales_list = SaleSerializer(
-        range_sales.select_related("customer__user", "location", "sold_by").prefetch_related("items__cylinder_type"),
+        range_sales.select_related("customer__user", "location", "sold_by__role", "handover_staff", "booking")
+        .prefetch_related("items__cylinder_type"),
         many=True,
     ).data
 
@@ -2000,7 +2256,12 @@ def reports(request):
     customer_credits_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
     
     for customer in customers:
-        sales = customer.sales.filter(created_at__date__lte=end).order_by("created_at")
+        # As of the end date: sales voided by then no longer leave cylinders with the customer.
+        sales = (
+            customer.sales.filter(created_at__date__lte=end)
+            .exclude(pk__in=SaleVoid.objects.filter(created_at__date__lte=end).values("sale_id"))
+            .order_by("created_at")
+        )
         custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in customer.custom_rates.all()}
         balances = {} # tid -> {owed, credits}
         
@@ -2100,19 +2361,57 @@ def reports(request):
     return Response(
         {
             "range": {"start": start_str, "end": end_str},
+            # sales: gross, by sale date. cancelled: gross of sales voided in the range, by void
+            # date. net_sales = sales - cancelled. collection: every payment in the range, so a
+            # confirmed refund counts here as money paid out (refunds_paid shows it alone); a
+            # refund still owed is in refunds_owed only (all time, like pending).
             "summary": {
                 "sales": money_sum(range_sales, "total_amount"),
+                "cancelled": range_cancelled,
+                "net_sales": money_sum(range_sales, "total_amount") - range_cancelled,
                 "collection": money_sum(range_payments, "amount"),
+                "refunds_paid": -money_sum(range_payments.filter(amount__lt=0, reverses_link__sale_refund__isnull=False), "amount"),
+                "refunds_owed": money_sum(SaleVoid.objects.filter(outcome=SaleVoid.Outcome.REFUND, refund__isnull=True), "refund_due"),
                 "expenses": money_sum(range_expenses, "amount"),
                 "movements": range_movements.count(),
-                "pending": Sale.objects.aggregate(total=Sum("balance_due"))["total"] or 0,
+                "pending": not_voided(Sale.objects.all()).aggregate(total=Sum("balance_due"))["total"] or 0,
             },
             "monthly": {
                 "sales": money_sum(Sale.objects.filter(created_at__date__gte=month_start), "total_amount"),
+                "cancelled": cancelled_sales_total(SaleVoid.objects.filter(created_at__date__gte=month_start)),
+                "net_sales": money_sum(Sale.objects.filter(created_at__date__gte=month_start), "total_amount")
+                - cancelled_sales_total(SaleVoid.objects.filter(created_at__date__gte=month_start)),
                 "collection": money_sum(Payment.objects.filter(created_at__date__gte=month_start), "amount"),
                 "expenses": money_sum(Expense.objects.filter(created_at__date__gte=month_start), "amount"),
             },
+            "cancellation_list": [
+                {
+                    "sale_id": void.sale_id,
+                    "customer_name": void.sale.customer.user.username if void.sale.customer_id else None,
+                    "location_name": void.sale.location.name,
+                    "sale_date": void.sale.created_at,
+                    "voided_at": void.created_at,
+                    "voided_by_name": display_name(void.voided_by),
+                    "reason": void.reason,
+                    "total_amount": serialize_decimal(void.sale.total_amount),
+                    "outcome": void.outcome,
+                    "refund_due": serialize_decimal(void.refund_due),
+                    "refunded": SaleRefund.objects.filter(void=void).exists(),
+                }
+                for void in range_voids.select_related("sale__customer__user", "sale__location", "voided_by").order_by("created_at")
+            ],
+            # Gross, like summary.sales: a sale cancelled later stays here on its own day.
             "cylinder_sales": list(cylinder_sales),
+            # Three views that overlap and must never be added together. recorded_by and
+            # handed_over_by add up to summary.sales (gross, cancelled sales included);
+            # collections_by_receiver adds up to summary.collection (refunds paid out and
+            # credit reversals included, as negative and offsetting entries).
+            "staff_breakdown": {
+                "recorded_by": totals_by_user(range_sales, "sold_by", "total_amount"),
+                "handed_over_by": totals_by_user(range_sales, "handover_staff", "total_amount", unassigned="Not specified"),
+                "collections_by_receiver": totals_by_user(range_payments, "received_by", "amount"),
+            },
+            "filters": {"start": start_str, "end": end_str, "location": location_id},
             "pending_dues": list(pending_sales),
             "sales_list": range_sales_list,
             "expense_list": range_expense_list,
