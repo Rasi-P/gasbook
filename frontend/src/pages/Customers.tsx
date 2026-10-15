@@ -1,3 +1,4 @@
+import { PricingBreakdown, type PricingSnapshot } from '../components/PricingBreakdown';
 import { BookingTimes } from '../components/BookingTimes';
 import { formatDateTime } from '../lib/dateTime';
 import { useEffect, useState, useCallback } from 'react';
@@ -49,7 +50,7 @@ type Customer = {
   is_active?: boolean;
 };
 
-type CylinderTypeOption = { id: number; name: string; selling_price?: string };
+type CylinderTypeOption = { id: number; name: string; refill_rate?: string };
 type RowNotice = { id: number; text: string; tone: 'info' | 'error' | 'confirm' };
 
 type CylinderDiscount = {
@@ -62,7 +63,7 @@ type CylinderDiscount = {
   is_active: boolean;
 };
 
-type SaleItem = {
+type SaleItem = PricingSnapshot & {
   cylinder_type_name: string;
   quantity: number;
   rate: number;
@@ -109,7 +110,7 @@ type Ledger = {
   bookings: Booking[];
 };
 
-type Booking = {
+type Booking = PricingSnapshot & {
   id: number;
   customer: number;
   customer_name: string;
@@ -315,11 +316,11 @@ export default function Customers() {
     setCylinderDiscountError('');
   }
 
-  // Price the discount is validated against: the customer's agreed rate when one exists, else the list price.
+  // Price the discount is validated against: the customer's agreed rate when one exists, else the configured refill charge.
   function cylinderPriceFor(customer: Customer, cylinderTypeId: number) {
     const custom = customer.custom_rates?.find((rate) => rate.cylinder_type === cylinderTypeId)?.custom_price;
     const type = cylinderTypes.find((t) => t.id === cylinderTypeId);
-    const raw = custom ?? type?.selling_price;
+    const raw = custom ?? type?.refill_rate;
     const price = Number(raw);
     return raw !== undefined && Number.isFinite(price) ? price : null;
   }
@@ -1115,7 +1116,7 @@ export default function Customers() {
             )}
 
             <Alert tone="info" compact>
-              Cylinder-wise discounts are used instead of the global discount for matching cylinders. Discounts are never stacked.
+              Cylinder-wise discounts replace the global discount for matching cylinders. Agreed rates and discounts apply only to refill charges; the deposit stays unchanged.
             </Alert>
           </div>
         )}
@@ -1353,6 +1354,7 @@ export default function Customers() {
                         <s className="cd-strike">{money(getBookingOriginalAmount(booking))}</s>
                       )}
                       <strong>{money(getBookingFinalAmount(booking))}</strong>
+                      <PricingBreakdown value={booking} />
                       {getBookingDiscountAmount(booking) > 0 && (
                         <span className="cd-discount">Discount {money(getBookingDiscountAmount(booking))}</span>
                       )}
@@ -1471,7 +1473,7 @@ export default function Customers() {
                             </span>
                           )}
                         </span>
-                        <span className="cd-item__rate">@ {money(item.rate)}</span>
+                        <div>{!item.rate_type && <span className="cd-item__rate">@ {money(item.rate)}</span>}<PricingBreakdown value={item} /></div>
                       </div>
                     ))}
 
@@ -1777,6 +1779,7 @@ export default function Customers() {
                     <div className="req-card__head">
                       <div className="req-card__info">
                         <strong>Booking #{booking.id}</strong>
+                        <PricingBreakdown value={booking} />
                         <span className="ui-cell-sub">
                           {booking.quantity} x {booking.cylinder_type_name} · {money(booking.rate)} each
                         </span>

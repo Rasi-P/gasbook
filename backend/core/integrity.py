@@ -170,10 +170,10 @@ def customer_balances():
         custom_rates[customer_id][cylinder_type_id] = price
 
     items_by_sale = defaultdict(list)
-    for sale_id, cylinder_type_id, quantity, rate, empty_returned in SaleItem.objects.order_by("id").values_list(
-        "sale_id", "cylinder_type_id", "quantity", "rate", "empty_returned"
+    for sale_id, cylinder_type_id, quantity, rate, empty_returned, rate_type in SaleItem.objects.order_by("id").values_list(
+        "sale_id", "cylinder_type_id", "quantity", "rate", "empty_returned", "rate_type"
     ):
-        items_by_sale[sale_id].append((cylinder_type_id, quantity, rate, empty_returned))
+        items_by_sale[sale_id].append((cylinder_type_id, quantity, rate, empty_returned, rate_type))
 
     voided = _voided_sale_ids()
     sales_due = defaultdict(lambda: ZERO)
@@ -185,7 +185,7 @@ def customer_balances():
             continue
         sales_due[customer_id] += balance_due
         balances = cylinder_state[customer_id]
-        for cylinder_type_id, taken, rate, returned in items_by_sale[sale_id]:
+        for cylinder_type_id, taken, rate, returned, rate_type in items_by_sale[sale_id]:
             state = balances.setdefault(cylinder_type_id, {"owed": 0, "credits": 0})
             state["owed"] -= returned
             if state["owed"] < 0:
@@ -195,7 +195,7 @@ def customer_balances():
             cylinder = cylinders[cylinder_type_id]
             refill_rate = custom_rates[customer_id].get(cylinder_type_id, cylinder["refill_rate"])
             threshold = (cylinder["selling_price"] + refill_rate) / 2
-            if rate <= threshold and taken > 0:
+            if (rate_type == "refill" or (rate_type is None and rate <= threshold)) and taken > 0:
                 state["credits"] = max(0, state["credits"] - max(0, taken - returned))
 
     unallocated = defaultdict(lambda: ZERO)

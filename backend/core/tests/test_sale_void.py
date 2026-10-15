@@ -88,7 +88,7 @@ class ValidationTests(VoidTestCase):
 
     def test_reason_and_outcome_are_validated(self):
         from core.models import CylinderType
-        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"))
+        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"), refill_rate=D("450"))
         self.set_stock(self.shop, filled=10, cylinder=small)
         paid = self.sell()
         unpaid = self.sell(payment_mode="credit", paid_amount="0", lines=[{"cylinder_type": small.id, "quantity": 1, "rate": "450"}])
@@ -139,7 +139,7 @@ class ValidationTests(VoidTestCase):
 
     def test_a_later_sale_of_the_same_cylinder_type_blocks_the_void(self):
         from core.models import CylinderType
-        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"))
+        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"), refill_rate=D("450"))
         self.set_stock(self.shop, filled=10, cylinder=small)
         first = self.sell()
         other_type = self.sell(lines=[{"cylinder_type": small.id, "quantity": 1, "rate": "450"}])

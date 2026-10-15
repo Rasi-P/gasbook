@@ -133,7 +133,7 @@ class CustomerProfile(TimeStampedModel):
             custom = next((rate for rate in prefetched_rates if rate.cylinder_type_id == cylinder_type.id), None)
         else:
             custom = self.custom_rates.filter(cylinder_type=cylinder_type).first()
-        return custom.custom_price if custom else cylinder_type.selling_price
+        return custom.custom_price if custom else cylinder_type.refill_rate
 
     def get_active_discount_for_cylinder(self, cylinder_type):
         prefetched_discounts = getattr(self, "_prefetched_objects_cache", {}).get("cylinder_discounts")
@@ -204,19 +204,9 @@ class CustomerProfile(TimeStampedModel):
             "applied_discount_value": quantize_money(discount_value if has_discount else Decimal("0")),
         }
 
-    def calculate_booking_pricing(self, cylinder_type, quantity):
-        quantity_decimal = Decimal(quantity or 0)
-        base_rate = quantize_money(self.get_rate_for_cylinder(cylinder_type))
-        original_amount = quantize_money(base_rate * quantity_decimal)
-        pricing = self.calculate_discount_for_amount(original_amount, cylinder_type=cylinder_type)
-        pricing["rate"] = base_rate
-        pricing["quantity"] = int(quantity or 0)
-        pricing["effective_rate"] = (
-            quantize_money(pricing["final_amount"] / quantity_decimal)
-            if quantity_decimal > 0
-            else Decimal("0.00")
-        )
-        return pricing
+    def calculate_booking_pricing(self, cylinder_type, quantity, rate_type="refill"):
+        from .pricing import calculate_pricing
+        return calculate_pricing(self, cylinder_type, quantity, rate_type)
 
 
 class StaffProfile(TimeStampedModel):
@@ -280,6 +270,10 @@ class Sale(TimeStampedModel):
 
 class SaleItem(TimeStampedModel):
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="items")
+    # Null means a legacy transaction whose component breakdown was never recorded.
+    rate_type = models.CharField(max_length=10, choices=[("new", "New Cylinder"), ("refill", "Refill")], null=True, blank=True)
+    deposit_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    refill_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField()
     rate = models.DecimalField(max_digits=10, decimal_places=2)
@@ -476,6 +470,10 @@ class Booking(TimeStampedModel):
     objects = models.Manager()
 
     customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="bookings")
+    # Null means a legacy transaction whose component breakdown was never recorded.
+    rate_type = models.CharField(max_length=10, choices=[("new", "New Cylinder"), ("refill", "Refill")], null=True, blank=True)
+    deposit_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    refill_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
     original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)

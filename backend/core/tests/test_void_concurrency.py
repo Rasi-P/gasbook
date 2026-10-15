@@ -36,7 +36,7 @@ class ConcurrentVoidTests(TransactionTestCase):
             user=User.objects.create_user(username="v-cust", password="x", role=roles["customer"], address="1 Road", phone="9811111111")
         )
         self.shop = StockLocation.objects.create(name="Shop", code="shop")
-        self.cylinder = CylinderType.objects.create(name="14kg", weight=D("14.2"), selling_price=D("900"))
+        self.cylinder = CylinderType.objects.create(name="14kg", weight=D("14.2"), selling_price=D("900"), refill_rate=D("900"))
         Stock.objects.create(cylinder_type=self.cylinder, location=self.shop, status=Stock.Status.FILLED, quantity=20)
         Stock.objects.create(cylinder_type=self.cylinder, location=self.shop, status=Stock.Status.EMPTY, quantity=5)
         self.client = APIClient()
@@ -246,7 +246,7 @@ class OrderedRefundAndPaymentTests(_OrderedBase):
 
     def setUp(self):
         super().setUp()
-        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"))
+        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"), refill_rate=D("450"))
         Stock.objects.create(cylinder_type=small, location=self.shop, status=Stock.Status.FILLED, quantity=10)
         self.voided = self.sell(payment_mode="split", paid_amount="900",
                                 split_payments=[{"mode": "cash", "amount": "500"}, {"mode": "gpay", "amount": "400"}])

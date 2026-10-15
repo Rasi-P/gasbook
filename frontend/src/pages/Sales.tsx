@@ -1,5 +1,6 @@
+import { DirectSaleRates } from '../components/DirectSaleRates';
 import { formatDateTime } from '../lib/dateTime';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
   AlertTriangle, Banknote, Building2, CheckCircle2, CreditCard, Plus,
@@ -25,9 +26,9 @@ import { SkeletonRows } from '../components/ui/Skeleton';
 import { Table, TableWrap, Td, Th } from '../components/ui/Table';
 import { Tabs } from '../components/ui/Tabs';
 
-type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
+type CylinderType = { id: number; name: string; deposit_amount: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
-type SaleItem = { cylinder_type: number; quantity: number | string; rate: string; empty_returned: number | string; rate_type: 'custom' | 'refill' | 'new' };
+type SaleItem = { cylinder_type: number; quantity: number | string; empty_returned: number | string; rate_type: 'refill' | 'new'; rate?: string; deposit?: string };
 // can_hand_over: an active user with an active staff profile, as the server requires for handover_staff.
 type StaffOption = { id: number; user: number; username: string; first_name: string; last_name: string; can_hand_over: boolean };
 type HistorySale = {
@@ -230,53 +231,32 @@ export default function Sales() {
 
   // ── Item helpers ──────────────────────────────────────────────────────────
 
-  function getApplicableRate(cylinder_type: number, rate_type: 'custom' | 'refill' | 'new', customer: any | null) {
-    const t = cylinderTypes.find(c => c.id === cylinder_type);
-    if (!t) return '0';
-    if (rate_type === 'custom') {
-      const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === cylinder_type);
-      return custom ? String(custom.custom_price) : String(t.refill_rate);
-    } else if (rate_type === 'refill') {
-      return String(t.refill_rate);
-    } else {
-      return String(t.selling_price);
-    }
+  function updateItem(index: number, patch: Partial<SaleItem>) {
+    setItems(prev => prev.map((item, i) => i === index
+      ? { ...item, ...(patch.cylinder_type !== undefined ? { rate: undefined, deposit: undefined } : {}), ...patch }
+      : item));
   }
 
-  function updateItem(index: number, patch: Partial<SaleItem>) {
-    setItems((prev) => {
-      const next = [...prev];
-      const item = { ...next[index], ...patch };
+  function itemAmounts(item: SaleItem) {
+    const cylinder = cylinderTypes.find(type => type.id === item.cylinder_type);
+    const agreed = selectedCustomerId === selectedCustomer?.id
+      ? selectedCustomer.custom_rates?.find((value: { cylinder_type: number; custom_price: string }) => value.cylinder_type === item.cylinder_type)
+      : undefined;
+    return {
+      refill: item.rate ?? String(agreed?.custom_price ?? cylinder?.refill_rate ?? 0),
+      deposit: item.rate_type === 'new' ? item.deposit ?? String(cylinder?.deposit_amount ?? 0) : '0',
+    };
+  }
 
-      // If cylinder_type or rate_type changes, update the rate automatically
-      if (patch.cylinder_type !== undefined || patch.rate_type !== undefined) {
-        item.rate = getApplicableRate(item.cylinder_type, item.rate_type, selectedCustomer);
-      }
-
-      next[index] = item;
-      return next;
-    });
+  function itemSubtotal(item: SaleItem) {
+    const { refill, deposit } = itemAmounts(item);
+    return (Math.round(Number(refill) * 100) + Math.round(Number(deposit) * 100)) * Number(item.quantity) / 100;
   }
 
   function addItem() {
-    const t = cylinderTypes[0];
-    if (!t) return;
-    const hasCustom = selectedCustomer?.custom_rates?.find((cr: any) => cr.cylinder_type === t.id);
-    const initialRateType = hasCustom ? 'custom' : 'refill';
-    const rate = getApplicableRate(t.id, initialRateType, selectedCustomer);
-    const newItem: SaleItem = { cylinder_type: t.id, quantity: 1, rate, empty_returned: 1, rate_type: initialRateType };
-    setItems((prev) => [...prev, newItem]);
+    const cylinder = cylinderTypes[0];
+    if (cylinder) setItems(prev => [...prev, { cylinder_type: cylinder.id, quantity: 1, empty_returned: 1, rate_type: 'refill' }]);
   }
-
-  // Update rates if customer selection changes
-  useEffect(() => {
-    if (items.length > 0) {
-      setItems((prev) => prev.map(item => ({
-        ...item,
-        rate: getApplicableRate(item.cylinder_type, item.rate_type, selectedCustomer)
-      })));
-    }
-  }, [selectedCustomer]);
 
   function removeItem(index: number) {
     setItems((prev) => prev.filter((_, i) => i !== index));
@@ -301,10 +281,36 @@ export default function Sales() {
 
   // ── Totals ────────────────────────────────────────────────────────────────
 
-  const total = useMemo(
-    () => items.reduce((sum, item) => sum + (Number(item.quantity) || 0) * Number(item.rate || 0), 0),
-    [items],
-  );
+  type Quote = { total_amount: string; discount_amount: string };
+  const [quote, setQuote] = useState<{ key: string; data?: Quote; error?: string } | null>(null);
+  const [quoteRevision, setQuoteRevision] = useState(0);
+  const quoteRequest = JSON.stringify({ customer: selectedCustomerId, sale_items: items.map(item => ({
+    cylinder_type: item.cylinder_type, quantity: Number(item.quantity), rate_type: item.rate_type,
+    empty_returned: Number(item.empty_returned),
+    refill_charge: itemAmounts(item).refill, deposit: itemAmounts(item).deposit,
+  })) });
+  const quoteKey = `${quoteRevision}:${quoteRequest}`;
+  useEffect(() => {
+    let cancelled = false;
+    if (!items.length) return;
+    const timer = window.setTimeout(() => {
+      api.post<Quote>('/sales/preview/', JSON.parse(quoteRequest))
+        .then(({ data }) => { if (!cancelled) setQuote({ key: quoteKey, data }); })
+        .catch(err => { if (!cancelled) setQuote({ key: quoteKey, error: extractApiError(err, [], 'Could not calculate pricing.') }); });
+    }, 150);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [quoteRequest, quoteKey, items.length]);
+  useEffect(() => {
+    const refresh = () => {
+      fetchAllPages<CylinderType>('/cylinder-types/')
+        .then(types => { setCylinderTypes(types); setQuoteRevision(value => value + 1); })
+        .catch(() => setQuoteRevision(value => value + 1));
+    };
+    window.addEventListener('gas-rates-changed', refresh);
+    return () => window.removeEventListener('gas-rates-changed', refresh);
+  }, []);
+  const currentQuote = quote?.key === quoteKey ? quote : null;
+  const total = Number(currentQuote?.data?.total_amount ?? 0);
   const paid = paymentMode === 'split' ? (Number(saleSplit.cash || 0) + Number(saleSplit.gpay || 0) + Number(saleSplit.bank || 0)) : (paymentMode === 'credit' ? Number(paidAmount || 0) : total);
   const balance = Math.max(total - paid, 0);
 
@@ -317,6 +323,7 @@ export default function Sales() {
     if (saving) return;
     setMessage(''); setError(''); setExistingCustomer(null);
     if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
+    if (!currentQuote?.data) { setError('Wait for a valid price quote.'); return; }
     if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
       setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
       return;
@@ -341,12 +348,8 @@ export default function Sales() {
         payment_mode: paymentMode,
         // 2-decimal string: float maths turns 899.99 × 3 into 2699.9700000000003, which the server rejects.
         paid_amount: paid.toFixed(2),
-        sale_items: items.map((item) => ({
-          cylinder_type: item.cylinder_type,
-          quantity: Number(item.quantity) || 1,
-          rate: item.rate,
-          empty_returned: Number(item.empty_returned) || 0,
-        })),
+        quoted_total: Number(currentQuote.data.total_amount).toFixed(2),
+        sale_items: JSON.parse(quoteRequest).sale_items,
       };
       if (handoverStaff) salePayload.handover_staff = Number(handoverStaff);
       if (selectedCustomerId) salePayload.customer = selectedCustomerId;
@@ -385,6 +388,7 @@ export default function Sales() {
         setClientRef(newClientRef());
         setError('An earlier attempt of this sale was already saved. Check Sales history before entering it again.');
       } else {
+        if (['rate_mismatch', 'quote_changed'].includes(getApiErrorCode(err) ?? '')) setQuoteRevision(value => value + 1);
         setError(extractApiError(err, ['name', 'phone', 'address', 'customer', 'location', 'sale_items', 'paid_amount', 'split_payments', 'handover_staff', 'non_field_errors'], 'Failed to save sale. Check backend connection.'));
       }
     } finally {
@@ -672,9 +676,6 @@ export default function Sales() {
                 <div className="sale-rows">
                   {items.map((item, i) => {
                     const type = cylinderTypes.find((c) => c.id === item.cylinder_type);
-                    const isCustomRate = item.rate !== '' &&
-                      Number(item.rate) !== Number(type?.selling_price) &&
-                      Number(item.rate) !== Number(type?.refill_rate);
                     const available = stockData.find(s => s.cylinder_type === type?.id)?.quantity ?? 0;
                     return (
                       <div key={i} className="sale-item">
@@ -689,14 +690,13 @@ export default function Sales() {
                             >
                               {stockError ? 'stock unknown' : `${available} in stock`}
                             </Badge>
-                            {isCustomRate && <Badge tone="warning" size="sm">Custom Price</Badge>}
                           </div>
                           <IconButton type="button" label="Remove item" tone="danger" size="sm" onClick={() => removeItem(i)}>
                             <Trash2 size={16} />
                           </IconButton>
                         </div>
 
-                        <div className="sale-item__grid">
+                        <div className={`sale-item__grid${item.rate_type === 'new' ? ' sale-item__grid--new' : ''}`}>
                           <Field label="Cylinder" className="sale-item__cylinder">
                             <Select value={item.cylinder_type} onChange={(e) => updateItem(i, { cylinder_type: Number(e.target.value) })}>
                               {cylinderTypes.map((t) => (
@@ -705,17 +705,18 @@ export default function Sales() {
                             </Select>
                           </Field>
                           <Field label="Rate Type">
-                            <Select value={item.rate_type} onChange={(e) => updateItem(i, { rate_type: e.target.value as 'custom' | 'refill' | 'new' })}>
-                              {selectedCustomer?.custom_rates?.some((cr: any) => cr.cylinder_type === item.cylinder_type) && (
-                                <option value="custom">Agreed Rate</option>
-                              )}
+                            <Select value={item.rate_type} onChange={(e) => updateItem(i, { rate_type: e.target.value as 'refill' | 'new' })}>
                               <option value="refill">Refill</option>
                               <option value="new">New Cylinder</option>
                             </Select>
                           </Field>
-                          <Field label="Rate (Rs.)">
-                            <Input type="number" min="0" value={item.rate} onChange={(e) => updateItem(i, { rate: e.target.value })} />
-                          </Field>
+                          <DirectSaleRates
+                            rateType={item.rate_type}
+                            rate={itemAmounts(item).refill}
+                            deposit={itemAmounts(item).deposit}
+                            onRateChange={rate => updateItem(i, { rate })}
+                            onDepositChange={deposit => updateItem(i, { deposit })}
+                          />
                           <Field label="Qty">
                             <Input
                               type="number" min="1" placeholder="0"
@@ -744,14 +745,12 @@ export default function Sales() {
                             options={[1, 2, 5, 10].map((q) => ({ value: q, label: String(q) }))}
                           />
 
-                          <strong className="sale-item__total">
-                            {money((Number(item.quantity) || 0) * Number(item.rate || 0))}
-                          </strong>
+                          <strong className="sale-item__total">{money(itemSubtotal(item))}</strong>
                         </div>
 
                         {item.rate_type !== 'new' && Number(item.empty_returned) < Number(item.quantity) && (
                           <Alert tone="warning" compact>
-                            Warning: Quantity is {item.quantity} but only {item.empty_returned} empty returned. Ensure customer has empty credits or change Rate Type to New Cylinder.
+                            Warning: Quantity is {item.quantity} but only {item.empty_returned} empty returned. Check the customer’s empty-cylinder balance. Returns do not change the price.
                           </Alert>
                         )}
                       </div>
@@ -807,9 +806,12 @@ export default function Sales() {
                   </div>
                 )}
 
+                {items.length > 0 && !currentQuote && <p>Calculating pricing…</p>}
+                {currentQuote?.error && <Alert tone="danger">{currentQuote.error} <Button type="button" onClick={() => setQuoteRevision(value => value + 1)}>Retry</Button></Alert>}
                 <div className="sale-total">
                   <span className="sale-total__label">Grand Total</span>
-                  <strong className="sale-total__value">{money(total)}</strong>
+                  <strong className="sale-total__value">{currentQuote?.data ? money(total) : '—'}</strong>
+                  {Number(currentQuote?.data?.discount_amount) > 0 && <span>Refill discount: {money(currentQuote!.data!.discount_amount)}</span>}
                   {balance > 0 && <span className="sale-total__pending">Pending: {money(balance)}</span>}
                   {balance === 0 && total > 0 && <span className="sale-total__paid"><CheckCircle2 size={14} aria-hidden="true" /> Fully paid</span>}
                 </div>
@@ -861,7 +863,7 @@ export default function Sales() {
               {message && <Alert tone="success">{message}</Alert>}
 
               <div className="sale-submit">
-                <Button type="submit" size="lg" icon={<Plus />} disabled={saving}>
+                <Button type="submit" size="lg" icon={<Plus />} disabled={saving || !currentQuote?.data}>
                   {saving ? 'Saving…' : 'Complete Sale'}
                 </Button>
               </div>
@@ -910,7 +912,7 @@ export default function Sales() {
             )}
             {historyStatus === 'ready' && sales.length > 0 && (
             <TableWrap fade>
-              <Table stickyFirst className="sales-history-table">
+              <Table cards stickyFirst className="sales-history-table">
                 <thead>
                   <tr>
                     <Th>Customer</Th>
@@ -929,19 +931,19 @@ export default function Sales() {
                     const isReturn = sale.note === 'Empty cylinders returned';
                     return (
                     <tr key={sale.id}>
-                      <Td><strong className="sh-customer">{sale.customer_name}</strong></Td>
-                      <Td><SaleItemsCell customerName={sale.customer_name} items={sale.items} /></Td>
-                      <Td numeric>
+                      <Td label="Customer"><strong className="sh-customer">{sale.customer_name}</strong></Td>
+                      <Td label="Items"><SaleItemsCell customerName={sale.customer_name} items={sale.items} /></Td>
+                      <Td label="Total" numeric>
                         {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
                       </Td>
-                      <Td align="right">
+                      <Td label="Balance" align="right">
                         {sale.void ? <VoidStatusBadges saleVoid={sale.void} /> : isReturn ? <span className="ui-num-placeholder">-</span> : (
                           Number(sale.balance_due) > 0
                             ? <Badge tone="warning">{money(sale.balance_due)}</Badge>
                             : <Badge tone="success">Paid</Badge>
                         )}
                       </Td>
-                      <Td className="sh-nowrap">
+                      <Td label="Mode" className="sh-nowrap">
                         {isReturn ? (
                           <Badge variant="outline" icon={<RotateCcw />}>Return</Badge>
                         ) : (
@@ -955,14 +957,14 @@ export default function Sales() {
                           </div>
                         )}
                       </Td>
-                      <Td className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
-                      <Td className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
-                      <Td className="sh-meta">
+                      <Td label="Recorded by" className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
+                      <Td label="Handed over by" className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
+                      <Td label="Date & time" className="sh-meta">
                         {formatDateTime(sale.created_at)}
                         {sale.void && <span className="ui-cell-sub sv-reason" title={sale.void.reason}>Cancelled {formatDateTime(sale.void.voided_at)}</span>}
                         {sale.void?.refund && <span className="ui-cell-sub">Refunded {formatDateTime(sale.void.refund.confirmed_at)}</span>}
                       </Td>
-                      <Td className="sh-nowrap sv-actions">
+                      <Td label="Actions" className="sh-nowrap sv-actions">
                         {!sale.void && sale.is_direct && (
                           <Button type="button" size="sm" variant="secondary" onClick={() => { setHistoryNotice(''); setVoidSaleId(sale.id); }}>
                             Cancel

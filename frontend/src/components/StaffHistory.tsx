@@ -1,3 +1,4 @@
+import { PricingBreakdown, type PricingSnapshot } from './PricingBreakdown';
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { History } from 'lucide-react';
 import { api, extractApiError, type Paginated } from '../lib/api';
@@ -17,7 +18,7 @@ export type StaffDirectSale = {
   status: 'completed' | 'cancelled';
   created_at: string;
   cancelled_at: string | null;
-  items: { id: number; cylinder_type_name: string; quantity: number; total_amount: string }[];
+  items: (PricingSnapshot & { id: number; cylinder_type_name: string; quantity: number; total_amount: string })[];
 };
 
 export type StaffHistoryEntry<T> = {
@@ -38,7 +39,7 @@ export function StaffDirectSaleCard({ sale }: { sale: StaffDirectSale }) {
       {sale.status === 'cancelled' && <span>Cancelled {formatDateTime(sale.cancelled_at)}</span>}
     </span>
     {sale.items.filter(item => item.quantity > 0 || Number(item.total_amount) > 0).map(item => (
-      <div key={item.id} className="sa-list-card__text">{item.cylinder_type_name} ({item.quantity} qty)</div>
+      <div key={item.id} className="sa-list-card__text">{item.cylinder_type_name} ({item.quantity} qty)<PricingBreakdown value={item} /></div>
     ))}
     <div className="sa-muted">{sale.customer_name}</div>
     <div className="sa-amount-row sa-amount-row--footer">

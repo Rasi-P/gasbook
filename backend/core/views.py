@@ -13,6 +13,7 @@ from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q, Sum
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
+from django.shortcuts import get_object_or_404
 from rest_framework import permissions, viewsets, filters, mixins
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
@@ -62,7 +63,9 @@ from .services import (
     void_preview,
     void_sale,
 )
+from .pricing import snapshot, SNAPSHOT_FIELDS
 from .serializers import (
+    SaleItemWriteSerializer, SaleItemSerializer, price_sale_lines,
     ActivityLogSerializer,
     BookingSerializer,
     CustomerCylinderDiscountSerializer,
@@ -181,6 +184,7 @@ def build_direct_sale_history_entry(sale):
         "source_id": sale.id,
         "order_id": f"SALE-{sale.id}",
         "display_reference": f"Direct Sale #{sale.id}",
+        "items": SaleItemSerializer(billed_items, many=True).data,
         "status": status,
         "created_at": sale.created_at.isoformat(),
         "cancelled_at": void.created_at.isoformat() if void is not None else None,
@@ -662,6 +666,27 @@ class SaleViewSet(
         confirm_refund(self.get_object(), request.user, request.data.get("references"), request.data.get("amount"))
         return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
 
+    @action(detail=False, methods=["post"], permission_classes=[IsAdminUserRole])
+    def preview(self, request):
+        """Read-only quote using exactly the same line pricing as sale creation."""
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be an object.", code="invalid")
+        customer_id = request.data.get("customer")
+        customer = None
+        if customer_id is not None:
+            customer = get_object_or_404(CustomerProfile, pk=parse_id_param(customer_id, "customer"), is_active=True, user__is_active=True)
+        serializer = SaleItemWriteSerializer(data=request.data.get("sale_items", []), many=True)
+        serializer.is_valid(raise_exception=True)
+        lines = price_sale_lines(serializer.validated_data, customer)
+        return Response({
+            "items": [{**{key: value for key, value in line.items() if key != "cylinder_type"},
+                       "cylinder_type": line["cylinder_type"].pk,
+                       "cylinder_type_name": line["cylinder_type"].name} for line in lines],
+            "original_amount": sum(line["original_amount"] for line in lines),
+            "discount_amount": sum(line["discount_amount"] for line in lines),
+            "total_amount": sum(line["final_amount"] for line in lines),
+        })
+
     def create(self, request, *args, **kwargs):
         """Record a sale exactly once per client_ref.
 
@@ -955,6 +980,8 @@ class BookingViewSet(
 
         cylinder_ids = []
         for item in items:
+            if not isinstance(item, Mapping):
+                raise ApiError("Each item must be an object.", code="invalid", field="items")
             try:
                 cylinder_ids.append(int(item.get("cylinder_type")))
             except (TypeError, ValueError):
@@ -968,7 +995,7 @@ class BookingViewSet(
 
         for item in items:
             cylinder_id = int(item.get("cylinder_type"))
-            quantity = int(item.get("quantity") or 0)
+            quantity = parse_non_negative_int(item.get("quantity"), "quantity", "Quantity")
             if quantity <= 0:
                 return Response({"detail": "Quantity must be greater than zero."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
@@ -976,12 +1003,13 @@ class BookingViewSet(
             if cylinder is None:
                 return Response({"detail": f"Cylinder type {cylinder_id} is invalid or inactive."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
-            pricing = get_customer_pricing_snapshot(profile, cylinder, quantity)
+            pricing = get_customer_pricing_snapshot(profile, cylinder, quantity, item.get("rate_type", "refill"))
             original_total += pricing["original_amount"]
             discount_total += pricing["discount_amount"]
             final_total += pricing["final_amount"]
             response_items.append({
                 "client_item_id": item.get("client_item_id"),
+                **{field: pricing[field] for field in SNAPSHOT_FIELDS},
                 "cylinder_type": cylinder.id,
                 "cylinder_type_name": cylinder.name,
                 "cylinder_type_weight": str(cylinder.weight),
@@ -1519,6 +1547,7 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
             rate=pricing["effective_rate"],
             total_amount=total,
             empty_returned=empty_collected,
+            **snapshot(booking),
         )
         if payment_collected > 0:
             if parsed_splits:
@@ -2328,7 +2357,7 @@ def reports(request):
                 refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
                 threshold = (item.cylinder_type.selling_price + refill_rate) / 2
                 
-                if item.rate <= threshold and taken_qty > 0:
+                if (item.rate_type == "refill" or (item.rate_type is None and item.rate <= threshold)) and taken_qty > 0:
                     credits_needed = max(0, taken_qty - returned_qty)
                     balances[tid]["credits"] -= credits_needed
                     if balances[tid]["credits"] < 0:

@@ -345,6 +345,7 @@
 }
 
 .sa-amount-row {
+  flex-wrap: wrap;
   align-items: center;
   display: flex;
   gap: var(--space-3);
@@ -364,6 +365,8 @@
 }
 
 .sa-amount {
+  min-width: 0;
+  max-width: 100%;
   text-align: right;
 }
 

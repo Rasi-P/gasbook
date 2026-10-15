@@ -515,6 +515,7 @@
 }
 
 .cd-item {
+  flex-wrap: wrap;
   align-items: center;
   display: flex;
   flex-wrap: wrap;

@@ -1,3 +1,4 @@
+import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { BookingTimes } from '../../components/BookingTimes';
 import { useCallback, useEffect, useState } from 'react';
 import { Check, ClipboardList, Truck, X } from 'lucide-react';
@@ -18,7 +19,7 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { SkeletonRows } from '../../components/ui/Skeleton';
 import { Table, TableWrap, Td, Th } from '../../components/ui/Table';
 
-type Booking = {
+type Booking = PricingSnapshot & {
   id: number;
   customer_name: string;
   customer_phone: string;
@@ -216,6 +217,7 @@ export default function AdminBookings() {
                   <Td label="Cylinder">
                     <strong>{booking.quantity} x {booking.cylinder_type_name}</strong>
                     <BookingTimes booking={booking} />
+                    <PricingBreakdown value={booking} />
                     <span className="ui-cell-sub">{money(booking.rate)} each</span>
                     {discountAmount(booking) > 0 && (
                       <span className="bk-price">

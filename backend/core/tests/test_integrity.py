@@ -43,7 +43,8 @@ class IntegrityChecksTests(GasBookTestCase):
     def setUp(self):
         super().setUp()
         self.cylinder.refill_rate = Decimal("800.00")
-        self.cylinder.save(update_fields=["refill_rate"])
+        self.cylinder.deposit_amount = Decimal("100")
+        self.cylinder.save(update_fields=["refill_rate", "deposit_amount"])
         self.set_stock(self.shop, filled=20, empty=0)
         self.customer.opening_balance = Decimal("150.00")
         self.customer.save(update_fields=["opening_balance"])
@@ -51,7 +52,7 @@ class IntegrityChecksTests(GasBookTestCase):
 
         self.return_only = self.sell(quantity=0, rate="0", empty_returned=3, payment_mode="cash", paid_amount="0")
         self.refill_sale = self.sell(quantity=2, rate="800", empty_returned=1, payment_mode="credit", paid_amount="600")
-        self.new_sale = self.sell(quantity=1, rate="900", empty_returned=0, payment_mode="cash", paid_amount="900")
+        self.new_sale = self.sell(rate_type="new", quantity=1, rate="900", empty_returned=0, payment_mode="cash", paid_amount="900")
         response = self.client.post(
             "/api/payments/", {"customer": self.customer.id, "amount": "300", "payment_mode": "cash"}, format="json"
         )
@@ -63,7 +64,7 @@ class IntegrityChecksTests(GasBookTestCase):
         self.agreed_sale = self.sell(customer=self.agreed_customer, quantity=1, rate="750", empty_returned=0,
                                      payment_mode="credit", paid_amount="0")
 
-    def sell(self, customer=None, *, quantity, rate, empty_returned, payment_mode, paid_amount):
+    def sell(self, customer=None, *, quantity, rate, empty_returned, payment_mode, paid_amount, rate_type="refill"):
         response = self.client.post("/api/sales/", {
             "client_ref": str(uuid.uuid4()),
             "customer": (customer or self.customer).id,
@@ -71,7 +72,7 @@ class IntegrityChecksTests(GasBookTestCase):
             "payment_mode": payment_mode,
             "paid_amount": paid_amount,
             "paid_payment_mode": "cash",
-            "sale_items": [{"cylinder_type": self.cylinder.id, "quantity": quantity, "rate": rate, "empty_returned": empty_returned}],
+            "sale_items": [{"cylinder_type": self.cylinder.id, "quantity": quantity, "rate": rate, "rate_type": rate_type, "empty_returned": empty_returned}],
         }, format="json")
         self.assertEqual(response.status_code, 201, response.data)
         return Sale.objects.get(pk=response.data["id"])

@@ -1,7 +1,8 @@
+import { PricingBreakdown, type PricingSnapshot } from './PricingBreakdown';
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { Badge } from './ui/Badge';
 
-type SaleItemLike = {
+type SaleItemLike = PricingSnapshot & {
   cylinder_type_name: string;
   quantity: number;
   rate: number;
@@ -24,7 +25,8 @@ export function SaleItemsCell({ customerName, items }: { customerName: string; i
         const short = !customerName && item.quantity > 0 && returned < item.quantity;
         return (
           <div key={i} className="sale-items__line">
-            {item.quantity > 0 && <span>{item.quantity}×{item.cylinder_type_name} @ {money(item.rate)}</span>}
+            {item.quantity > 0 && <span>{item.quantity}×{item.cylinder_type_name}{!item.rate_type && ` @ ${money(item.rate)}`}</span>}
+            <PricingBreakdown value={item} />
             {returned > 0 ? (
               <Badge size="sm" square tone={short ? 'danger' : 'neutral'} icon={<RotateCcw />} className="ui-badge--wrap">
                 Returned {returned} × {item.cylinder_type_name} empties

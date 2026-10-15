@@ -400,7 +400,7 @@ export default function Reports() {
                 <EmptyState icon={<Receipt size={24} />} title="No sales found in this range." />
               ) : (
               <TableWrap fade>
-                <Table stickyFirst className="sales-history-table">
+                <Table cards stickyFirst className="sales-history-table">
                   <thead>
                     <tr>
                       <Th>Customer</Th>
@@ -418,19 +418,19 @@ export default function Reports() {
                       const isReturn = (sale as any).note === 'Empty cylinders returned';
                       return (
                       <tr key={sale.id}>
-                        <Td><strong className="sh-customer">{sale.customer_name || 'Walk-in'}</strong></Td>
-                        <Td><SaleItemsCell customerName={sale.customer_name} items={sale.items} /></Td>
-                        <Td numeric>
+                        <Td label="Customer"><strong className="sh-customer">{sale.customer_name || 'Walk-in'}</strong></Td>
+                        <Td label="Items"><SaleItemsCell customerName={sale.customer_name} items={sale.items} /></Td>
+                        <Td label="Total" numeric>
                           {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
                         </Td>
-                        <Td align="right">
+                        <Td label="Balance" align="right">
                           {sale.void ? <VoidStatusBadges saleVoid={sale.void} /> : isReturn ? <span className="ui-num-placeholder">-</span> : (
                             Number(sale.balance_due) > 0
                               ? <Badge tone="warning">{money(sale.balance_due)}</Badge>
                               : <Badge tone="success">Paid</Badge>
                           )}
                         </Td>
-                        <Td className="sh-nowrap">
+                        <Td label="Mode" className="sh-nowrap">
                           {isReturn ? (
                             <Badge variant="outline">Return</Badge>
                           ) : (
@@ -444,9 +444,9 @@ export default function Reports() {
                             </div>
                           )}
                         </Td>
-                        <Td className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
-                        <Td className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
-                        <Td className="sh-meta">
+                        <Td label="Recorded by" className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
+                        <Td label="Handed over by" className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
+                        <Td label="Date & time" className="sh-meta">
                           {formatDateTime(sale.created_at)}
                         </Td>
                       </tr>

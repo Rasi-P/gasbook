@@ -1,3 +1,4 @@
+import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, ArrowRightLeft, AtSign, Ban, Car, CircleCheck, ClipboardList, FilterX, Mail, MapPin, Phone, Truck } from 'lucide-react';
@@ -40,7 +41,7 @@ type StaffInfo = HistoryStaff & {
 };
 
 /** Booking facts shared by both kinds of row of GET /auth/users/{id}/deliveries/. */
-type BookingFields = {
+type BookingFields = PricingSnapshot & {
   booking: number;
   order_id: string;
   booking_status: string;
@@ -191,6 +192,7 @@ function HandoverRow({ row }: { row: PreviousRow }) {
       <Td label="Cylinder">{row.quantity} × {row.cylinder_type_name}</Td>
       <Td label="Amount" numeric>
         <strong>{money(row.final_amount)}</strong>
+        <PricingBreakdown value={row} />
         {Number(row.discount_amount) > 0 && <span className="ui-cell-sub"><s>{money(row.original_amount)}</s></span>}
       </Td>
       <Td label="Payment">—</Td>
@@ -483,6 +485,7 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
                       </Td>
                       <Td label="Amount" numeric>
                         <strong>{money(row.final_amount)}</strong>
+        <PricingBreakdown value={row} />
                         {discounted && <span className="ui-cell-sub"><s>{money(row.original_amount)}</s></span>}
                       </Td>
                       <Td label="Payment">

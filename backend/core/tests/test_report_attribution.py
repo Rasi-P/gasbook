@@ -26,7 +26,7 @@ class ReportAttributionTests(GasBookTestCase):
     def setUp(self):
         super().setUp()
         self.kandam = StockLocation.objects.create(name="Kandam", code="kandam")
-        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"))
+        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"), refill_rate=Decimal("450"))
         self.admin2 = User.objects.create_user(username="admin2", password="x", role=self.admin_role, first_name="Second", last_name="Admin")
         self.set_stock(self.shop, filled=10)
         self.set_stock(self.shop, filled=10, cylinder=self.small)

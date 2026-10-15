@@ -345,7 +345,7 @@ class ConcurrentRequestTests(TransactionTestCase):
             user=User.objects.create_user(username="a-cust", password="x", role=self.customer_role)
         )
         self.shop = StockLocation.objects.create(name="Shop", code="shop")
-        self.cylinder = CylinderType.objects.create(name="14kg", weight=Decimal("14.2"), selling_price=Decimal("900"))
+        self.cylinder = CylinderType.objects.create(name="14kg", weight=Decimal("14.2"), selling_price=Decimal("900"), refill_rate=Decimal("900"))
         Stock.objects.create(cylinder_type=self.cylinder, location=self.shop, status=Stock.Status.FILLED, quantity=10)
 
     def sale(self, client_ref=None, **extra):

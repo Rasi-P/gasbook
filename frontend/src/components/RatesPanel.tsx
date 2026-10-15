@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { X, IndianRupee, Pencil, Check } from 'lucide-react';
 import { api, extractApiError, fetchAllPages } from '../lib/api';
 import { Alert } from './ui/Alert';
@@ -11,11 +11,11 @@ import { LoadingState } from './AsyncState';
 type CylinderType = {
   id: number;
   name: string;
-  selling_price: string;
+  deposit_amount: string;
   refill_rate: string;
 };
 
-type EditRow = { selling_price: string; refill_rate: string };
+type EditRow = { deposit_amount: string; refill_rate: string };
 
 /**
  * Today's gas rates editor. Fetch, edit and PATCH logic is unchanged; the open/closed state now
@@ -30,7 +30,6 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [loadError, setLoadError] = useState('');
   const [saveError, setSaveError] = useState('');
-  const requestedRef = useRef(false);
 
   function loadTypes() {
     return fetchAllPages<CylinderType>('/cylinder-types/')
@@ -45,8 +44,7 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
   }
 
   useEffect(() => {
-    if (open && !requestedRef.current) {
-      requestedRef.current = true;
+    if (open) {
       void loadTypes();
     }
   }, [open]);
@@ -54,7 +52,7 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
   function startEdit(t: CylinderType) {
     setEditing((prev) => ({
       ...prev,
-      [t.id]: { selling_price: t.selling_price, refill_rate: t.refill_rate },
+      [t.id]: { deposit_amount: t.deposit_amount, refill_rate: t.refill_rate },
     }));
   }
 
@@ -65,16 +63,17 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
     setSaveError('');
     try {
       const { data } = await api.patch(`/cylinder-types/${t.id}/`, {
-        selling_price: row.selling_price,
+        deposit_amount: row.deposit_amount,
         refill_rate: row.refill_rate,
       });
       setTypes((prev) => prev.map((x) => (x.id === t.id ? { ...x, ...data } : x)));
       setEditing((prev) => { const n = { ...prev }; delete n[t.id]; return n; });
       setSaved(t.id);
+      window.dispatchEvent(new Event("gas-rates-changed"));
       setTimeout(() => setSaved(null), 1500);
     } catch (err) {
       // keep editing open on error
-      setSaveError(extractApiError(err, ['selling_price', 'refill_rate'], 'Failed to save rates.'));
+      setSaveError(extractApiError(err, ['deposit_amount', 'refill_rate'], 'Failed to save rates.'));
     } finally {
       setSaving(null);
     }
@@ -101,7 +100,7 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
         </div>
 
         <div className="rates-panel__columns" aria-hidden="true">
-          <span>Size</span><span>Sale (Rs.)</span><span>Refill (Rs.)</span><span />
+          <span>Size</span><span>New Cylinder Deposit (Rs.)</span><span>Refill (Rs.)</span><span />
         </div>
 
         <div className="rates-panel__rows">
@@ -138,9 +137,9 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
                       type="number"
                       min="0"
                       inputSize="sm"
-                      aria-label={`${t.name} sale price`}
-                      value={row.selling_price}
-                      onChange={(e) => patch(t.id, 'selling_price', e.target.value)}
+                      aria-label={`${t.name} new cylinder deposit`}
+                      value={row.deposit_amount}
+                      onChange={(e) => patch(t.id, 'deposit_amount', e.target.value)}
                     />
                     <Input
                       type="number"
@@ -164,7 +163,7 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
                 ) : (
                   <>
                     <span className={`rates-row__value${isSaved ? ' rates-row__value--saved' : ''}`}>
-                      {Number(t.selling_price).toLocaleString('en-IN')}
+                      {Number(t.deposit_amount).toLocaleString('en-IN')}
                     </span>
                     <span className="rates-row__value rates-row__value--muted">
                       {Number(t.refill_rate).toLocaleString('en-IN')}

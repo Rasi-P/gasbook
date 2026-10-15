@@ -330,4 +330,34 @@
   .sale-item__cylinder {
     grid-column: auto;
   }
+
+  .sale-item__grid--new {
+    grid-template-columns: 1.3fr 1fr 1fr 1fr 0.8fr 0.9fr;
+  }
+}
+
+/* Component breakdowns need the full row width on phones. */
+.sale-items__line > .pricing-components {
+  flex-basis: 100%;
+}
+
+@media (max-width: 679px) {
+  .sales-history-table.ui-table--cards {
+    min-width: 0;
+  }
+
+  .sales-history-table.ui-table--cards td,
+  .sales-history-table.ui-table--cards td:first-child {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 4px;
+    text-align: left;
+    position: static;
+    white-space: normal;
+    min-width: 0;
+  }
+
+  .sales-history-table.ui-table--cards .sale-items {
+    min-width: 0;
+  }
 }

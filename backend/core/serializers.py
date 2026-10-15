@@ -7,6 +7,7 @@ from django.core.validators import RegexValidator
 from rest_framework import serializers
 
 from .exceptions import ApiError
+from .pricing import calculate_pricing, snapshot, SNAPSHOT_FIELDS
 from .models import (
     ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, PaymentReversal, Role, Sale, SaleItem,
@@ -131,57 +132,35 @@ def serialize_decimal(value):
     return str(quantize_money(value))
 
 
-def get_customer_pricing_snapshot(customer, cylinder_type, quantity):
-    if not customer:
-        quantity = int(quantity or 0)
-        rate = quantize_money(cylinder_type.selling_price)
-        original_amount = quantize_money(rate * Decimal(quantity))
-        return {
-            "rate": rate,
-            "quantity": quantity,
-            "original_amount": original_amount,
-            "discount_amount": Decimal("0.00"),
-            "final_amount": original_amount,
-            "has_discount": False,
-            "effective_rate": rate,
-            "discount_scope": None,
-            "applied_discount_type": None,
-            "applied_discount_value": Decimal("0.00"),
-        }
-    return customer.calculate_booking_pricing(cylinder_type, quantity)
+def get_customer_pricing_snapshot(customer, cylinder_type, quantity, rate_type="refill"):
+    return calculate_pricing(customer, cylinder_type, quantity, rate_type)
 
 
 def get_booking_pricing_snapshot(booking):
-    if (
-        booking.original_amount > 0
-        or booking.final_amount > 0
-        or booking.discount_amount > 0
-        or booking.applied_discount_type
-    ):
-        quantity = Decimal(booking.quantity or 0)
-        original_rate = (
-            quantize_money(Decimal(booking.original_amount) / quantity)
-            if quantity > 0
-            else Decimal("0.00")
-        )
-        effective_rate = (
-            quantize_money(Decimal(booking.final_amount) / quantity)
-            if quantity > 0
-            else Decimal("0.00")
-        )
-        return {
-            "rate": original_rate,
-            "quantity": booking.quantity,
-            "original_amount": quantize_money(booking.original_amount),
-            "discount_amount": quantize_money(booking.discount_amount),
-            "final_amount": quantize_money(booking.final_amount),
-            "has_discount": booking.discount_amount > 0,
-            "effective_rate": effective_rate,
-            "discount_scope": None,
-            "applied_discount_type": booking.applied_discount_type,
-            "applied_discount_value": quantize_money(booking.applied_discount_value),
-        }
-    return get_customer_pricing_snapshot(booking.customer, booking.cylinder_type, booking.quantity)
+    quantity = Decimal(booking.quantity or 0)
+    original_rate = (
+        quantize_money(Decimal(booking.original_amount) / quantity)
+        if quantity > 0
+        else Decimal("0.00")
+    )
+    effective_rate = (
+        quantize_money(Decimal(booking.final_amount) / quantity)
+        if quantity > 0
+        else Decimal("0.00")
+    )
+    return {
+        **snapshot(booking),
+        "rate": original_rate,
+        "quantity": booking.quantity,
+        "original_amount": quantize_money(booking.original_amount),
+        "discount_amount": quantize_money(booking.discount_amount),
+        "final_amount": quantize_money(booking.final_amount),
+        "has_discount": booking.discount_amount > 0,
+        "effective_rate": effective_rate,
+        "discount_scope": None,
+        "applied_discount_type": booking.applied_discount_type,
+        "applied_discount_value": quantize_money(booking.applied_discount_value),
+    }
 
 
 def get_sale_pricing_snapshot(sale):
@@ -215,6 +194,8 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class CylinderTypeSerializer(serializers.ModelSerializer):
+    deposit_amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
+    refill_rate = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
     customer_rate = serializers.SerializerMethodField()
     discount_amount = serializers.SerializerMethodField()
     final_price = serializers.SerializerMethodField()
@@ -329,14 +310,44 @@ class SaleItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SaleItem
-        fields = ["id", "cylinder_type", "cylinder_type_name", "quantity", "rate", "total_amount", "empty_returned"]
+        fields = ["id", "cylinder_type", "cylinder_type_name", "quantity", "rate", "total_amount", "empty_returned", *SNAPSHOT_FIELDS]
 
 
 class SaleItemWriteSerializer(serializers.Serializer):
     cylinder_type = serializers.PrimaryKeyRelatedField(queryset=CylinderType.objects.all())
     quantity = serializers.IntegerField(min_value=0, max_value=MAX_COUNT)
-    rate = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"))
+    rate_type = serializers.ChoiceField(choices=["new", "refill"], default="refill")
+    # Optional legacy client assertion, never an override of the calculated price.
+    rate = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
+    # Editable components for admin Direct Sales. Snapshot fields stay read-only.
+    deposit = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
+    refill_charge = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
     empty_returned = serializers.IntegerField(min_value=0, max_value=MAX_COUNT, default=0)
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            forbidden = {"deposit_unit_amount", "refill_unit_amount", "total_amount", "final_amount", "discount_amount", "original_amount"}.intersection(data)
+            if forbidden:
+                raise serializers.ValidationError("Pricing components and totals are set by the server.")
+        return super().to_internal_value(data)
+
+
+def price_sale_lines(lines, customer):
+    # Check structural/stock eligibility rules before price assertions.
+    SaleSerializer.merge_lines(lines)
+    # Validate assertions before merging, so a duplicate cannot hide a tampered rate.
+    for line in lines:
+        if line["rate_type"] == "refill" and line.get("deposit", 0) != 0:
+            raise ApiError("Refill transactions cannot include a deposit.", code="invalid", field="sale_items")
+        pricing = calculate_pricing(customer, line["cylinder_type"], line["quantity"], line["rate_type"], component_rates=line)
+        if "rate" in line and line["rate"] != pricing["rate"]:
+            raise ApiError("The submitted rate does not match the calculated price. Refresh the quote.", code="rate_mismatch", field="sale_items")
+        line["deposit"] = pricing["deposit_unit_amount"]
+        line["refill_charge"] = pricing["refill_unit_amount"]
+    lines = SaleSerializer.merge_lines(lines)
+    for line in lines:
+        line.update(calculate_pricing(customer, line["cylinder_type"], line["quantity"], line["rate_type"], component_rates=line))
+    return lines
 
 
 class SplitPaymentSerializer(serializers.Serializer):
@@ -420,6 +431,7 @@ def void_summary(void):
 
 
 class SaleSerializer(serializers.ModelSerializer):
+    quoted_total = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False, write_only=True)
     # Exactly one of customer (an existing customer) or new_customer (registered with the sale).
     customer = serializers.PrimaryKeyRelatedField(
         queryset=CustomerProfile.objects.select_related("user"), required=False, allow_null=True
@@ -487,7 +499,7 @@ class SaleSerializer(serializers.ModelSerializer):
             "payment_mode", "paid_payment_mode", "split_payments", "delivery_type", "delivery_staff", "note",
             "sold_by", "sold_by_name", "sold_by_full_name", "sold_by_role", "handover_staff", "handover_staff_name",
             "is_direct", "void", "created_at", "items", "sale_items", "payments",
-            "client_ref", "new_customer", "past_due_payments",
+            "client_ref", "new_customer", "past_due_payments", "quoted_total",
         ]
         read_only_fields = [
             "total_amount", "balance_due", "sold_by", "original_amount", "discount_amount",
@@ -531,17 +543,22 @@ class SaleSerializer(serializers.ModelSerializer):
         if not location.is_active:
             raise ApiError(f"{location.name} is inactive.", code="location_inactive", field="location")
 
-        attrs["sale_items"] = self.merge_lines(attrs.get("sale_items") or [])
-        total = sum((Decimal(line["quantity"]) * line["rate"] for line in attrs["sale_items"]), Decimal("0"))
-        if total > MAX_MONEY:
+        attrs["sale_items"] = price_sale_lines(attrs.get("sale_items") or [], customer)
+        attrs["original_amount"] = sum((line["original_amount"] for line in attrs["sale_items"]), Decimal("0"))
+        attrs["discount_amount"] = sum((line["discount_amount"] for line in attrs["sale_items"]), Decimal("0"))
+        total = sum((line["final_amount"] for line in attrs["sale_items"]), Decimal("0"))
+        if total > MAX_MONEY or attrs["original_amount"] > MAX_MONEY:
             raise ApiError("The sale total is too large.", code="amount_too_large", field="sale_items")
+        quoted_total = attrs.pop("quoted_total", None)
+        if quoted_total is not None and quoted_total != total:
+            raise ApiError("Pricing changed. Refresh the quote before recording the sale.", code="quote_changed", field="quoted_total")
         attrs["_total"] = total
         attrs["_receipts"] = self.receipts(attrs, total)
         return attrs
 
     @staticmethod
     def merge_lines(lines):
-        """Merge lines with the same cylinder type and rate, so a cylinder type split over
+        """Merge lines with the same cylinder, pricing type and component rates, so a cylinder type split over
         several lines is counted once; stock is later checked per type across all lines.
 
         An inactive (discontinued) cylinder type may appear only on empties-only lines:
@@ -560,7 +577,7 @@ class SaleSerializer(serializers.ModelSerializer):
                 )
             if line["quantity"] == 0 and line["empty_returned"] == 0:
                 raise ApiError("Each line needs cylinders sold or empties returned.", code="empty_line", field="sale_items")
-            key = (cylinder_type.pk, line["rate"])
+            key = (cylinder_type.pk, line["rate_type"], line.get("deposit"), line.get("refill_charge"))
             if key in merged:
                 merged[key]["quantity"] += line["quantity"]
                 merged[key]["empty_returned"] += line["empty_returned"]
@@ -676,8 +693,9 @@ class SaleSerializer(serializers.ModelSerializer):
         sale = Sale.objects.create(sold_by=user, total_amount=total, balance_due=total - paid, **validated_data)
         for line in lines:
             SaleItem.objects.create(
-                sale=sale, cylinder_type=line["cylinder_type"], quantity=line["quantity"], rate=line["rate"],
-                total_amount=Decimal(line["quantity"]) * line["rate"], empty_returned=line["empty_returned"],
+                sale=sale, cylinder_type=line["cylinder_type"], quantity=line["quantity"], rate=line["effective_rate"],
+                total_amount=line["final_amount"], empty_returned=line["empty_returned"],
+                **{field: line[field] for field in SNAPSHOT_FIELDS},
             )
         note = "Sale payment (split)" if sale.payment_mode == Sale.PaymentMode.SPLIT else "Sale payment"
         for mode, amount in receipts:
@@ -697,7 +715,14 @@ class SaleSerializer(serializers.ModelSerializer):
                 "balance": str(sale.balance_due),
                 "lines": [
                     {"cylinder_type": line["cylinder_type"].pk, "quantity": line["quantity"], "rate": str(line["rate"]),
-                     "empty_returned": line["empty_returned"]}
+                     "empty_returned": line["empty_returned"],
+                     "rate_type": line["rate_type"],
+                     "deposit_unit_amount": str(line["deposit_unit_amount"]),
+                     "refill_unit_amount": str(line["refill_unit_amount"]),
+                     "discount_amount": str(line["discount_amount"]),
+                     "final_amount": str(line["final_amount"]),
+                     "applied_discount_type": line["applied_discount_type"],
+                     "applied_discount_value": str(line["applied_discount_value"])}
                     for line in lines
                 ],
                 "payments": [{"mode": mode, "amount": str(amount)} for mode, amount in receipts],
@@ -824,7 +849,7 @@ class CustomerCylinderDiscountSerializer(serializers.ModelSerializer):
             and discount_type == CustomerProfile.DiscountType.FIXED
             and discount_value > customer.get_rate_for_cylinder(cylinder_type)
         ):
-            raise serializers.ValidationError({"discount_value": "Fixed discount cannot exceed the cylinder price."})
+            raise serializers.ValidationError({"discount_value": "Fixed discount cannot exceed the refill charge."})
         return attrs
 
 
@@ -908,7 +933,7 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
                 refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
                 threshold = (item.cylinder_type.selling_price + refill_rate) / 2
                 
-                if item.rate <= threshold and taken_qty > 0:
+                if (item.rate_type == "refill" or (item.rate_type is None and item.rate <= threshold)) and taken_qty > 0:
                     credits_needed = max(0, taken_qty - returned_qty)
                     balances[tid]["credits"] -= credits_needed
                     if balances[tid]["credits"] < 0:
@@ -974,6 +999,18 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    rate_type = serializers.ChoiceField(choices=["new", "refill"], default="refill")
+
+    def validate(self, attrs):
+        forbidden = {"deposit", "refill_charge", "rate", "deposit_unit_amount", "refill_unit_amount", "original_amount", "discount_amount", "final_amount", "total_amount", "applied_discount_type", "applied_discount_value"}.intersection(self.initial_data)
+        if forbidden:
+            raise ApiError("Pricing is set by the server.", code="read_only_fields", fields=sorted(forbidden))
+        if attrs.get("quantity", 1) < 1:
+            raise serializers.ValidationError({"quantity": "Quantity must be greater than zero."})
+        if not attrs["cylinder_type"].is_active:
+            raise serializers.ValidationError({"cylinder_type": "Cylinder type is inactive."})
+        return attrs
+
     customer_name = serializers.SerializerMethodField()
     customer_phone = serializers.SerializerMethodField()
     customer_address = serializers.SerializerMethodField()
@@ -1004,7 +1041,7 @@ class BookingSerializer(serializers.ModelSerializer):
         # Workflow fields are set by the approve/reject/delivery actions, never by the create payload.
         read_only_fields = [
             "customer", "status", "payment_status", "assigned_staff", "rejection_reason",
-            "approved_by", "approved_at", "delivered_at", "sale", "rejected_by", "rejected_at",
+            "approved_by", "approved_at", "delivered_at", "sale", "rejected_by", "rejected_at", "deposit_unit_amount", "refill_unit_amount",
         ]
 
     def _get_delivery(self, obj):
@@ -1115,10 +1152,12 @@ class BookingSerializer(serializers.ModelSerializer):
 
         cylinder_type = validated_data["cylinder_type"]
         quantity = validated_data["quantity"]
-        pricing = get_customer_pricing_snapshot(profile, cylinder_type, quantity)
+        pricing = get_customer_pricing_snapshot(profile, cylinder_type, quantity, validated_data["rate_type"])
 
         booking = Booking.objects.create(
             customer=profile,
+            deposit_unit_amount=pricing["deposit_unit_amount"],
+            refill_unit_amount=pricing["refill_unit_amount"],
             original_amount=pricing["original_amount"],
             discount_amount=pricing["discount_amount"],
             final_amount=pricing["final_amount"],
@@ -1179,6 +1218,9 @@ class StaffDirectSaleHistorySerializer(serializers.ModelSerializer):
 
 
 class DeliverySerializer(serializers.ModelSerializer):
+    rate_type = serializers.CharField(source="booking.rate_type", read_only=True, allow_null=True)
+    deposit_unit_amount = serializers.DecimalField(source="booking.deposit_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
+    refill_unit_amount = serializers.DecimalField(source="booking.refill_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
     booked_at = serializers.DateTimeField(source="booking.created_at", read_only=True)
     cancelled_at = serializers.SerializerMethodField()
     customer_name = serializers.SerializerMethodField()
@@ -1241,6 +1283,10 @@ class DeliverySerializer(serializers.ModelSerializer):
 
 
 class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
+    rate_type = serializers.CharField(source="booking.rate_type", read_only=True, allow_null=True)
+    deposit_unit_amount = serializers.DecimalField(source="booking.deposit_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
+    refill_unit_amount = serializers.DecimalField(source="booking.refill_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
+
     """Read-only row of the admin staff delivery history: one Delivery and its Booking."""
 
     order_id = serializers.CharField(source="booking.order_id", read_only=True)
@@ -1266,7 +1312,7 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
             "id", "booking", "order_id", "status", "booking_status", "booked_at",
             "started_at", "completed_at", "cancelled_at",
             "customer_name", "customer_phone", "customer_area",
-            "cylinder_type_name", "quantity",
+            "cylinder_type_name", "quantity", *SNAPSHOT_FIELDS,
             "original_amount", "discount_amount", "final_amount",
             "booking_payment_method", "booking_payment_status",
             "payment_method", "payment_collected", "balance_due", "empty_collected",
@@ -1323,7 +1369,7 @@ class StaffHandoverBookingSerializer(serializers.ModelSerializer):
         fields = [
             "booking", "order_id", "booking_status", "booked_at",
             "customer_name", "customer_phone", "customer_area",
-            "cylinder_type_name", "quantity",
+            "cylinder_type_name", "quantity", *SNAPSHOT_FIELDS,
             "original_amount", "discount_amount", "final_amount", "booking_payment_method",
         ]
         read_only_fields = fields

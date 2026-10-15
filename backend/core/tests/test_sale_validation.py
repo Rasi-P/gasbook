@@ -52,7 +52,7 @@ class SaleValidationTests(SaleTestMixin, GasBookTestCase):
     def setUp(self):
         super().setUp()
         self.kandam = StockLocation.objects.create(name="Kandam", code="kandam")
-        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"))
+        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"), refill_rate=Decimal("450"))
         self.set_stock(self.shop, filled=10, empty=0)
         self.set_stock(self.kandam, filled=10, empty=0)
         self.set_stock(self.shop, filled=10, cylinder=self.small)
@@ -123,6 +123,8 @@ class SaleValidationTests(SaleTestMixin, GasBookTestCase):
                 self.assert_rejected(self.payload(sale_items=items), field="sale_items")
 
     def test_total_that_cannot_be_stored_is_refused(self):
+        self.cylinder.refill_rate = Decimal("99999999")
+        self.cylinder.save(update_fields=["refill_rate"])
         self.assert_rejected(self.payload(sale_items=[self.line(quantity=2_000_000, rate="99999999")]), "amount_too_large")
 
     # ---- stock ---------------------------------------------------------------
@@ -139,9 +141,12 @@ class SaleValidationTests(SaleTestMixin, GasBookTestCase):
         self.assertEqual((self.stock_qty(self.shop, Stock.Status.FILLED), self.stock_qty(self.shop, Stock.Status.EMPTY)), (1, 2))
 
     def test_same_type_at_different_rates_is_checked_together(self):
+        self.cylinder.refill_rate = Decimal("800")
+        self.cylinder.deposit_amount = Decimal("100")
+        self.cylinder.save(update_fields=["refill_rate", "deposit_amount"])
         self.set_stock(self.shop, filled=5)
-        self.assert_rejected(self.payload(sale_items=[self.line(3, "900"), self.line(3, "800")]), "insufficient_stock")
-        response = self.post(self.payload(sale_items=[self.line(3, "900"), self.line(2, "800")]))
+        self.assert_rejected(self.payload(sale_items=[{**self.line(3, "900"), "rate_type": "new"}, self.line(3, "800")]), "insufficient_stock")
+        response = self.post(self.payload(sale_items=[{**self.line(3, "900"), "rate_type": "new"}, self.line(2, "800")]))
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(sorted(SaleItem.objects.values_list("rate", "quantity")), [(Decimal("800.00"), 2), (Decimal("900.00"), 3)])
         self.assertEqual(self.stock_qty(self.shop, Stock.Status.FILLED), 0)
@@ -247,11 +252,15 @@ class SaleValidationTests(SaleTestMixin, GasBookTestCase):
         server deliberately does not round."""
         self.set_stock(self.shop, filled=30)
         for rate, quantity, paid in (("899.99", 3, "2699.97"), ("450.10", 3, "1350.30"), ("1234.56", 9, "11111.04")):
+            self.cylinder.refill_rate = Decimal(rate)
+            self.cylinder.save(update_fields=["refill_rate"])
             with self.subTest(rate=rate, quantity=quantity):
                 response = self.post(self.payload(paid_amount=paid, sale_items=[self.line(quantity, rate)]))
                 self.assertEqual(response.status_code, 201, response.data)
                 self.assertEqual((response.data["total_amount"], response.data["paid_amount"], response.data["balance_due"]),
                                  (paid, paid, "0.00"))
+        self.cylinder.refill_rate = Decimal("450.10")
+        self.cylinder.save(update_fields=["refill_rate"])
         split = self.post(self.payload(payment_mode="split", paid_amount="1350.30", sale_items=[self.line(3, "450.10")],
                                        split_payments=[{"mode": "cash", "amount": "1000.10"}, {"mode": "gpay", "amount": "350.20"}]))
         self.assertEqual((split.status_code, split.data["balance_due"]), (201, "0.00"), split.data)
@@ -311,7 +320,7 @@ class InactiveCylinderTypeTests(SaleTestMixin, GasBookTestCase):
 
     def setUp(self):
         super().setUp()
-        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"))
+        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"), refill_rate=Decimal("450"))
         self.set_stock(self.shop, filled=10)
         self.set_stock(self.shop, filled=5, cylinder=self.small)
         self.auth(self.admin)
@@ -379,8 +388,8 @@ class SaleConcurrencyTests(TransactionTestCase):
             for i in range(2)
         ]
         self.shop = StockLocation.objects.create(name="Shop", code="shop")
-        self.big = CylinderType.objects.create(name="14kg", weight=Decimal("14.2"), selling_price=Decimal("900"))
-        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"))
+        self.big = CylinderType.objects.create(name="14kg", weight=Decimal("14.2"), selling_price=Decimal("900"), refill_rate=Decimal("100"))
+        self.small = CylinderType.objects.create(name="5kg", weight=Decimal("5"), selling_price=Decimal("450"), refill_rate=Decimal("100"))
 
     def sale(self, customer, *lines):
         return (self.admin, "/api/sales/", {

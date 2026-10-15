@@ -1,3 +1,4 @@
+import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
 import { StaffHistory } from '../../components/StaffHistory';
 import { useState, useEffect, type ReactNode } from 'react';
@@ -41,7 +42,7 @@ import { SectionHeader } from '../../components/ui/SectionHeader';
 import { Tabs } from '../../components/ui/Tabs';
 import { cx } from '../../components/ui/cx';
 
-type Delivery = {
+type Delivery = PricingSnapshot & {
   id: number;
   booking: number;
   order_id?: string;
@@ -138,6 +139,7 @@ function AmountToCollect({
   const isDiscounted = showOriginal && discountAmount(delivery) > 0;
   return (
     <div className="sa-amount">
+      <PricingBreakdown value={delivery} />
       {isDiscounted && (
         <div className="sa-amount__original">
           {money(originalAmount(delivery))}

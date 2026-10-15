@@ -46,7 +46,7 @@ class GasBookTestCase(APITestCase):
         self.customer = CustomerProfile.objects.create(user=self.customer_user)
 
         self.cylinder = CylinderType.objects.create(
-            name="14kg Domestic", weight=Decimal("14.20"), selling_price=Decimal("900.00")
+            name="14kg Domestic", weight=Decimal("14.20"), selling_price=Decimal("900.00"), refill_rate=Decimal("900.00")
         )
         self.shop = StockLocation.objects.create(name="Shop", code="shop")
 
