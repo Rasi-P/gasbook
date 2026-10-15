@@ -87,6 +87,13 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Asia/Kolkata"
+# Optional receipt details. Blank values are omitted; never invent business contact/tax data.
+RECEIPT_BUSINESS_DETAILS = {
+    "address": os.environ.get("RECEIPT_BUSINESS_ADDRESS", ""),
+    "phone": os.environ.get("RECEIPT_BUSINESS_PHONE", ""),
+    "email": os.environ.get("RECEIPT_BUSINESS_EMAIL", ""),
+    "tax_id": os.environ.get("RECEIPT_BUSINESS_TAX_ID", ""),
+}
 USE_I18N = True
 USE_TZ = True
 

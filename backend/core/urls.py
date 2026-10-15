@@ -1,5 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
+from .receipts import customer_receipt
 
 from .views import (
     ActivityLogViewSet,
@@ -50,6 +51,7 @@ router.register("expenses", ExpenseViewSet)
 router.register("activity", ActivityLogViewSet)
 
 urlpatterns = [
+    path("receipts/<str:source>/<int:pk>/", customer_receipt, name="customer-receipt"),
     path("auth/me/", me, name="auth-me"),
     path("auth/change-password/", change_password, name="auth-change-password"),
     path("auth/register/", register),
