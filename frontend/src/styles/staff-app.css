@@ -1044,6 +1044,11 @@
 .sa-history-card__details > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
 .sa-history-card__details[open] > summary svg { transform: rotate(180deg); }
 .sa-history-card__breakdown { padding-block: var(--space-2); overflow-wrap: anywhere; }
-.sa-history-card__item + .sa-history-card__item { border-top: 1px solid var(--border); margin-top: var(--space-3); padding-top: var(--space-3); }
-.sa-history-card__item-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-2); }
-.sa-history-card__item-heading strong { white-space: nowrap; }
+/* Keep names flexible and saved line totals aligned, including long accessory names. */
+.sa-history-card__breakdown .bk-detail-item-row > div { min-width: 0; }
+.sa-history-card__breakdown .bk-detail-item-row { align-items: start; }
+.sa-history-card__breakdown .bk-detail-item { font-size: var(--text-sm); }
+.sa-history-card__breakdown .bk-detail-breakdown > summary {
+  padding-block: var(--space-2);
+  min-height: 40px;
+}

@@ -18,7 +18,7 @@ export type StaffDirectSale = {
   status: 'completed' | 'cancelled';
   created_at: string;
   cancelled_at: string | null;
-  items: (PricingSnapshot & { id: number; cylinder_type_name: string; quantity: number; total_amount: string })[];
+  items: (PricingSnapshot & { id: number; cylinder_type_name: string; quantity: number; rate?: string | number; total_amount: string })[];
 };
 
 export type StaffHistoryEntry<T> = {
@@ -63,10 +63,20 @@ export function StaffDirectSaleCard({ sale }: { sale: StaffDirectSale }) {
     summary={items.map(item => `${item.cylinder_type_name} (${item.quantity} qty)`).join(' · ')}
     amountLabel={sale.status === 'cancelled' ? 'Original sale amount' : 'Sale amount'}
     amount={`₹${Number(sale.total_amount).toLocaleString('en-IN')}`}
-    details={items.map(item => <section key={item.id} className="sa-history-card__item">
-      <div className="sa-history-card__item-heading"><span>{item.cylinder_type_name} ({item.quantity} qty)</span><strong>₹{Number(item.total_amount).toLocaleString('en-IN')}</strong></div>
-      <PricingBreakdown value={item} />
-    </section>)}
+    details={<div className="bk-detail-items">{items.map(item => <article key={item.id} className="bk-detail-item">
+      <div className="bk-detail-item-row">
+        <div>
+          <strong>{item.cylinder_type_name}</strong>
+          <span className="bk-detail-muted">{item.rate_type === 'new' ? 'New cylinder' : item.rate_type === 'refill' ? 'Refill' : 'Cylinder'}</span>
+          <span className="bk-detail-muted">Qty {item.quantity}{item.rate != null && ` × ₹${Number(item.rate).toLocaleString('en-IN')} each`}</span>
+        </div>
+        <strong className="bk-detail-item-amount">₹{Number(item.total_amount).toLocaleString('en-IN')}</strong>
+      </div>
+      {item.rate_type && item.deposit_unit_amount != null && item.refill_unit_amount != null && <details className="bk-detail-breakdown">
+        <summary>{item.rate_type === 'new' ? 'Deposit & refill breakdown' : 'Refill breakdown'}</summary>
+        <PricingBreakdown value={item} />
+      </details>}
+    </article>)}</div>}
   />;
 }
 

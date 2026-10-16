@@ -47,17 +47,25 @@ try {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `page overflow at ${width}`);
     const heights = await cards.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
     assert.ok(Math.max(...heights) - Math.min(...heights) < 2, `card heights at ${width}: ${heights}`);
-    const summary = first.locator('summary');
+    const summary = first.locator('.sa-history-card__details > summary');
     await summary.focus();
     await page.keyboard.press('Enter');
-    await expect(first.getByText('New Cylinder', { exact: true })).toBeVisible();
+    await expect(first.locator('.bk-detail-item')).toHaveCount(2);
+    await expect(first.locator('.bk-detail-item-amount')).toHaveText(['₹624', '₹1,500']);
+    await expect(first.getByText('₹36 discount applied', { exact: true })).toBeVisible();
+    await expect(first.locator('.pricing-components')).not.toBeVisible();
+    const breakdown = first.getByText('Deposit & refill breakdown', { exact: true });
+    await breakdown.click();
+    await expect(first.locator('.pricing-components')).toBeVisible();
     await expect(first.locator('.sa-history-card__breakdown')).toContainText('Refill discount: −₹36.00');
     await expect(first.locator('.sa-history-card__breakdown')).toContainText('₹1,500');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await breakdown.click();
     await summary.focus();
     await page.keyboard.press('Enter');
-    await expect(first.getByText('New Cylinder', { exact: true })).not.toBeVisible();
+    await expect(first.locator('.pricing-components')).not.toBeVisible();
   }
+  await first.locator('.sa-history-card__details > summary').click();
   await page.screenshot({ path: '/private/tmp/gasbook-staff-history-layout.png', fullPage: true });
   assert.deepEqual(errors, []);
   console.log('PASS: mixed and legacy bookings, Direct Sales, cancellation, saved totals/IST timestamps, collapsed pricing, keyboard expand/collapse, equal card heights and no overflow at seven widths. APIs mocked.');

@@ -1,3 +1,4 @@
+import { BookingDetailItems } from '../../components/BookingDetailItems';
 import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
@@ -1007,10 +1008,11 @@ export default function StaffMobileLayout() {
                 : `${d.cylinder_type_name} (${d.quantity} qty)`}
               amountLabel="Order total"
               amount={money(finalAmount(d))}
-              details={d.order_items?.length ? <BookingItems items={d.order_items} /> : <>
-                <div className="sa-history-card__item-heading"><span>{d.cylinder_type_name} ({d.quantity} qty)</span><strong>{money(finalAmount(d))}</strong></div>
-                <PricingBreakdown value={d} />
-              </>}
+              details={<BookingDetailItems items={d.order_items?.length ? d.order_items : [{
+                id: d.id, name: d.cylinder_type_name, type: 'cylinder', quantity: d.quantity,
+                rate: d.rate, total_amount: String(finalAmount(d)), rate_type: d.rate_type,
+                deposit_unit_amount: d.deposit_unit_amount, refill_unit_amount: d.refill_unit_amount,
+              }]} />}
             />
           )} />
         )}
