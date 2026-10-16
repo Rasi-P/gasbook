@@ -40,6 +40,7 @@ type HistorySale = {
   is_direct: boolean;
   void: SaleVoidInfo | null;
   note?: string;
+  accessory_items?: import('../components/BookingItems').BookingItem[];
   items: { cylinder_type_name: string; quantity: number; rate: number; empty_returned: number }[];
   total_amount: number;
   paid_amount: number;
@@ -932,7 +933,7 @@ export default function Sales() {
                     return (
                     <tr key={sale.id}>
                       <Td label="Customer"><strong className="sh-customer">{sale.customer_name}</strong></Td>
-                      <Td label="Items"><SaleItemsCell customerName={sale.customer_name} items={sale.items} /></Td>
+                      <Td label="Items"><SaleItemsCell customerName={sale.customer_name} items={sale.items} accessoryItems={sale.accessory_items} /></Td>
                       <Td label="Total" numeric>
                         {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
                       </Td>

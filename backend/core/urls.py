@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 from .receipts import customer_receipt
+from .products import ProductViewSet
 
 from .views import (
     ActivityLogViewSet,
@@ -34,6 +35,7 @@ from .views import (
 )
 
 router = DefaultRouter()
+router.register("products", ProductViewSet)
 router.register("cylinder-types", CylinderTypeViewSet)
 router.register("locations", StockLocationViewSet)
 router.register("stock", StockViewSet)

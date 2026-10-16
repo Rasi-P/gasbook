@@ -852,6 +852,9 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(NotificationSerializer(notification).data)
 
 
+from . import booking_items
+
+
 class BookingViewSet(
     mixins.CreateModelMixin,
     mixins.ListModelMixin,
@@ -922,7 +925,7 @@ class BookingViewSet(
                 "cylinder_type_id": row.get("cylinder_type"),
                 "can_track": True,
                 "can_order_again": True,
-                "item_count": 1,
+                "item_count": len(row.get("order_items", [])) or 1,
                 "detail_message": None,
             })
 
@@ -966,7 +969,14 @@ class BookingViewSet(
         return Response(history_entries)
 
     @action(detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated])
+    def checkout(self, request):
+        booking, created = booking_items.checkout(request)
+        return Response(BookingSerializer(booking, context={"request": request}).data, status=201 if created else 200)
+
+    @action(detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated])
     def preview(self, request):
+        if isinstance(request.data.get('items'), list) and any(isinstance(i, dict) and 'product' in i for i in request.data['items']):
+            return Response(booking_items.preview(request))
         if getattr(getattr(request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can preview booking totals.")
 
@@ -1162,6 +1172,7 @@ class BookingViewSet(
 
         reason = clean_reason(request.data.get("reason"), Booking._meta.get_field("rejection_reason").max_length)
 
+        booking_items.release(booking, request.user)
         booking.status = Booking.Status.REJECTED
         booking.rejection_reason = reason
         booking.rejected_by = request.user
@@ -1498,25 +1509,40 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
         if location is None:
             raise ApiError("No stock location configured.", code="no_location")
 
-        # --- stock: lock FILLED then EMPTY, refuse before any write if short ---
-        filled = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
-        if filled.quantity < booking.quantity:
-            raise ApiError(
-                f"Not enough filled {booking.cylinder_type.name} stock at {location.name} "
-                f"({filled.quantity} available, {booking.quantity} needed). Load stock before completing.",
-                code="insufficient_stock",
-                location=location.code,
-                location_name=location.name,
-                available=filled.quantity,
-                required=booking.quantity,
-            )
-        filled.quantity -= booking.quantity
-        filled.save(update_fields=["quantity", "updated_at"])
-        empty = None
-        if empty_collected > 0:
-            empty = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
-            empty.quantity += empty_collected
-            empty.save(update_fields=["quantity", "updated_at"])
+        mixed_lines = booking_items.cylinder_lines(booking)
+        empties = {booking.cylinder_type_id: empty_collected}
+        if mixed_lines and len({i.cylinder_type_id for i in mixed_lines}) > 1:
+            raw = data.get('empty_collected_by_type')
+            if not isinstance(raw, dict):
+                raise ApiError('Enter empty returns separately for each cylinder type.', code='invalid', field='empty_collected_by_type')
+            allowed = {str(i.cylinder_type_id) for i in mixed_lines}
+            if set(raw) != allowed:
+                raise ApiError('Specify empty returns for every ordered cylinder type.', code='invalid')
+            empties = {int(k): parse_non_negative_int(v, 'empty_collected_by_type', 'Empty returns') for k,v in raw.items()}
+            empty_collected = sum(empties.values())
+        if mixed_lines:
+            filled, empty = booking_items.deduct_cylinders(booking, location, empties)
+            booking_items.consume(booking, request.user)
+        else:
+            # --- stock: lock FILLED then EMPTY, refuse before any write if short ---
+            filled = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
+            if filled.quantity < booking.quantity:
+                raise ApiError(
+                    f"Not enough filled {booking.cylinder_type.name} stock at {location.name} "
+                    f"({filled.quantity} available, {booking.quantity} needed). Load stock before completing.",
+                    code="insufficient_stock",
+                    location=location.code,
+                    location_name=location.name,
+                    available=filled.quantity,
+                    required=booking.quantity,
+                )
+            filled.quantity -= booking.quantity
+            filled.save(update_fields=["quantity", "updated_at"])
+            empty = None
+            if empty_collected > 0:
+                empty = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
+                empty.quantity += empty_collected
+                empty.save(update_fields=["quantity", "updated_at"])
 
         if parsed_splits:
             sale_payment_mode = Sale.PaymentMode.SPLIT
@@ -1540,15 +1566,18 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
             sold_by=request.user,
             note=f"Booking #{booking.order_id}",
         )
-        SaleItem.objects.create(
-            sale=sale,
-            cylinder_type=booking.cylinder_type,
-            quantity=booking.quantity,
-            rate=pricing["effective_rate"],
-            total_amount=total,
-            empty_returned=empty_collected,
-            **snapshot(booking),
-        )
+        if mixed_lines:
+            booking_items.sale_cylinders(booking, sale, dict(empties))
+        else:
+            SaleItem.objects.create(
+                sale=sale,
+                cylinder_type=booking.cylinder_type,
+                quantity=booking.quantity,
+                rate=pricing["effective_rate"],
+                total_amount=total,
+                empty_returned=empty_collected,
+                **snapshot(booking),
+            )
         if payment_collected > 0:
             if parsed_splits:
                 for index, (amt, mode) in enumerate(parsed_splits):

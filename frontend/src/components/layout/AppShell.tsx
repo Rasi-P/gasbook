@@ -18,6 +18,7 @@ const STAFF_NAV: NavEntry[] = [
 const ADMIN_NAV: NavEntry[] = [
   { to: '/admin-dashboard', label: 'Home', Icon: Home },
   { to: '/bookings', label: 'Bookings', Icon: CalendarDays },
+  { to: '/products', label: 'Products & Inventory', Icon: Package },
   { to: '/stock', label: 'Stock', Icon: Package },
   { to: '/sales', label: 'Sales', Icon: ShoppingCart },
   { to: '/customers', label: 'Customers', Icon: Users },

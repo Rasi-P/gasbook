@@ -27,6 +27,7 @@ type Sale = {
   id: number; created_at: string; customer_name: string; sold_by_name: string;
   sold_by_full_name: string; handover_staff_name: string | null; void?: SaleVoidInfo | null;
   total_amount: number; paid_amount: number; balance_due: number;
+  accessory_items?: import('../../components/BookingItems').BookingItem[];
   payment_mode: string; location_name: string; items: SaleItem[];
   payments?: { amount: number; mode: string; date: string }[];
 };
@@ -419,7 +420,7 @@ export default function Reports() {
                       return (
                       <tr key={sale.id}>
                         <Td label="Customer"><strong className="sh-customer">{sale.customer_name || 'Walk-in'}</strong></Td>
-                        <Td label="Items"><SaleItemsCell customerName={sale.customer_name} items={sale.items} /></Td>
+                        <Td label="Items"><SaleItemsCell customerName={sale.customer_name} items={sale.items} accessoryItems={sale.accessory_items} /></Td>
                         <Td label="Total" numeric>
                           {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
                         </Td>

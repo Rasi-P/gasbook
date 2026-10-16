@@ -42,6 +42,7 @@ services:
       - ./backend:/app
     environment:
       DEBUG: "True"
+      ACCESSORIES_ENABLED: "True"
       SECRET_KEY: dev-only-secret
       DATABASE_URL: postgres://gasbook:gasbook123@db:5432/gasbook
       REDIS_URL: redis://redis:6379/0
@@ -56,9 +57,7 @@ services:
       redis:
         condition: service_healthy
     command: >
-      sh -c "python manage.py migrate --noinput &&
-             python manage.py seed_demo &&
-             python manage.py runserver 0.0.0.0:8000"
+      sh -c "python manage.py runserver 0.0.0.0:8000"
 
   frontend:
     image: node:20-alpine

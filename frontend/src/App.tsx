@@ -11,6 +11,7 @@ import Staff from './pages/admin/Staff';
 import StaffDashboard from './pages/staff/StaffDashboard';
 import ChangePassword from './pages/ChangePassword';
 import AdminBookings from './pages/admin/AdminBookings';
+import ProductInventory from './pages/admin/ProductInventory';
 import { getRoleHome, isAuthenticated, logout, api, extractApiError, FORCE_PASSWORD_CHANGE_KEY } from './lib/api';
 import { ErrorState, LoadingState } from './components/AsyncState';
 import { AppShell } from './components/layout/AppShell';
@@ -131,6 +132,7 @@ export default function App() {
           <Route path="/bookings" element={
             <RoleGuard allowed={['admin']} role={role}><AdminBookings /></RoleGuard>
           } />
+          <Route path="/products" element={<RoleGuard allowed={['admin']} role={role}><ProductInventory /></RoleGuard>} />
           <Route path="/stock" element={
             <RoleGuard allowed={['admin']} role={role}><Stock /></RoleGuard>
           } />

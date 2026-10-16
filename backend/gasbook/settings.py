@@ -130,3 +130,6 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "ROTATE_REFRESH_TOKENS": True,
 }
+
+# Enable only after the minimal inventory migration has been reviewed/applied.
+ACCESSORIES_ENABLED = os.environ.get('ACCESSORIES_ENABLED', 'False') == 'True'

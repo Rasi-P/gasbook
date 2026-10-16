@@ -1,3 +1,4 @@
+import { BookingItems, type BookingItem } from './BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from './PricingBreakdown';
 import { AlertTriangle, RotateCcw } from 'lucide-react';
 import { Badge } from './ui/Badge';
@@ -17,9 +18,10 @@ function money(v: number | string) {
  * Item lines of a sale (shared by Sales history and Reports → Sales). The conditions that flag
  * missing empties are the same as before; only the markers changed from emoji spans to badges.
  */
-export function SaleItemsCell({ customerName, items }: { customerName: string; items: SaleItemLike[] }) {
+export function SaleItemsCell({ customerName, items, accessoryItems }: { customerName: string; items: SaleItemLike[]; accessoryItems?: BookingItem[] }) {
   return (
     <div className="sale-items">
+      <BookingItems items={accessoryItems} />
       {items.map((item, i) => {
         const returned = item.empty_returned ?? 0;
         const short = !customerName && item.quantity > 0 && returned < item.quantity;

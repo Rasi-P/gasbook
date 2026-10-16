@@ -246,7 +246,7 @@ class OrderedRefundAndPaymentTests(_OrderedBase):
 
     def setUp(self):
         super().setUp()
-        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"), refill_rate=D("450"))
+        small = CylinderType.objects.create(name="5kg", weight=D("5"), selling_price=D("450"), refill_rate=D("500"))
         Stock.objects.create(cylinder_type=small, location=self.shop, status=Stock.Status.FILLED, quantity=10)
         self.voided = self.sell(payment_mode="split", paid_amount="900",
                                 split_payments=[{"mode": "cash", "amount": "500"}, {"mode": "gpay", "amount": "400"}])

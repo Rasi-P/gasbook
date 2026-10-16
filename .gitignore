@@ -35,3 +35,6 @@ frontend/dist/
 # Databases
 *.sqlite3
 
+
+# Uploaded accessory images are runtime media; demo sources live in core/demo_products.
+/backend/media/product-images/

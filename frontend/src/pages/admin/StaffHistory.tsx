@@ -1,3 +1,4 @@
+import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
 import { useEffect, useMemo, useState } from 'react';
@@ -42,6 +43,7 @@ type StaffInfo = HistoryStaff & {
 
 /** Booking facts shared by both kinds of row of GET /auth/users/{id}/deliveries/. */
 type BookingFields = PricingSnapshot & {
+  order_items?: BookingItem[];
   booking: number;
   order_id: string;
   booking_status: string;
@@ -192,7 +194,7 @@ function HandoverRow({ row }: { row: PreviousRow }) {
       <Td label="Cylinder">{row.quantity} × {row.cylinder_type_name}</Td>
       <Td label="Amount" numeric>
         <strong>{money(row.final_amount)}</strong>
-        <PricingBreakdown value={row} />
+        {row.order_items?.length ? <BookingItems items={row.order_items} /> : <PricingBreakdown value={row} />}
         {Number(row.discount_amount) > 0 && <span className="ui-cell-sub"><s>{money(row.original_amount)}</s></span>}
       </Td>
       <Td label="Payment">—</Td>
@@ -485,7 +487,7 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
                       </Td>
                       <Td label="Amount" numeric>
                         <strong>{money(row.final_amount)}</strong>
-        <PricingBreakdown value={row} />
+        {row.order_items?.length ? <BookingItems items={row.order_items} /> : <PricingBreakdown value={row} />}
                         {discounted && <span className="ui-cell-sub"><s>{money(row.original_amount)}</s></span>}
                       </Td>
                       <Td label="Payment">

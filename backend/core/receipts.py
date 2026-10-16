@@ -62,6 +62,16 @@ def normalize_receipt(record, source):
         items = [component_line(item, item.total_amount, legacy_rate=item.rate)
                  for item in sale.items.all() if item.quantity > 0 or item.total_amount > 0]
 
+    if booking:
+        from .booking_items import saved_items
+        mixed = saved_items(booking)
+        if mixed:
+            items = [dict(description=i.name, quantity=i.quantity, rate_type=i.rate_type,
+                          unit_amount=serialize_decimal(i.rate), unit_label='Unit price',
+                          deposit_unit_amount=serialize_decimal(i.deposit_unit_amount) if i.deposit_unit_amount is not None else None,
+                          refill_unit_amount=serialize_decimal(i.refill_unit_amount) if i.refill_unit_amount is not None else None,
+                          total_amount=serialize_decimal(i.total_amount)) for i in mixed]
+
     paid = sale.paid_amount if sale else None
     balance = sale.balance_due if sale else None
     payment_status = 'Paid' if sale and balance <= 0 else 'Partially paid' if sale and paid > 0 else 'Unpaid'

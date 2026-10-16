@@ -8,7 +8,7 @@ import uuid
 from decimal import Decimal
 
 from django.core.management import call_command
-from django.db import connection
+from django.db import connection, transaction
 from django.db.migrations.exceptions import IrreversibleError
 from django.db.migrations.recorder import MigrationRecorder
 from django.test import TransactionTestCase
@@ -30,7 +30,7 @@ class Migration0012RollbackGuardTests(TransactionTestCase):
         self.admin = User.objects.create_user(username="m-admin", password="x", role=admin_role)
         self.customer = CustomerProfile.objects.create(user=User.objects.create_user(username="m-cust", password="x", role=customer_role))
         self.shop = StockLocation.objects.create(name="Shop", code="shop")
-        self.cylinder = CylinderType.objects.create(name="14kg", weight=D("14.2"), selling_price=D("900"))
+        self.cylinder = CylinderType.objects.create(name="14kg", weight=D("14.2"), selling_price=D("900"), refill_rate=D("900"))
         Stock.objects.create(cylinder_type=self.cylinder, location=self.shop, status=Stock.Status.FILLED, quantity=5)
         self.client = APIClient()
         self.client.force_authenticate(self.admin)
@@ -87,7 +87,7 @@ class Migration0012RollbackGuardTests(TransactionTestCase):
         self.assertEqual(response.status_code, 200, response.data)
         before = integrity.fingerprint()
         schema_before = self.schema()
-        with self.assertRaises(IrreversibleError) as caught:
+        with self.assertRaises(IrreversibleError) as caught, transaction.atomic():
             call_command("migrate", "core", "0011", verbosity=0)
         self.assertEqual(self.schema(), schema_before)  # same columns, constraints and migration record (id, time)
         self.assertEqual(len(schema_before[2]), 1)
@@ -104,7 +104,7 @@ class Migration0012RollbackGuardTests(TransactionTestCase):
     def test_negative_payments_alone_also_block_the_rollback(self):
         Payment.objects.create(customer=self.customer, sale=Sale.objects.get(pk=self.sale_id), amount=D("-1"), payment_mode="cash",
                                received_by=self.admin)
-        with self.assertRaises(IrreversibleError) as caught:
+        with self.assertRaises(IrreversibleError) as caught, transaction.atomic():
             call_command("migrate", "core", "0011", verbosity=0)
         self.assertIn("1 negative payments", str(caught.exception))
         self.assertEqual((self.tables(), self.applied()), (NEW_TABLES, True))

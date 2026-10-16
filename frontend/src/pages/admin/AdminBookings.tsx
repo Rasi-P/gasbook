@@ -1,3 +1,4 @@
+import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { BookingTimes } from '../../components/BookingTimes';
 import { useCallback, useEffect, useState } from 'react';
@@ -26,6 +27,7 @@ type Booking = PricingSnapshot & {
   customer_address: string;
   customer_area: string;
   cylinder_type_name: string;
+  order_items?: BookingItem[];
   quantity: number;
   status: string;
   rate: string;
@@ -217,8 +219,8 @@ export default function AdminBookings() {
                   <Td label="Cylinder">
                     <strong>{booking.quantity} x {booking.cylinder_type_name}</strong>
                     <BookingTimes booking={booking} />
-                    <PricingBreakdown value={booking} />
-                    <span className="ui-cell-sub">{money(booking.rate)} each</span>
+                    {booking.order_items?.length ? <BookingItems items={booking.order_items} /> : <PricingBreakdown value={booking} />}
+                    <span className="ui-cell-sub">{booking.order_items?.length ? `Total: ${money(finalAmount(booking))}` : `${money(booking.rate)} each`}</span>
                     {discountAmount(booking) > 0 && (
                       <span className="bk-price">
                         <s>{money(originalAmount(booking))}</s>

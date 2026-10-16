@@ -1,3 +1,4 @@
+import { BookingItems, type BookingItem } from '../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../components/PricingBreakdown';
 import { BookingTimes } from '../components/BookingTimes';
 import { formatDateTime } from '../lib/dateTime';
@@ -71,6 +72,7 @@ type SaleItem = PricingSnapshot & {
 };
 
 type Sale = {
+  accessory_items?: BookingItem[];
   id: number;
   created_at: string;
   original_amount?: number | string;
@@ -111,6 +113,7 @@ type Ledger = {
 };
 
 type Booking = PricingSnapshot & {
+  order_items?: BookingItem[];
   id: number;
   customer: number;
   customer_name: string;
@@ -1354,7 +1357,7 @@ export default function Customers() {
                         <s className="cd-strike">{money(getBookingOriginalAmount(booking))}</s>
                       )}
                       <strong>{money(getBookingFinalAmount(booking))}</strong>
-                      <PricingBreakdown value={booking} />
+                      {booking.order_items?.length ? <BookingItems items={booking.order_items} /> : <PricingBreakdown value={booking} />}
                       {getBookingDiscountAmount(booking) > 0 && (
                         <span className="cd-discount">Discount {money(getBookingDiscountAmount(booking))}</span>
                       )}
@@ -1462,6 +1465,7 @@ export default function Customers() {
                     </div>
                   </div>
                   <div className="cd-entry__items">
+                    <BookingItems items={s.accessory_items} />
                     {regularItems.map((item, i) => (
                       <div key={`reg-${i}`} className="cd-item">
                         <span>
@@ -1779,7 +1783,7 @@ export default function Customers() {
                     <div className="req-card__head">
                       <div className="req-card__info">
                         <strong>Booking #{booking.id}</strong>
-                        <PricingBreakdown value={booking} />
+                        {booking.order_items?.length ? <BookingItems items={booking.order_items} /> : <PricingBreakdown value={booking} />}
                         <span className="ui-cell-sub">
                           {booking.quantity} x {booking.cylinder_type_name} · {money(booking.rate)} each
                         </span>

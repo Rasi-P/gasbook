@@ -549,3 +549,6 @@ class Notification(TimeStampedModel):
 
     class Meta:
         ordering = ["-created_at"]
+
+# Kept separate to keep accessory inventory out of cylinder stock accounting.
+from .product_models import ProductCategory, Product, ProductMovement, BookingItem  # noqa: E402,F401

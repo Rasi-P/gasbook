@@ -249,6 +249,14 @@ def violations():
         row["sale_id"]: row
         for row in SaleItem.objects.order_by().values("sale_id").annotate(total=Sum("total_amount"), lines=Count("id"))
     }
+    # Accessories share the booking Sale total, but never become cylinder SaleItems.
+    from django.db import connection
+    if 'core_bookingitem' in connection.introspection.table_names():
+        from .models import BookingItem
+        for row in BookingItem.objects.filter(product__isnull=False, booking__sale__isnull=False).values('booking__sale_id').annotate(total=Sum('total_amount'), lines=Count('id')):
+            item = item_sums.setdefault(row['booking__sale_id'], {'total': Decimal('0'), 'lines': 0})
+            item['total'] += row['total']
+            item['lines'] += row['lines']
     payments = {
         row[0]: {"customer_id": row[1], "sale_id": row[2], "amount": row[3], "mode": row[4]}
         for row in Payment.objects.order_by("id").values_list("id", "customer_id", "sale_id", "amount", "payment_mode")

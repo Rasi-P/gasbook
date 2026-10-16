@@ -1,3 +1,4 @@
+import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
 import { StaffHistory } from '../../components/StaffHistory';
@@ -52,6 +53,7 @@ type Delivery = PricingSnapshot & {
   customer_address: string;
   customer_area: string;
   cylinder_type_name: string;
+  order_items?: BookingItem[];
   quantity: number;
   rate: string;
   original_amount?: string;
@@ -139,7 +141,7 @@ function AmountToCollect({
   const isDiscounted = showOriginal && discountAmount(delivery) > 0;
   return (
     <div className="sa-amount">
-      <PricingBreakdown value={delivery} />
+      {!delivery.order_items?.length && <PricingBreakdown value={delivery} />}
       {isDiscounted && (
         <div className="sa-amount__original">
           {money(originalAmount(delivery))}
@@ -239,6 +241,7 @@ export default function StaffMobileLayout() {
   const [loadError, setLoadError] = useState('');
   const [notifError, setNotifError] = useState('');
 
+  const [mixedEmpties, setMixedEmpties] = useState<Record<number, Record<number, number>>>({});
   const [collections, setCollections] = useState<
     Record<
       number,
@@ -404,9 +407,13 @@ export default function StaffMobileLayout() {
       return;
     }
 
+    const order = deliveries.find(d => d.id === id);
+    const cylinderItems = order?.order_items?.filter(i => i.type === 'cylinder') || [];
+    const emptyByType = Object.fromEntries(cylinderItems.map(i => [String(i.cylinder_type), mixedEmpties[id]?.[i.cylinder_type!] ?? (new Set(cylinderItems.map(line => line.cylinder_type)).size === 1 ? Number(form.empty || 0) : 0)]));
     const payload = {
+      ...(Object.keys(emptyByType).length > 1 ? { empty_collected_by_type: emptyByType } : {}),
       payment_method: isCod ? form.method : 'gpay',
-      empty_collected: Number(form.empty || 0),
+      empty_collected: cylinderItems.length ? Object.values(emptyByType).reduce((sum, value) => sum + value, 0) : Number(form.empty || 0),
       payment_collected: String(totalAmount)
     };
 
@@ -605,7 +612,10 @@ export default function StaffMobileLayout() {
 
     if (order.status === 'out_for_delivery') {
       const online = isPaidOnline(order);
-      return (
+      const cylinderItems = order.order_items?.filter(i => i.type === 'cylinder') || [];
+      const byType = [...new Map(cylinderItems.map(i => [i.cylinder_type, i])).values()];
+      return (<>
+        {byType.length > 0 && <div style={{ display: 'grid', gap: 8, padding: 12 }}>{byType.map(item => <label key={item.cylinder_type}>Empty {item.name} returned<input aria-label={`Empty ${item.name} returned`} type="number" min="0" value={mixedEmpties[order.id]?.[item.cylinder_type!] ?? (byType.length === 1 ? Number(collections[order.id]?.empty || 0) : 0)} onChange={e => setMixedEmpties(prev => ({ ...prev, [order.id]: { ...prev[order.id], [item.cylinder_type!]: Number(e.target.value) } }))} /></label>)}</div>}
         <Button
           type="button"
           size="lg"
@@ -616,7 +626,7 @@ export default function StaffMobileLayout() {
           loading={isBusy}
         >
           {isBusy ? 'Completing…' : 'Complete Delivery'}
-        </Button>
+        </Button></>
       );
     }
 
@@ -647,6 +657,7 @@ export default function StaffMobileLayout() {
           ) : null}
         </div>
 
+        <BookingItems items={order.order_items} />
         <div className="sa-block">
           <div className="sa-block__eyebrow">CUSTOMER &amp; ADDRESS</div>
           <div className="sa-block__name">{order.customer_name}</div>
@@ -725,6 +736,7 @@ export default function StaffMobileLayout() {
           </span>
         </button>
 
+        <BookingItems items={order.order_items} />
         <div className="sa-amount-row sa-amount-row--footer">
           <span className="sa-amount-row__label">{delivered ? 'Amount Collected:' : 'Amount to Collect:'}</span>
           <AmountToCollect delivery={order} showOriginal={!delivered} />
@@ -993,7 +1005,8 @@ export default function StaffMobileLayout() {
               <DeliveryTimes delivery={d} />
               <div className="sa-list-card__text">{d.cylinder_type_name} ({d.quantity} qty)</div>
               <div className="sa-muted">{d.customer_name}</div>
-              <div className="sa-amount-row sa-amount-row--footer">
+              <BookingItems items={d.order_items} />
+        <div className="sa-amount-row sa-amount-row--footer">
                 <span className="sa-amount-row__label">Amount Collected:</span>
                 <AmountToCollect delivery={d} showOriginal={false} tone="neutral" />
               </div>

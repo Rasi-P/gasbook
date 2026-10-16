@@ -137,6 +137,8 @@ def get_customer_pricing_snapshot(customer, cylinder_type, quantity, rate_type="
 
 
 def get_booking_pricing_snapshot(booking):
+    from .booking_items import cylinder_lines
+    mixed = cylinder_lines(booking)
     quantity = Decimal(booking.quantity or 0)
     original_rate = (
         quantize_money(Decimal(booking.original_amount) / quantity)
@@ -150,13 +152,13 @@ def get_booking_pricing_snapshot(booking):
     )
     return {
         **snapshot(booking),
-        "rate": original_rate,
+        "rate": mixed[0].rate if mixed else original_rate,
         "quantity": booking.quantity,
         "original_amount": quantize_money(booking.original_amount),
         "discount_amount": quantize_money(booking.discount_amount),
         "final_amount": quantize_money(booking.final_amount),
         "has_discount": booking.discount_amount > 0,
-        "effective_rate": effective_rate,
+        "effective_rate": quantize_money(mixed[0].total_amount / mixed[0].quantity) if mixed else effective_rate,
         "discount_scope": None,
         "applied_discount_type": booking.applied_discount_type,
         "applied_discount_value": quantize_money(booking.applied_discount_value),
@@ -431,6 +433,13 @@ def void_summary(void):
 
 
 class SaleSerializer(serializers.ModelSerializer):
+    accessory_items = serializers.SerializerMethodField()
+
+    def get_accessory_items(self, obj):
+        from .booking_items import item_data
+        booking = getattr(obj, 'booking', None)
+        return [i for i in item_data(booking) if i['type'] == 'accessory'] if booking else []
+
     quoted_total = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False, write_only=True)
     # Exactly one of customer (an existing customer) or new_customer (registered with the sale).
     customer = serializers.PrimaryKeyRelatedField(
@@ -493,7 +502,7 @@ class SaleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = [
-            "id", "customer", "customer_name", "location", "location_name",
+            "accessory_items", "id", "customer", "customer_name", "location", "location_name",
             "original_amount", "discount_amount", "total_amount", "final_amount", "has_discount",
             "applied_discount_type", "applied_discount_value", "paid_amount", "balance_due",
             "payment_mode", "paid_payment_mode", "split_payments", "delivery_type", "delivery_staff", "note",
@@ -999,6 +1008,12 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    order_items = serializers.SerializerMethodField()
+
+    def get_order_items(self, obj):
+        from .booking_items import item_data
+        return item_data(obj)
+
     rate_type = serializers.ChoiceField(choices=["new", "refill"], default="refill")
 
     def validate(self, attrs):
@@ -1153,6 +1168,9 @@ class BookingSerializer(serializers.ModelSerializer):
         cylinder_type = validated_data["cylinder_type"]
         quantity = validated_data["quantity"]
         pricing = get_customer_pricing_snapshot(profile, cylinder_type, quantity, validated_data["rate_type"])
+        if self.context.get('booking_totals'):
+            pricing.update({k: Decimal(v) for k, v in self.context['booking_totals'].items() if k in ('original_amount', 'discount_amount', 'final_amount')})
+            pricing['has_discount'] = pricing['discount_amount'] > 0
 
         booking = Booking.objects.create(
             customer=profile,
@@ -1218,6 +1236,12 @@ class StaffDirectSaleHistorySerializer(serializers.ModelSerializer):
 
 
 class DeliverySerializer(serializers.ModelSerializer):
+    order_items = serializers.SerializerMethodField()
+
+    def get_order_items(self, obj):
+        from .booking_items import item_data
+        return item_data(obj.booking)
+
     rate_type = serializers.CharField(source="booking.rate_type", read_only=True, allow_null=True)
     deposit_unit_amount = serializers.DecimalField(source="booking.deposit_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
     refill_unit_amount = serializers.DecimalField(source="booking.refill_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
@@ -1283,6 +1307,12 @@ class DeliverySerializer(serializers.ModelSerializer):
 
 
 class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
+    order_items = serializers.SerializerMethodField()
+
+    def get_order_items(self, obj):
+        from .booking_items import item_data
+        return item_data(obj.booking)
+
     rate_type = serializers.CharField(source="booking.rate_type", read_only=True, allow_null=True)
     deposit_unit_amount = serializers.DecimalField(source="booking.deposit_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
     refill_unit_amount = serializers.DecimalField(source="booking.refill_unit_amount", max_digits=10, decimal_places=2, read_only=True, allow_null=True)
@@ -1309,7 +1339,7 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Delivery
         fields = [
-            "id", "booking", "order_id", "status", "booking_status", "booked_at",
+            "id", "booking", "order_id", "order_items", "status", "booking_status", "booked_at",
             "started_at", "completed_at", "cancelled_at",
             "customer_name", "customer_phone", "customer_area",
             "cylinder_type_name", "quantity", *SNAPSHOT_FIELDS,
@@ -1351,6 +1381,12 @@ class StaffHandoverBookingSerializer(serializers.ModelSerializer):
     to another staff member, so its timestamps, collection, empties and the resulting
     payment status are theirs and must not appear here."""
 
+    order_items = serializers.SerializerMethodField()
+
+    def get_order_items(self, obj):
+        from .booking_items import item_data
+        return item_data(obj)
+
     booking = serializers.IntegerField(source="pk", read_only=True)
     order_id = serializers.CharField(read_only=True)
     booking_status = serializers.CharField(source="status", read_only=True)
@@ -1367,7 +1403,7 @@ class StaffHandoverBookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = [
-            "booking", "order_id", "booking_status", "booked_at",
+            "booking", "order_id", "booking_status", "booked_at", "order_items",
             "customer_name", "customer_phone", "customer_area",
             "cylinder_type_name", "quantity", *SNAPSHOT_FIELDS,
             "original_amount", "discount_amount", "final_amount", "booking_payment_method",

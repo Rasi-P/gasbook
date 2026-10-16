@@ -1,0 +1,47 @@
+Minimal Products & Inventory — audit and implementation boundary
+
+Both repositories are on main and were clean at the start. The previous commerce
+UI, endpoints, service workflows and source files have already been removed by
+the user. There is no unrelated working-tree work to discard.
+
+The actual development database (gasbook at db:5432 in gasbook-backend-1) was
+checked read-only. Contrary to the prompt, 0014_commerce_catalog_orders IS applied.
+Its source was missing. The original Migration operations were recovered from
+the surviving Python bytecode and serialized with Django's MigrationWriter;
+no operation or dependency was changed. All six old commerce tables exist;
+product, order, line, movement and service tables currently have zero rows.
+
+Preserve: all historical migrations and physical tables, all cylinder Booking,
+Delivery, Sale, Payment, pricing, Direct Sale, refund and authorization behavior.
+No database migration will be applied. No business records will be changed.
+
+Remove from active application state only: CommerceOrder, CommerceLine and
+ServiceOffering and the old movement order relation. A new migration will use
+SeparateDatabaseAndState for these retirements: no DROP TABLE or DELETE. The old
+tables remain untouched. Reuse Product, ProductCategory and ProductMovement.
+Category is a simple text field on the product form, not a management module.
+
+Add only BookingItem snapshots linked to the EXISTING Booking and a booking
+reference on ProductMovement. Mixed checkout creates one ordinary Booking and
+all its cylinder/accessory lines. Existing assignment, staff delivery, payment,
+history and receipt endpoints carry those lines. Cylinder-only checkout stays
+unchanged. Accessories require a cylinder in the same booking; no accessory-only
+checkout, service, separate order, separate payment or new staff workflow.
+
+Accessory stock rule: reserve at atomic booking creation, deduct on existing
+delivery completion, release on admin rejection (the current cancellation path).
+Staff decline keeps the reservation because the booking awaits reassignment.
+Lock products in ID order; never permit on-hand below reserved. Retry keys protect
+stock clicks and mixed checkout. Existing cylinder stock is deducted at delivery.
+No expiry, advanced returns or inventory analytics. Prices are trusted snapshots;
+only cylinder refill components receive existing customer discounts.
+
+UI: one admin page, one Accessories catalog tab, existing cart/checkout and
+existing order-detail components. Inline +/- and explicit stock setting share
+one audited backend operation. Images use existing Django media storage.
+
+Demo data is a repeatable development-only command with bundled image files.
+It supports the already-applied 0014 catalog columns without applying 0015, so
+only explicitly labelled DEMO products can be added on the verified development
+target. Existing products are never overwritten. Mixed checkout still requires
+approved application of 0015 and enabling ACCESSORIES_ENABLED.
