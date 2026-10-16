@@ -77,8 +77,31 @@
 .bk-detail-content { display: grid; gap: 20px; overflow-wrap: anywhere; }
 .bk-detail-content h3 { margin: 0 0 8px; font-size: var(--text-sm); }
 .bk-detail-content p { margin: 8px 0 0; white-space: pre-wrap; }
-.bk-detail-content .booking-item-list { margin: 0; }
-.bk-detail-total { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; }
+.bk-detail-overview { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.bk-detail-overview section { min-width: 0; }
+.bk-detail-partner { margin-top: 8px; font-size: var(--text-xs); color: var(--text-secondary); }
+.bk-detail-items-heading { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.bk-detail-items-heading > span { font-size: var(--text-xs); color: var(--text-secondary); }
+.bk-detail-items { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.bk-detail-item { padding: 14px; }
+.bk-detail-item + .bk-detail-item { border-top: 1px solid var(--border); }
+.bk-detail-item-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; }
+.bk-detail-item-amount { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.bk-detail-muted, .bk-detail-saving { display: block; font-size: var(--text-xs); margin-top: 4px; color: var(--text-secondary); }
+.bk-detail-saving { color: var(--success-text); }
+.bk-detail-breakdown { margin-top: 10px; font-size: var(--text-xs); }
+.bk-detail-breakdown summary, .bk-detail-note summary { cursor: pointer; color: var(--text-secondary); }
+.bk-detail-breakdown[open] summary { margin-bottom: 12px; }
+.bk-detail-breakdown .pricing-components { padding: 12px; border-radius: 8px; background: var(--surface-muted); }
+.bk-detail-total { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; background: var(--surface-muted); border-radius: 12px; margin-top: 14px; padding: 16px; }
+.bk-detail-total strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.bk-detail-total small { display: block; color: var(--text-secondary); margin-top: 4px; font-size: var(--text-xs); }
+.bk-detail-note { font-size: var(--text-xs); }
+@media (max-width: 540px) {
+  .bk-detail-overview { grid-template-columns: 1fr; gap: 18px; }
+  .bk-detail-item { padding: 12px; }
+  .bk-detail-item-row { gap: 10px; }
+}
 
 @media (min-width: 680px) {
   .bookings-table tbody tr { height: 158px; }

@@ -1,5 +1,6 @@
-import { BookingItems, type BookingItem } from '../../components/BookingItems';
-import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
+import { BookingDetailItems } from '../../components/BookingDetailItems';
+import { type BookingItem } from '../../components/BookingItems';
+import { type PricingSnapshot } from '../../components/PricingBreakdown';
 import { BookingTimes } from '../../components/BookingTimes';
 import { useCallback, useEffect, useState } from 'react';
 import { Check, ClipboardList, Truck, X } from 'lucide-react';
@@ -326,9 +327,11 @@ export default function AdminBookings() {
         closeOnEscape
         title={detailBooking ? `Booking #${detailBooking.id}` : 'Booking details'}
         className="bk-detail-modal"
+        size="lg"
         footer={<Button type="button" variant="secondary" autoFocus onClick={() => setDetailBooking(null)}>Close details</Button>}
       >
         {detailBooking && <div className="bk-detail-content">
+          <div className="bk-detail-overview">
           <section>
             <h3>Customer</h3>
             <strong>{detailBooking.customer_name}</strong>
@@ -337,25 +340,29 @@ export default function AdminBookings() {
             {detailBooking.customer_area && <div>{detailBooking.customer_area}</div>}
           </section>
           <section>
-            <h3>Booking status</h3>
+            <h3>Delivery</h3>
             <Badge tone={bookingStatusTone(detailBooking.status)}>{detailBooking.status.replaceAll('_', ' ')}</Badge>
             <BookingTimes booking={detailBooking} />
-            <div>Assigned staff: {detailBooking.assigned_staff_name || 'Unassigned'}</div>
-            {detailBooking.delivery_status && <div>Delivery: {detailBooking.delivery_status.replaceAll('_', ' ')}</div>}
+            <div className="bk-detail-partner">Delivery partner: <strong>{detailBooking.assigned_staff_name || 'Unassigned'}</strong></div>
+            {detailBooking.delivery_status && detailBooking.delivery_status !== detailBooking.status && <div>Delivery: {detailBooking.delivery_status.replaceAll('_', ' ')}</div>}
             {detailBooking.rejection_reason && <p className="bk-reason">Reason: {detailBooking.rejection_reason}</p>}
             {detailBooking.needs_reassignment && <p>Declined by {detailBooking.delivery_staff_name || 'staff'}{detailBooking.delivery_rejection_reason ? `: ${detailBooking.delivery_rejection_reason}` : ''}</p>}
           </section>
+          </div>
           <section>
-            <h3>Items &amp; pricing</h3>
-            {detailBooking.order_items?.length ? <BookingItems items={detailBooking.order_items} /> : <>
-              <strong>{detailBooking.quantity} × {detailBooking.cylinder_type_name}</strong>
-              <div>{money(detailBooking.rate)} each</div>
-              <PricingBreakdown value={detailBooking} />
-            </>}
-            {discountAmount(detailBooking) > 0 && <p>Discount: {money(discountAmount(detailBooking))}</p>}
-            <div className="bk-detail-total"><span>Order total</span><strong>{money(finalAmount(detailBooking))}</strong></div>
+            <div className="bk-detail-items-heading"><h3>Ordered items</h3><span>Amount</span></div>
+            <BookingDetailItems items={detailBooking.order_items?.length ? detailBooking.order_items : [{
+              ...detailBooking,
+              name: detailBooking.cylinder_type_name,
+              type: 'cylinder',
+              total_amount: String(finalAmount(detailBooking)),
+            }]} />
+            <div className="bk-detail-total">
+              <div><span>Order total</span>{discountAmount(detailBooking) > 0 && <small>Discounts already included</small>}</div>
+              <strong>{money(finalAmount(detailBooking)).replace('Rs. ', '₹')}</strong>
+            </div>
           </section>
-          {detailBooking.note && <section><h3>Note</h3><p>{detailBooking.note}</p></section>}
+          {detailBooking.note && <details className="bk-detail-note"><summary>Order note</summary><p>{detailBooking.note}</p></details>}
         </div>}
       </Modal>
 
