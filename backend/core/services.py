@@ -157,11 +157,18 @@ def is_active_staff(user):
     )
 
 
+def can_hand_over(user):
+    """Direct-sale handover eligibility; delivery assignment remains staff-only."""
+    return user.is_active and (
+        getattr(getattr(user, "role", None), "code", "") == "admin" or is_active_staff(user)
+    )
+
+
 def check_handover_staff(handover, requester):
     """Who may be recorded as having physically handed the cylinders over.
 
-    Admins may name any active staff member, or nobody; staff may name only themselves, or
-    nobody. The person named must be an active staff user (and active staff profile).
+    Admins may name an active admin or eligible staff member, or nobody. Staff may
+    name only themselves, or nobody. Staff profile restrictions still apply.
     """
     if handover is None:
         return None
@@ -172,8 +179,8 @@ def check_handover_staff(handover, requester):
             status=403,
             field="handover_staff",
         )
-    if not is_active_staff(handover):
-        raise ApiError(f"{display_name(handover)} is not an active staff member.", code="invalid_handover", field="handover_staff")
+    if not can_hand_over(handover):
+        raise ApiError(f"{display_name(handover)} is not an active admin or eligible staff member.", code="invalid_handover", field="handover_staff")
     return handover
 
 # Largest values a DecimalField(max_digits=10, decimal_places=2) / PositiveIntegerField hold.

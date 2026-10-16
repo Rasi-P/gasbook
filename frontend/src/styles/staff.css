@@ -243,3 +243,13 @@
     flex: 1 1 100%;
   }
 }
+
+/* Admin sale profiles share the staff profile layout, with four sale metrics. */
+.admin-sales-history__stats .ui-stat__value { overflow-wrap: anywhere; }
+.admin-sales-history__items { margin-top: var(--space-2); }
+.admin-sales-history__items summary { cursor: pointer; color: var(--primary); }
+.admin-sales-history__empty { padding: var(--space-5); }
+.admin-sales-history .ui-table td { overflow-wrap: anywhere; }
+@media (min-width: 1100px) {
+  .sh-stats.admin-sales-history__stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

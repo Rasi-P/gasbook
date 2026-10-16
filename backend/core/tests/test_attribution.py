@@ -2,7 +2,7 @@
 
 - sold_by is always the user who recorded the sale; Payment.received_by is whoever took the
   money; handover_staff is optional and separate from both.
-- Admins may name any active staff member as handover staff, or nobody; staff only themselves.
+- Admins may name any active admin or staff member as handover staff, or nobody; staff only themselves.
 - Staff never see sales they neither recorded nor handed over, on any endpoint.
 - Customers see "Sabco Gas" on direct sales, and their delivery partner on bookings.
 """
@@ -64,12 +64,13 @@ class HandoverRuleTests(SaleFixtureMixin, GasBookTestCase):
         sale = Sale.objects.get(pk=response.data["id"])
         self.assertEqual((sale.handover_staff, sale.delivery_staff, response.data["handover_staff_name"]), (None, "", None))
 
-    def test_only_active_staff_can_be_named(self):
+    def test_only_active_admins_or_eligible_staff_can_be_named(self):
         inactive = User.objects.create_user(username="gone", password="x", role=self.staff_role, is_active=False)
         self.staff_b_profile.is_active = False
         self.staff_b_profile.save(update_fields=["is_active"])
+        inactive_admin = User.objects.create_user(username="inactive-admin", role=self.admin_role, is_active=False)
         before = integrity.fingerprint()
-        for person, code in ((self.customer_user, "invalid_handover"), (self.admin, "invalid_handover"),
+        for person, code in ((self.customer_user, "invalid_handover"), (inactive_admin, "invalid_handover"),
                              (inactive, "invalid_handover"), (self.staff_b, "invalid_handover")):
             with self.subTest(person=person.username):
                 response = self.client.post("/api/sales/", self.sale_payload(handover_staff=person.id), format="json")
@@ -78,18 +79,17 @@ class HandoverRuleTests(SaleFixtureMixin, GasBookTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(integrity.compare_fingerprints(before, integrity.fingerprint()), [])
 
-    def test_the_staff_list_offers_only_people_the_server_accepts(self):
+    def test_the_handover_list_offers_only_people_the_server_accepts(self):
         """The admin form's handover list shows rows with can_hand_over; the server must accept exactly those."""
         gone = User.objects.create_user(username="gone", password="x", role=self.staff_role, is_active=False)
         StaffProfile.objects.create(user=gone)                    # inactive user, active profile
         self.staff_b_profile.is_active = False                    # active user, inactive profile
         self.staff_b_profile.save(update_fields=["is_active"])
         StaffProfile.objects.create(user=self.admin)              # a profile on a user who is not staff
-        rows = self.client.get("/api/staff-profiles/", {"page_size": 200}).data["results"]
+        rows = self.client.get("/api/sales/handover-options/", {"page_size": 200}).data["results"]
         offered = {row["user"]: row["can_hand_over"] for row in rows}
-        self.assertEqual(offered, {self.staff_a.id: True, self.staff_b.id: False, gone.id: False, self.admin.id: False})
-        # The list's is_active is the user's flag only, which would have offered staff B.
-        self.assertTrue(next(row for row in rows if row["user"] == self.staff_b.id)["is_active"])
+        self.assertEqual(offered, {self.staff_a.id: True, self.staff_b.id: False, gone.id: False, self.admin.id: True})
+        self.assertNotIn(self.customer_user.id, offered)
         for user_id, can in offered.items():
             with self.subTest(user=user_id):
                 response = self.client.post("/api/sales/", self.sale_payload(handover_staff=user_id), format="json")
@@ -102,6 +102,9 @@ class HandoverRuleTests(SaleFixtureMixin, GasBookTestCase):
             check_handover_staff(self.staff_b, self.staff_a)
         self.assertEqual((caught.exception.status_code, caught.exception.detail["code"]), (403, "handover_self_only"))
         self.assertEqual(check_handover_staff(self.staff_b, self.admin), self.staff_b)
+
+        with self.assertRaises(ApiError):
+            check_handover_staff(self.admin, self.staff_a)
 
         # Enforced inside the sale serializer itself, whatever view calls it.
         request = APIRequestFactory().post("/api/sales/")

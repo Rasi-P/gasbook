@@ -1,3 +1,4 @@
+import AdminSalesHistory from './AdminSalesHistory';
 import { useEffect, useState } from 'react';
 import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck, Users, ChevronRight } from 'lucide-react';
 import { api, extractApiError, getApiErrorCode, getApiStatus, LIMITS } from '../../lib/api';
@@ -283,6 +284,7 @@ export default function Staff() {
   }
 
   if (historyUser) {
+    if (historyUser.role === 'admin') return <AdminSalesHistory key={historyUser.id} user={historyUser} onBack={() => setHistoryUser(null)} />;
     return <StaffHistory staff={historyUser} onBack={() => setHistoryUser(null)} />;
   }
 
@@ -466,8 +468,8 @@ export default function Staff() {
                   >
                     <Trash2 size={16} />
                   </IconButton>
-                  {u.role === 'staff' ? (
-                    <IconButton label="Delivery History" variant="outline" onClick={() => openHistory(u)}>
+                  {u.role === 'staff' || u.role === 'admin' ? (
+                    <IconButton label={u.role === 'admin' ? 'Sales History' : 'Delivery History'} variant="outline" onClick={() => openHistory(u)}>
                       <ChevronRight size={18} />
                     </IconButton>
                   ) : (

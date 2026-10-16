@@ -29,8 +29,8 @@ import { Tabs } from '../components/ui/Tabs';
 type CylinderType = { id: number; name: string; deposit_amount: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
 type SaleItem = { cylinder_type: number; quantity: number | string; empty_returned: number | string; rate_type: 'refill' | 'new'; rate?: string; deposit?: string };
-// can_hand_over: an active user with an active staff profile, as the server requires for handover_staff.
-type StaffOption = { id: number; user: number; username: string; first_name: string; last_name: string; can_hand_over: boolean };
+// The server validates active admins and eligible staff using the same handover rule.
+type StaffOption = { id: number; user: number; username: string; first_name: string; last_name: string; role: string; can_hand_over: boolean };
 type HistorySale = {
   id: number;
   customer_name: string;
@@ -68,7 +68,8 @@ function originalPayments(sale: { payments: SalePaymentRow[] }) {
 }
 
 function staffName(s: StaffOption) {
-  return `${s.first_name || ''} ${s.last_name || ''}`.trim() || s.username;
+  const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || s.username;
+  return `${name} · ${s.role === 'admin' ? 'Admin' : 'Staff'}`;
 }
 
 type ExistingCustomer = { id: number; name: string; phone: string };
@@ -173,9 +174,9 @@ export default function Sales() {
 
   // Optional field: if the list cannot load, the sale can still be recorded without it.
   useEffect(() => {
-    fetchAllPages<StaffOption>('/staff-profiles/')
+    fetchAllPages<StaffOption>('/sales/handover-options/')
       .then((rows) => { setStaffOptions(rows); setStaffLoadError(''); })
-      .catch((err) => setStaffLoadError(extractApiError(err, [], 'Could not load the staff list.')));
+      .catch((err) => setStaffLoadError(extractApiError(err, [], 'Could not load the handover list.')));
   }, []);
 
   useEffect(() => {
@@ -546,7 +547,7 @@ export default function Sales() {
             </div>
             {!returnMode && (
               <div className="grid-2 sale-card__row">
-                <Field label="Handed over by" hint={staffLoadError || 'Optional. The staff member who gave the cylinders to the customer.'}>
+                <Field label="Handed over by" hint={staffLoadError || 'Optional. The admin or staff member who gave the cylinders to the customer.'}>
                   <Select value={handoverStaff} onChange={(e) => setHandoverStaff(e.target.value)}>
                     <option value="">Not specified</option>
                     {handoverOptions.map((s) => <option key={s.id} value={s.user}>{staffName(s)}</option>)}
@@ -890,7 +891,7 @@ export default function Sales() {
             <Select aria-label="Handed over by" value={filterHandover} onChange={(e) => setFilterHandover(e.target.value)}>
               <option value="">Handed over by: anyone</option>
               <option value="none">Handed over by: not specified</option>
-              {/* Every staff member, so older sales handed over by someone now inactive can be found. */}
+              {/* Every admin and staff member, so older sales handed over by someone now inactive can be found. */}
               {staffOptions.map((s) => <option key={s.id} value={s.user}>{s.can_hand_over ? staffName(s) : `${staffName(s)} (inactive)`}</option>)}
             </Select>
             <Select aria-label="Sale status" value={filterVoid} onChange={(e) => setFilterVoid(e.target.value)}>

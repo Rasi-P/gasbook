@@ -36,6 +36,7 @@ from .services import (
     admin_users,
     advisory_lock,
     assignment_logging_started_at,
+    can_hand_over,
     clean_reason,
     confirm_refund,
     create_customer,
@@ -642,6 +643,32 @@ class SaleViewSet(
     serializer_class = SaleSerializer
     permission_classes = [IsAdminUserRole]
 
+    @action(detail=False, methods=["get"], url_path="handover-options")
+    def handover_options(self, request):
+        # Keep inactive people available for historical filters, but never offer them
+        # for a new handover. Do not require admins to have a StaffProfile.
+        users = User.objects.filter(role__code__in=["admin", "staff"]).select_related("role", "staff_profile").order_by("first_name", "username", "id")
+        page = self.paginate_queryset(users)
+        rows = [{"id": u.id, "user": u.id, "username": u.username,
+                 "first_name": u.first_name, "last_name": u.last_name,
+                 "role": u.role.code, "can_hand_over": can_hand_over(u)} for u in page]
+        return self.get_paginated_response(rows)
+
+    def list(self, request, *args, **kwargs):
+        if not request.query_params.get("involved_user"):
+            return super().list(request, *args, **kwargs)
+        queryset = self.filter_queryset(self.get_queryset())
+        summary = queryset.aggregate(
+            total=Count("id"), completed=Count("id", filter=Q(void__isnull=True)),
+            cancelled=Count("id", filter=Q(void__isnull=False)),
+            sales_amount=Sum("total_amount", filter=Q(void__isnull=True)),
+        )
+        summary["sales_amount"] = str(summary["sales_amount"] or Decimal("0.00"))
+        page = self.paginate_queryset(queryset)
+        response = self.get_paginated_response(self.get_serializer(page, many=True).data)
+        response.data["summary"] = summary
+        return response
+
     @action(detail=True, methods=["get"], url_path="void-preview", permission_classes=[IsAdminUserRole])
     def void_preview(self, request, pk=None):
         """What cancelling this sale would do, and whether it is allowed now. The void itself
@@ -731,8 +758,16 @@ class SaleViewSet(
         term = params.get("search")
         payment_mode = params.get("payment_mode")
         pending = params.get("pending")
+        involved_user = params.get("involved_user")
+        if involved_user:
+            person = get_object_or_404(User, pk=parse_id_param(involved_user, "involved_user"), role__code__in=["admin", "staff"])
+            # OR on single-valued relations: a recorder who also handed over appears once.
+            queryset = queryset.filter(Q(sold_by=person) | Q(handover_staff=person))
         if term and term.split():
-            queryset = queryset.filter(user_search_q(term, prefix="customer__user__"))
+            search_q = user_search_q(term, prefix="customer__user__")
+            if involved_user and re.fullmatch(r"#?\d{1,18}", term.strip()):
+                search_q |= Q(pk=int(term.strip().lstrip("#")))
+            queryset = queryset.filter(search_q)
         if payment_mode:
             queryset = queryset.filter(payment_mode=payment_mode)
         if pending == "1":
@@ -765,7 +800,7 @@ class SaleViewSet(
             queryset = queryset.filter(created_at__date__gte=start)
         if end:
             queryset = queryset.filter(created_at__date__lte=end)
-        return queryset
+        return queryset.order_by("-created_at", "-id") if involved_user else queryset
 
 
 class PaymentViewSet(
