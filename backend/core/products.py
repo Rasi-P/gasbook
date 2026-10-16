@@ -50,7 +50,7 @@ class ProductSerializer(serializers.ModelSerializer):
     available = serializers.SerializerMethodField()
     class Meta:
         model = Product
-        fields = ['id', 'name', 'description', 'category', 'selling_price', 'image', 'is_active', 'available', 'stock', 'reserved']
+        fields = ['id', 'name', 'description', 'category', 'selling_price', 'image', 'is_active', 'available', 'stock', 'reserved', 'low_stock_threshold']
         read_only_fields = fields
 
     def get_available(self, obj):
@@ -60,7 +60,7 @@ class ProductSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         user = getattr(self.context.get('request'), 'user', None)
         if getattr(getattr(user, 'role', None), 'code', '') != 'admin':
-            data.pop('stock'); data.pop('reserved')
+            data.pop('stock'); data.pop('reserved'); data.pop('low_stock_threshold')
         return data
 
 
