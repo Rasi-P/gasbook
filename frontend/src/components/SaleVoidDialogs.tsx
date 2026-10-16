@@ -29,6 +29,7 @@ type VoidPreview = {
   can_void: boolean;
   blockers: { code: string; detail: string }[];
   location: { id: number; name: string };
+  accessory_stock_changes?: {product:number;name:string;quantity:number}[];
   stock_changes: { cylinder_type: number; name: string; filled_back: number; empties_out: number }[];
   total: string;
   paid: string;
@@ -137,6 +138,7 @@ function VoidSaleDialog({ saleId, onClose, onDone }: { saleId: number; onClose: 
             <div>
               <span className="sv-effects__label">Stock at {preview.location.name}</span>
               <ul className="sv-list">
+                {preview.accessory_stock_changes?.map(item => <li key={`accessory-${item.product}`}>{item.name}: +{item.quantity} returned to accessory inventory</li>)}
                 {preview.stock_changes.map((c) => (
                   <li key={c.cylinder_type}>
                     {c.name}: {c.filled_back > 0 && `+${c.filled_back} filled back`}

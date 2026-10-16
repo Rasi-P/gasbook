@@ -1,3 +1,4 @@
+import { pendingTransaction, transactionRequest } from '../lib/transactionRequest';
 import { BookingItems, type BookingItem } from '../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../components/PricingBreakdown';
 import { BookingTimes } from '../components/BookingTimes';
@@ -750,39 +751,34 @@ export default function Customers() {
 
   async function handleReceivePayment(e: FormEvent) {
     e.preventDefault();
-    if (!selected) return;
-    
+    if (!selected || paymentSaving) return;
+    const scope = `customer-balance-${selected.customer.id}`;
+    const pending = pendingTransaction(scope);
     const totalPayment = paymentMode === 'split' 
       ? Number(paymentSplit.cash) + Number(paymentSplit.gpay) + Number(paymentSplit.bank)
       : Number(paymentAmount);
       
-    if (totalPayment > Number(selected.customer.pending_balance)) {
+    if (!pending && totalPayment > Number(selected.customer.pending_balance)) {
       alert(`Cannot receive more than the pending balance of Rs. ${selected.customer.pending_balance}.`);
       return;
     }
 
     setPaymentSaving(true);
     try {
-      if (paymentMode === 'split') {
-        if (Number(paymentSplit.cash) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.cash), payment_mode: 'cash', note: 'Balance clearance' });
-        if (Number(paymentSplit.gpay) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.gpay), payment_mode: 'gpay', note: 'Balance clearance' });
-        if (Number(paymentSplit.bank) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.bank), payment_mode: 'bank', note: 'Balance clearance' });
-      } else {
-        await api.post('/payments/', {
-          customer: selected.customer.id,
-          amount: Number(paymentAmount),
-          payment_mode: paymentMode,
-          note: 'Balance clearance',
-        });
-      }
+      const payments = paymentMode === 'split'
+        ? Object.entries(paymentSplit).filter(([,amount]) => Number(amount)>0).map(([mode,amount]) => ({mode,amount}))
+        : [{mode:paymentMode,amount:paymentAmount}];
+      await transactionRequest(scope, '/payments/collect/', pending ? undefined : {
+        customer:selected.customer.id, payments, note:'Balance clearance',
+      });
       setShowPaymentModal(false);
       setPaymentAmount('');
       setPaymentMode('cash');
       setPaymentSplit({ cash: '', gpay: '', bank: '' });
       openLedger(selected.customer.id);
       fetchCustomers();
-    } catch {
-      alert('Failed to record payment');
+    } catch (error) {
+      alert(extractApiError(error, [], 'Failed to record payment. Retry to confirm the saved request.'));
     } finally {
       setPaymentSaving(false);
     }
@@ -1281,6 +1277,7 @@ export default function Customers() {
           )}
         >
           <form id="receive-payment-form" onSubmit={handleReceivePayment} className="form-stack">
+            {showPaymentModal && pendingTransaction(`customer-balance-${customer.id}`) && <Alert tone="warning">A previous payment is awaiting confirmation. Confirm Payment will retry that exact saved collection.</Alert>}
             <Field label="Amount Received (Rs.)" className={paymentMode === 'split' ? 'ui-hidden' : undefined}>
               <Input
                 type="number"

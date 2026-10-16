@@ -34,7 +34,10 @@ from .views import (
     customer_credentials,
 )
 
+from .staff_sales import StaffSaleViewSet
+
 router = DefaultRouter()
+router.register('staff-sales', StaffSaleViewSet, basename='staff-sales')
 router.register("products", ProductViewSet)
 router.register("cylinder-types", CylinderTypeViewSet)
 router.register("locations", StockLocationViewSet)

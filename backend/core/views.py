@@ -76,7 +76,7 @@ from .serializers import (
     DeliverySerializer,
     ExpenseSerializer,
     NotificationSerializer,
-    PaymentSerializer,
+    PaymentSerializer, BalanceCollectionSerializer,
     SaleSerializer,
     StockLocationSerializer,
     StockMovementSerializer,
@@ -167,12 +167,15 @@ def build_direct_sale_history_entry(sale):
     """A direct sale as the customer sees it. Customers see the business name, never which
     user recorded or handed over the sale; booking entries keep their delivery partner."""
     billed_items = [item for item in sale.items.all() if item.quantity > 0 or item.total_amount > 0]
-    if not billed_items:
+    from .sale_accessories import item_data
+    from .collections import payment_data
+    accessories = item_data(sale)
+    if not billed_items and not accessories:
         return None
 
     pricing = get_sale_pricing_snapshot(sale)
     display = build_sale_history_display(sale)
-    payment_status = "PAID" if sale.balance_due <= 0 else "PENDING"
+    payment_status = "PAID" if sale.balance_due <= 0 else "PARTIAL" if sale.paid_amount > 0 else "PENDING"
     status = direct_sale_history_status(sale)
     void = sale_void(sale) if status == Booking.Status.CANCELLED else None
     if void is not None:
@@ -186,6 +189,8 @@ def build_direct_sale_history_entry(sale):
         "order_id": f"SALE-{sale.id}",
         "display_reference": f"Direct Sale #{sale.id}",
         "items": SaleItemSerializer(billed_items, many=True).data,
+        "order_items": ([dict(id=i.pk, name=i.cylinder_type.name, type='cylinder', quantity=i.quantity, rate=str(i.rate), total_amount=str(i.total_amount), **snapshot(i)) for i in billed_items] + accessories) if accessories else [],
+        "payment_summary": payment_data(sale),
         "status": status,
         "created_at": sale.created_at.isoformat(),
         "cancelled_at": void.created_at.isoformat() if void is not None else None,
@@ -196,9 +201,9 @@ def build_direct_sale_history_entry(sale):
         "cylinder_type_id": display["cylinder_type_id"],
         "cylinder_type_name": display["cylinder_type_name"],
         "cylinder_type_weight": display["cylinder_type_weight"],
-        "display_name": display["display_name"],
-        "display_badge": display["display_badge"],
-        "quantity": display["quantity"],
+        "display_name": "Cylinders & accessories" if accessories and billed_items else "Accessories" if accessories else display["display_name"],
+        "display_badge": "Mixed items" if accessories and billed_items else "Accessories" if accessories else display["display_badge"],
+        "quantity": display["quantity"] + sum(i["quantity"] for i in accessories),
         "rate": display["rate"],
         "original_amount": serialize_decimal(pricing["original_amount"]),
         "discount_amount": serialize_decimal(pricing["discount_amount"]),
@@ -215,7 +220,7 @@ def build_direct_sale_history_entry(sale):
         "rejected_at": None,
         "can_track": False,
         "can_order_again": bool(display["cylinder_type_id"]),
-        "item_count": display["item_count"],
+        "item_count": display["item_count"] + len(accessories),
         "note": sale.note,
         "detail_message": direct_sale_cancellation_message(void) if void is not None else (
             f"Direct sale by {BUSINESS_DISPLAY_NAME}."
@@ -702,16 +707,30 @@ class SaleViewSet(
         customer = None
         if customer_id is not None:
             customer = get_object_or_404(CustomerProfile, pk=parse_id_param(customer_id, "customer"), is_active=True, user__is_active=True)
+        if getattr(getattr(request.user, 'role', None), 'code', '') == 'staff':
+            if customer is None:
+                raise ApiError('Select an existing customer.', code='required', field='customer')
+            raw_lines = request.data.get('sale_items', [])
+            if isinstance(raw_lines, list) and any(isinstance(line, dict) and ('deposit' in line or 'refill_charge' in line) for line in raw_lines):
+                raise ApiError('Staff must use configured customer prices.', code='price_override_forbidden', status=403)
+        from . import sale_accessories
+        accessory_input = sale_accessories.AccessoryInput(data=request.data.get('accessory_lines', []), many=True)
+        accessory_input.is_valid(raise_exception=True)
+        accessories = sale_accessories.quote(accessory_input.validated_data)
+        accessory_total = sum((i['total_amount'] for i in accessories), Decimal('0'))
         serializer = SaleItemWriteSerializer(data=request.data.get("sale_items", []), many=True)
         serializer.is_valid(raise_exception=True)
-        lines = price_sale_lines(serializer.validated_data, customer)
+        if not serializer.validated_data and not accessories:
+            raise ApiError('Add at least one cylinder or accessory.', code='no_lines')
+        lines = price_sale_lines(serializer.validated_data, customer) if serializer.validated_data else []
         return Response({
             "items": [{**{key: value for key, value in line.items() if key != "cylinder_type"},
                        "cylinder_type": line["cylinder_type"].pk,
                        "cylinder_type_name": line["cylinder_type"].name} for line in lines],
-            "original_amount": sum(line["original_amount"] for line in lines),
+            "accessory_items": [{k: v for k, v in i.items() if k != "product"} for i in accessories],
+            "original_amount": sum((line["original_amount"] for line in lines), accessory_total),
             "discount_amount": sum(line["discount_amount"] for line in lines),
-            "total_amount": sum(line["final_amount"] for line in lines),
+            "total_amount": sum((line["final_amount"] for line in lines), accessory_total),
         })
 
     def create(self, request, *args, **kwargs):
@@ -751,8 +770,7 @@ class SaleViewSet(
         queryset = super().get_queryset()
         user = self.request.user
         if not is_admin_user(user):
-            # Staff see only sales they recorded or handed over. (The route is admin-only
-            # today; this scope stays in force whenever staff are let in.)
+            # Both admin Sales and the staff endpoint share this ownership scope.
             queryset = queryset.filter(Q(sold_by=user) | Q(handover_staff=user))
         params = self.request.query_params
         term = params.get("search")
@@ -810,12 +828,39 @@ class PaymentViewSet(
     viewsets.GenericViewSet,
 ):
     """Admin-only. A payment is never edited or deleted through the API: that left the
-    sale's paid amount and balance out of step with its payments. Staff record payments
-    only by completing a delivery."""
+    sale's paid amount and balance out of step with its payments. Staff use the scoped
+    staff-sales collection endpoint or complete a delivery."""
 
     queryset = Payment.objects.select_related("customer__user", "sale", "received_by")
     serializer_class = PaymentSerializer
     permission_classes = [IsAdminUserRole]
+
+    def create(self, request, *args, **kwargs):
+        if not isinstance(request.data, Mapping):
+            return super().create(request, *args, **kwargs)
+        if not request.data.get('client_ref'):
+            return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = serializer.validated_data
+        from .collections import collect
+        rows, replay = collect(values['customer'], values.get('sale'),
+            [dict(mode=values['payment_mode'], amount=values['amount'])], request.user,
+            parse_client_ref(request.data['client_ref']), note=values.get('note', ''), empty_collected=values.get('empty_collected', 0))
+        return Response(self.get_serializer(rows[0]).data, status=200 if replay else 201)
+
+    @action(detail=False, methods=['post'])
+    def collect(self, request):
+        if not isinstance(request.data, dict) or set(request.data) - {'customer', 'sale', 'payments', 'client_ref', 'note'}:
+            raise ApiError('Send customer, optional sale, payments, client_ref and optional note.', code='invalid')
+        serializer = BalanceCollectionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        from .collections import collect
+        data = serializer.validated_data
+        rows, replay = collect(data['customer'], data.get('sale'), data['payments'], request.user,
+                               data['client_ref'], note=data['note'])
+        return Response({'payments': self.get_serializer(rows, many=True).data}, status=200 if replay else 201)
+
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
@@ -1283,7 +1328,7 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
         billed_items = SaleItem.objects.filter(sale_id=OuterRef("pk")).filter(Q(quantity__gt=0) | Q(total_amount__gt=0))
         sales = Sale.objects.filter(
             Q(sold_by=request.user) | Q(handover_staff=request.user), booking__isnull=True,
-        ).filter(Exists(billed_items)).select_related("customer__user", "void").prefetch_related("items__cylinder_type")
+        ).filter(Exists(billed_items) | Q(accessories__isnull=False)).distinct().select_related("customer__user", "void").prefetch_related("items__cylinder_type", "accessories")
 
         # Merge model records before pagination. A delivery's event is its completion;
         # a direct sale's is its recording, even if later cancelled. Unknown legacy
@@ -1643,7 +1688,7 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
         delivery.save()
 
         booking.status = Booking.Status.DELIVERED
-        booking.payment_status = "PAID" if payment_collected >= total or booking.payment_method.upper() == "ONLINE" else "COLLECTED"
+        booking.payment_status = "PAID" if payment_collected >= total else "PARTIAL" if payment_collected > 0 else "PENDING"
         booking.delivered_at = delivery.completed_at
         booking.sale = sale
         booking.save(update_fields=["status", "payment_status", "delivered_at", "sale", "updated_at"])

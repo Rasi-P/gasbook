@@ -30,6 +30,7 @@ class Product(TimeStampedModel):
 
 
 class ProductMovement(TimeStampedModel):
+    sale = models.ForeignKey('Sale', on_delete=models.PROTECT, null=True, blank=True)
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='movements')
     booking = models.ForeignKey('Booking', on_delete=models.PROTECT, null=True, blank=True)
     actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
@@ -69,3 +70,17 @@ class BookingItem(TimeStampedModel):
             models.CheckConstraint(condition=(models.Q(product__isnull=True, cylinder_type__isnull=False) | models.Q(product__isnull=False, cylinder_type__isnull=True)), name='booking_item_one_type'),
             models.CheckConstraint(condition=models.Q(quantity__gt=0, rate__gte=0, discount_amount__gte=0, total_amount__gte=0, original_amount=models.F('total_amount')+models.F('discount_amount')), name='booking_item_amounts'),
         ]
+
+
+class SaleAccessoryItem(TimeStampedModel):
+    """Saved accessory lines on the existing sale; no separate order/payment lifecycle."""
+    sale = models.ForeignKey('Sale', on_delete=models.PROTECT, related_name='accessories')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT)
+    name = models.CharField(max_length=150)
+    category_name = models.CharField(max_length=80)
+    quantity = models.PositiveIntegerField()
+    rate = models.DecimalField(max_digits=10, decimal_places=2)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    class Meta:
+        ordering = ['id']
+        constraints = [models.CheckConstraint(condition=models.Q(quantity__gt=0, rate__gte=0, total_amount__gte=0), name='sale_accessory_positive')]

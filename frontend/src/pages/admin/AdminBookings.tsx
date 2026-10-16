@@ -1,3 +1,4 @@
+import { PaymentSummary, type PaymentFacts } from '../../components/PaymentSummary';
 import { useSearchParams } from 'react-router-dom';
 import { BookingDetailItems } from '../../components/BookingDetailItems';
 import { type BookingItem } from '../../components/BookingItems';
@@ -23,6 +24,7 @@ import { SkeletonRows } from '../../components/ui/Skeleton';
 import { Table, TableWrap, Td, Th } from '../../components/ui/Table';
 
 type Booking = PricingSnapshot & {
+  payment_summary?: PaymentFacts;
   id: number;
   customer_name: string;
   customer_phone: string;
@@ -369,6 +371,7 @@ export default function AdminBookings() {
           </div>
           <section>
             <div className="bk-detail-items-heading"><h3>Ordered items</h3><span>Amount</span></div>
+            <PaymentSummary value={detailBooking.payment_summary} />
             <BookingDetailItems items={detailBooking.order_items?.length ? detailBooking.order_items : [{
               ...detailBooking,
               name: detailBooking.cylinder_type_name,

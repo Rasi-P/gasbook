@@ -72,6 +72,10 @@ def normalize_receipt(record, source):
                           refill_unit_amount=serialize_decimal(i.refill_unit_amount) if i.refill_unit_amount is not None else None,
                           total_amount=serialize_decimal(i.total_amount)) for i in mixed]
 
+    if sale and not booking:
+        items += [dict(description=i.name, quantity=i.quantity, rate_type=None, unit_amount=str(i.rate),
+                       unit_label='Unit price', deposit_unit_amount=None, refill_unit_amount=None,
+                       total_amount=str(i.total_amount)) for i in sale.accessories.all()]
     paid = sale.paid_amount if sale else None
     balance = sale.balance_due if sale else None
     payment_status = 'Paid' if sale and balance <= 0 else 'Partially paid' if sale and paid > 0 else 'Unpaid'

@@ -23,6 +23,7 @@ try {
   await page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname;
     assert.equal(route.request().method(), 'GET');
+    if (path.endsWith('/collections-today/')) return route.fulfill({ json: {date:'2026-10-16',total:'0',methods:{cash:'0',gpay:'0',bank:'0'},refunds:'0'} });
     if (path.endsWith('/auth/me/')) return route.fulfill({ json: { id: 5, username: 'staff', role: 'staff', name: 'Staff Member' } });
     if (path.endsWith('/deliveries/history/')) return route.fulfill({ json: list(entries) });
     if (path.endsWith('/deliveries/')) return route.fulfill({ json: list([delivery]) });

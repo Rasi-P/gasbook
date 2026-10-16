@@ -64,7 +64,7 @@ class ProductSerializer(serializers.ModelSerializer):
         return data
 
 
-def move(product, actor, kind, stock_change, reserved_change, reason, booking=None, client_ref=None):
+def move(product, actor, kind, stock_change, reserved_change, reason, booking=None, client_ref=None, sale=None):
     """Caller holds the product lock and an atomic transaction."""
     stock_after, reserved_after = product.stock + stock_change, product.reserved + reserved_change
     if reserved_after < 0 or stock_after < reserved_after:
@@ -72,7 +72,7 @@ def move(product, actor, kind, stock_change, reserved_change, reason, booking=No
     movement = ProductMovement.objects.create(product=product, actor=actor, kind=kind,
         quantity_change=stock_change, reserved_change=reserved_change, stock_before=product.stock,
         stock_after=stock_after, reserved_before=product.reserved, reserved_after=reserved_after,
-        reason=reason, booking=booking, client_ref=client_ref)
+        reason=reason, booking=booking, client_ref=client_ref, sale=sale)
     product.stock, product.reserved = stock_after, reserved_after
     product.save(update_fields=['stock', 'reserved', 'updated_at'])
     return movement

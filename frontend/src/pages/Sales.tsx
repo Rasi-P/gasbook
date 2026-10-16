@@ -1,3 +1,4 @@
+import { PaymentSummary, type PaymentFacts } from '../components/PaymentSummary';
 import { DirectSaleRates } from '../components/DirectSaleRates';
 import { formatDateTime } from '../lib/dateTime';
 import { useEffect, useState } from 'react';
@@ -32,6 +33,7 @@ type SaleItem = { cylinder_type: number; quantity: number | string; empty_return
 // The server validates active admins and eligible staff using the same handover rule.
 type StaffOption = { id: number; user: number; username: string; first_name: string; last_name: string; role: string; can_hand_over: boolean };
 type HistorySale = {
+  payment_summary?: PaymentFacts;
   id: number;
   customer_name: string;
   sold_by_name: string;
@@ -939,6 +941,7 @@ export default function Sales() {
                         {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
                       </Td>
                       <Td label="Balance" align="right">
+                        <details><summary>Payment details</summary><PaymentSummary value={sale.payment_summary} allowCollection onCollected={fetchHistory} /></details>
                         {sale.void ? <VoidStatusBadges saleVoid={sale.void} /> : isReturn ? <span className="ui-num-placeholder">-</span> : (
                           Number(sale.balance_due) > 0
                             ? <Badge tone="warning">{money(sale.balance_due)}</Badge>

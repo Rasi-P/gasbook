@@ -477,6 +477,7 @@ def void_preview(sale):
             {"cylinder_type": ct.pk, "name": ct.name, "filled_back": filled_back, "empties_out": empties_out}
             for ct, (filled_back, empties_out) in sorted(void_stock_changes(sale).items(), key=lambda kv: kv[0].pk)
         ],
+        "accessory_stock_changes": [{"product": i.product_id, "name": i.name, "quantity": i.quantity} for i in sale.accessories.all()],
         "total": str(sale.total_amount),
         "paid": str(paid),
         "payments": [{"id": p.pk, "mode": p.payment_mode, "amount": str(p.amount)} for p in paid_rows],
@@ -577,6 +578,8 @@ def void_sale(sale, actor, reason, outcome):
     except IntegrityError:
         raise ApiError("This sale has already been cancelled.", code="already_voided", status=409)
 
+    from .sale_accessories import restore
+    restore(sale, actor)
     reversal_ids, credit_ids = [], []
     if outcome == SaleVoid.Outcome.CREDIT:
         for original in payments:

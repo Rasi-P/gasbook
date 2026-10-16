@@ -1,3 +1,4 @@
+import { PaymentSummary, type PaymentFacts } from '../../components/PaymentSummary';
 import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
@@ -61,6 +62,7 @@ type BookingFields = PricingSnapshot & {
 
 /** The booking's Delivery is this staff member's now. */
 type CurrentRow = BookingFields & {
+  payment_summary?: PaymentFacts;
   involvement: 'current';
   id: number;
   status: string;
@@ -491,6 +493,7 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
                         {discounted && <span className="ui-cell-sub"><s>{money(row.original_amount)}</s></span>}
                       </Td>
                       <Td label="Payment">
+                        <details><summary>Payment details</summary><PaymentSummary value={row.payment_summary} /></details>
                         <div className="sh-stack">
                           <Badge size="sm" tone={paymentTone(row.booking_payment_status)}>
                             {row.booking_payment_method} · {row.booking_payment_status}

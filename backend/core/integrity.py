@@ -257,6 +257,12 @@ def violations():
             item = item_sums.setdefault(row['booking__sale_id'], {'total': Decimal('0'), 'lines': 0})
             item['total'] += row['total']
             item['lines'] += row['lines']
+    if 'core_saleaccessoryitem' in connection.introspection.table_names():
+        from .models import SaleAccessoryItem
+        for row in SaleAccessoryItem.objects.values('sale_id').annotate(total=Sum('total_amount'), lines=Count('id')):
+            item = item_sums.setdefault(row['sale_id'], {'total': Decimal('0'), 'lines': 0})
+            item['total'] += row['total']
+            item['lines'] += row['lines']
     payments = {
         row[0]: {"customer_id": row[1], "sale_id": row[2], "amount": row[3], "mode": row[4]}
         for row in Payment.objects.order_by("id").values_list("id", "customer_id", "sale_id", "amount", "payment_mode")

@@ -1,3 +1,9 @@
+import { useSearchParams } from 'react-router-dom';
+import StaffDirectSale from './StaffDirectSale';
+import { TodayCollections } from '../../components/TodayCollections';
+import { PaymentCollectionForm } from '../../components/PaymentCollectionForm';
+import { emptyCollection, receiptParts, collectionError, type CollectionForm } from '../../lib/paymentCollection';
+import { PaymentSummary, type PaymentFacts } from '../../components/PaymentSummary';
 import { BookingDetailItems } from '../../components/BookingDetailItems';
 import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
@@ -7,6 +13,7 @@ import { useState, useEffect, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Banknote,
+  ShoppingCart,
   Bell,
   CalendarDays,
   CheckCircle2,
@@ -45,6 +52,7 @@ import { Tabs } from '../../components/ui/Tabs';
 import { cx } from '../../components/ui/cx';
 
 type Delivery = PricingSnapshot & {
+  payment_summary?: PaymentFacts | null;
   id: number;
   booking: number;
   order_id?: string;
@@ -200,7 +208,7 @@ function isListed(delivery: Delivery) {
 }
 
 function isPaidOnline(delivery: Delivery) {
-  return delivery.booking_payment_method === 'ONLINE' || delivery.booking_payment_status === 'PAID';
+  return delivery.payment_summary?.status === 'PAID';
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -215,7 +223,7 @@ function PaymentBadge({ delivery }: { delivery: Delivery }) {
   const online = isPaidOnline(delivery);
   return (
     <Badge tone={online ? 'success' : 'warning'} icon={online ? <Check size={12} /> : <Banknote size={12} />}>
-      {online ? 'Paid Online' : 'COD'}
+      {online ? 'Payment confirmed' : 'Collect payment'}
     </Badge>
   );
 }
@@ -230,7 +238,11 @@ function formatJoinDate(value?: string) {
 }
 
 export default function StaffMobileLayout() {
-  const [activeTab, setActiveTab] = useState<'home' | 'deliveries' | 'history' | 'profile'>('home');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const activeTab = (['home', 'deliveries', 'sale', 'history', 'profile'].includes(requestedTab || '') ? requestedTab : 'home') as 'home' | 'deliveries' | 'sale' | 'history' | 'profile';
+  const [saleBusy, setSaleBusy] = useState(false);
+  const [paymentForms, setPaymentForms] = useState<Record<number,CollectionForm>>({});
   const [filterTab, setFilterTab] = useState<DeliveryFilter>('pending');
   // Order open in the detail view. Viewing is local UI state only; it never calls the API.
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -403,6 +415,8 @@ export default function StaffMobileLayout() {
       empty: '1'
     };
 
+    const paymentForm = paymentForms[id] || emptyCollection();
+    if (isCod && collectionError(paymentForm,totalAmount)) { showError(collectionError(paymentForm,totalAmount)); return; }
     if (isCod && !codConfirmed[id]) {
       showError('Please confirm payment collected from customer.');
       return;
@@ -413,9 +427,9 @@ export default function StaffMobileLayout() {
     const emptyByType = Object.fromEntries(cylinderItems.map(i => [String(i.cylinder_type), mixedEmpties[id]?.[i.cylinder_type!] ?? (new Set(cylinderItems.map(line => line.cylinder_type)).size === 1 ? Number(form.empty || 0) : 0)]));
     const payload = {
       ...(Object.keys(emptyByType).length > 1 ? { empty_collected_by_type: emptyByType } : {}),
-      payment_method: isCod ? form.method : 'gpay',
+      ...(isCod ? (receiptParts(paymentForm).length ? { split_payments: receiptParts(paymentForm) } : {}) : {}),
       empty_collected: cylinderItems.length ? Object.values(emptyByType).reduce((sum, value) => sum + value, 0) : Number(form.empty || 0),
-      payment_collected: String(totalAmount)
+      payment_collected: isCod ? receiptParts(paymentForm).reduce((sum,p)=>sum+Number(p.amount),0).toFixed(2) : '0.00'
     };
 
     setActionBusyId(id);
@@ -520,7 +534,13 @@ export default function StaffMobileLayout() {
   }
 
   function goTab(tab: typeof activeTab) {
-    setActiveTab(tab);
+    if (saleBusy) return;
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous);
+      if (tab === 'home') next.delete('tab');
+      else next.set('tab', tab);
+      return next;
+    });
     window.scrollTo({ top: 0 });
   }
 
@@ -544,15 +564,17 @@ export default function StaffMobileLayout() {
   // Shown for COD orders once accepted, as before; Complete stays disabled until it is ticked.
   function renderCodConfirm(order: Delivery) {
     if (!ACTIVE_STATUSES.includes(order.status) || isPaidOnline(order)) return null;
+    const value = paymentForms[order.id] || emptyCollection();
     return (
-      <label className="sa-check">
-        <input
-          type="checkbox"
-          checked={!!codConfirmed[order.id]}
-          onChange={(e) => setCodConfirmed((prev) => ({ ...prev, [order.id]: e.target.checked }))}
-        />
-        <span>Confirm Cash Collected ({money(finalAmount(order))})</span>
-      </label>
+      <div className="sa-stack sa-stack--tight">
+        <PaymentCollectionForm value={value} total={finalAmount(order)} disabled={actionBusyId !== null}
+          onChange={next => { setPaymentForms(prev => ({...prev,[order.id]:next})); setCodConfirmed(prev=>({...prev,[order.id]:false})); }} />
+        <label className="sa-check"><input type="checkbox" checked={!!codConfirmed[order.id]}
+          disabled={actionBusyId !== null || !!collectionError(value,finalAmount(order))}
+          onChange={e=>setCodConfirmed(prev=>({...prev,[order.id]:e.target.checked}))} />
+          <span>I confirm the amount actually received and the remaining credit.</span>
+        </label>
+      </div>
     );
   }
 
@@ -680,7 +702,7 @@ export default function StaffMobileLayout() {
             <div className="sa-pay__text">
               <div className="sa-pay__title">
                 {online ? <CheckCircle2 size={14} aria-hidden="true" /> : <Banknote size={14} aria-hidden="true" />}
-                <span>{online ? 'Paid Online — No Cash Needed' : 'Cash on Delivery'}</span>
+                <span>{online ? 'Payment confirmed' : 'Payment on delivery'}</span>
               </div>
               <div className="sa-pay__sub">
                 {delivered
@@ -689,7 +711,7 @@ export default function StaffMobileLayout() {
                     ? 'Order cancelled'
                     : online
                       ? 'Payment verified by system'
-                      : 'Collect cash upon delivery'}
+                      : 'Record the payment actually received'}
               </div>
             </div>
             <AmountToCollect delivery={order} showOriginal={!delivered} tone={online ? 'success' : 'warning'} />
@@ -761,16 +783,19 @@ export default function StaffMobileLayout() {
   const navItems = [
     { tab: 'home' as const, label: 'Home', icon: <Truck size={20} /> },
     { tab: 'deliveries' as const, label: 'Deliveries', icon: <Navigation size={20} /> },
+    { tab: 'sale' as const, label: 'Sale', icon: <ShoppingCart size={20} /> },
     { tab: 'history' as const, label: 'History', icon: <History size={20} /> },
     { tab: 'profile' as const, label: 'Profile', icon: <User size={20} /> },
   ];
 
+
+
   return (
     <div className="sa">
-      <div className="sa__column">
+      <div className={`sa__column${activeTab === 'sale' ? ' sa__column--sale' : ''}`}>
 
         {/* Header */}
-        <header className="sa-header">
+        {activeTab !== 'sale' && <header className="sa-header">
           <div className="sa-header__text">
             <h2>
               {getGreeting()}, {userName.split(' ')[0] || userName} 👋
@@ -789,7 +814,7 @@ export default function StaffMobileLayout() {
             </IconButton>
             {unreadNotifCount > 0 && <span className="sa-bell__dot" aria-hidden="true" />}
           </span>
-        </header>
+        </header>}
 
         {/* Sticky so action results stay visible when acting from further down a list */}
         {message && (
@@ -808,14 +833,14 @@ export default function StaffMobileLayout() {
         )}
 
         {/* Loading */}
-        {isLoading ? (
+        {isLoading && activeTab !== 'sale' ? (
           <Card className="sa-state">
             <LoadingState label="Loading staff schedule..." />
           </Card>
         ) : null}
 
         {/* Load error */}
-        {!isLoading && loadError && activeTab !== 'profile' ? (
+        {!isLoading && loadError && activeTab !== 'profile' && activeTab !== 'sale' ? (
           <Card className="sa-state sa-state--error" role="alert">
             <EmptyState
               icon={<AlertTriangle size={24} />}
@@ -829,6 +854,8 @@ export default function StaffMobileLayout() {
             />
           </Card>
         ) : null}
+
+        {activeTab === 'sale' && <StaffDirectSale onBack={() => goTab('home')} onDone={load} onBusyChange={setSaleBusy} />}
 
         {/* ── Home ── */}
         {activeTab === 'home' && !isLoading && !loadError && (
@@ -860,6 +887,7 @@ export default function StaffMobileLayout() {
               </button>
             </section>
 
+            <TodayCollections refreshKey={0} />
             {/* Quick actions */}
             <section>
               <SectionHeader as="h3" title="Quick Actions" className="sa-section-head" />
@@ -997,7 +1025,7 @@ export default function StaffMobileLayout() {
 
         {/* ── History ── */}
         {activeTab === 'history' && !isLoading && !loadError && (
-          <StaffHistory<Delivery> renderDelivery={(d) => (
+          <StaffHistory<Delivery> onCollected={load} renderDelivery={(d) => (
             <StaffHistoryCard
               reference={`Order #${orderRef(d)}`}
               badge={<Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>}
@@ -1008,11 +1036,11 @@ export default function StaffMobileLayout() {
                 : `${d.cylinder_type_name} (${d.quantity} qty)`}
               amountLabel="Order total"
               amount={money(finalAmount(d))}
-              details={<BookingDetailItems items={d.order_items?.length ? d.order_items : [{
+              details={<><PaymentSummary value={d.payment_summary} allowCollection onCollected={load} /><BookingDetailItems items={d.order_items?.length ? d.order_items : [{
                 id: d.id, name: d.cylinder_type_name, type: 'cylinder', quantity: d.quantity,
                 rate: d.rate, total_amount: String(finalAmount(d)), rate_type: d.rate_type,
                 deposit_unit_amount: d.deposit_unit_amount, refill_unit_amount: d.refill_unit_amount,
-              }]} />}
+              }]} /></>}
             />
           )} />
         )}
@@ -1081,6 +1109,7 @@ export default function StaffMobileLayout() {
               type="button"
               className={`sa-nav__item${activeTab === item.tab ? ' is-active' : ''}`}
               aria-current={activeTab === item.tab ? 'page' : undefined}
+              disabled={saleBusy}
               onClick={() => goTab(item.tab)}
             >
               {item.icon}

@@ -7,6 +7,7 @@ from django.core.validators import RegexValidator
 from rest_framework import serializers
 
 from .exceptions import ApiError
+from . import sale_accessories
 from .pricing import calculate_pricing, snapshot, SNAPSHOT_FIELDS
 from .models import (
     ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
@@ -23,7 +24,7 @@ from .services import (
     create_customer,
     customer_outstanding,
     display_name,
-    get_stock_row,
+    get_stock_row, is_admin_user,
     lock_customer,
     lock_sale_stock,
     not_voided,
@@ -433,12 +434,19 @@ def void_summary(void):
 
 
 class SaleSerializer(serializers.ModelSerializer):
+    payment_summary = serializers.SerializerMethodField()
+
+    def get_payment_summary(self, obj):
+        from .collections import payment_data
+        return payment_data(obj, include_actor=bool(self.context.get("request") and is_admin_user(self.context["request"].user)))
+
+    accessory_lines = sale_accessories.AccessoryInput(many=True, required=False, write_only=True)
     accessory_items = serializers.SerializerMethodField()
 
     def get_accessory_items(self, obj):
         from .booking_items import item_data
         booking = getattr(obj, 'booking', None)
-        return [i for i in item_data(booking) if i['type'] == 'accessory'] if booking else []
+        return [i for i in item_data(booking) if i['type'] == 'accessory'] if booking else sale_accessories.item_data(obj)
 
     quoted_total = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False, write_only=True)
     # Exactly one of customer (an existing customer) or new_customer (registered with the sale).
@@ -460,7 +468,7 @@ class SaleSerializer(serializers.ModelSerializer):
     is_direct = serializers.SerializerMethodField()
     location_name = serializers.CharField(source="location.name", read_only=True)
     items = SaleItemSerializer(many=True, read_only=True)
-    sale_items = SaleItemWriteSerializer(many=True, write_only=True)
+    sale_items = SaleItemWriteSerializer(many=True, write_only=True, required=False)
     paid_amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
     paid_payment_mode = serializers.ChoiceField(choices=RECEIPT_MODE_CHOICES, required=False, write_only=True)
     split_payments = SplitPaymentSerializer(many=True, required=False, write_only=True)
@@ -502,7 +510,7 @@ class SaleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Sale
         fields = [
-            "accessory_items", "id", "customer", "customer_name", "location", "location_name",
+            "payment_summary", "accessory_lines", "accessory_items", "id", "customer", "customer_name", "location", "location_name",
             "original_amount", "discount_amount", "total_amount", "final_amount", "has_discount",
             "applied_discount_type", "applied_discount_value", "paid_amount", "balance_due",
             "payment_mode", "paid_payment_mode", "split_payments", "delivery_type", "delivery_staff", "note",
@@ -526,7 +534,15 @@ class SaleSerializer(serializers.ModelSerializer):
                 fields=spoofed,
             )
 
-        attrs["handover_staff"] = check_handover_staff(attrs.get("handover_staff"), self.context["request"].user)
+        user = self.context['request'].user
+        if getattr(getattr(user, 'role', None), 'code', '') == 'staff':
+            if attrs.get('new_customer') or attrs.get('past_due_payments'):
+                raise ApiError('Select an existing customer. Collect older balances separately.', code='not_allowed', status=403)
+            if any('deposit' in line or 'refill_charge' in line for line in attrs.get('sale_items', [])):
+                raise ApiError('Staff must use configured customer prices.', code='price_override_forbidden', status=403)
+            check_handover_staff(attrs.get('handover_staff'), user)
+            attrs['handover_staff'] = user
+        attrs["handover_staff"] = check_handover_staff(attrs.get("handover_staff"), user)
 
         customer, new_customer = attrs.get("customer"), attrs.get("new_customer")
         if customer is not None and new_customer is not None:
@@ -552,10 +568,15 @@ class SaleSerializer(serializers.ModelSerializer):
         if not location.is_active:
             raise ApiError(f"{location.name} is inactive.", code="location_inactive", field="location")
 
-        attrs["sale_items"] = price_sale_lines(attrs.get("sale_items") or [], customer)
-        attrs["original_amount"] = sum((line["original_amount"] for line in attrs["sale_items"]), Decimal("0"))
+        accessories = sale_accessories.quote(attrs.get('accessory_lines', []))
+        if not attrs.get('sale_items') and not accessories:
+            raise ApiError('Add at least one cylinder or accessory.', code='no_lines', field='sale_items')
+        accessory_total = sum((i['total_amount'] for i in accessories), Decimal('0'))
+        attrs['_accessory_total'] = accessory_total
+        attrs["sale_items"] = price_sale_lines(attrs['sale_items'], customer) if attrs.get('sale_items') else []
+        attrs["original_amount"] = sum((line["original_amount"] for line in attrs["sale_items"]), accessory_total)
         attrs["discount_amount"] = sum((line["discount_amount"] for line in attrs["sale_items"]), Decimal("0"))
-        total = sum((line["final_amount"] for line in attrs["sale_items"]), Decimal("0"))
+        total = sum((line["final_amount"] for line in attrs["sale_items"]), accessory_total)
         if total > MAX_MONEY or attrs["original_amount"] > MAX_MONEY:
             raise ApiError("The sale total is too large.", code="amount_too_large", field="sale_items")
         quoted_total = attrs.pop("quoted_total", None)
@@ -648,6 +669,8 @@ class SaleSerializer(serializers.ModelSerializer):
         sale, line, payment, stock change, log or notification behind."""
         user = self.context["request"].user
         lines = validated_data.pop("sale_items")
+        accessory_input = validated_data.pop('accessory_lines', [])
+        accessory_total = validated_data.pop('_accessory_total')
         receipts = validated_data.pop("_receipts")
         total = validated_data.pop("_total")
         new_contact = validated_data.pop("_new_customer", None)
@@ -684,6 +707,9 @@ class SaleSerializer(serializers.ModelSerializer):
             going_out, coming_back = needed.get(line["cylinder_type"], (0, 0))
             needed[line["cylinder_type"]] = (going_out + line["quantity"], coming_back + line["empty_returned"])
         locked = lock_sale_stock(location, needed)
+        accessories = sale_accessories.quote(accessory_input, lock=True)
+        if sum((i['total_amount'] for i in accessories), Decimal('0')) != accessory_total:
+            raise ApiError('Accessory pricing changed. Refresh the quote.', code='quote_changed')
 
         stock_after = {}
         for cylinder_type, (going_out, coming_back) in needed.items():
@@ -706,6 +732,7 @@ class SaleSerializer(serializers.ModelSerializer):
                 total_amount=line["final_amount"], empty_returned=line["empty_returned"],
                 **{field: line[field] for field in SNAPSHOT_FIELDS},
             )
+        sale_accessories.save(sale, accessories, user)
         note = "Sale payment (split)" if sale.payment_mode == Sale.PaymentMode.SPLIT else "Sale payment"
         for mode, amount in receipts:
             Payment.objects.create(customer=customer, sale=sale, amount=amount, payment_mode=mode, received_by=user, note=note)
@@ -745,7 +772,7 @@ class SaleSerializer(serializers.ModelSerializer):
             },
         )
 
-        if any(line["quantity"] > 0 for line in lines):
+        if accessories or any(line["quantity"] > 0 for line in lines):
             notify(
                 customer.user,
                 None,
@@ -774,7 +801,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = "__all__"
-        read_only_fields = ["received_by"]
+        read_only_fields = ["received_by", "client_ref"]
         extra_kwargs = {"empty_collected": {"required": False}}
 
     def validate(self, attrs):
@@ -799,6 +826,14 @@ class PaymentSerializer(serializers.ModelSerializer):
             empty_collected=validated_data.get("empty_collected", 0),
         )
         return payments[0]
+
+
+class BalanceCollectionSerializer(serializers.Serializer):
+    customer = serializers.PrimaryKeyRelatedField(queryset=CustomerProfile.objects.all())
+    sale = serializers.PrimaryKeyRelatedField(queryset=Sale.objects.all(), required=False, allow_null=True)
+    payments = SplitPaymentSerializer(many=True)
+    client_ref = serializers.UUIDField()
+    note = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class ExpenseSerializer(serializers.ModelSerializer):
@@ -1007,7 +1042,27 @@ class NotificationSerializer(serializers.ModelSerializer):
         read_only_fields = ["recipient"]
 
 
+def current_booking_payment_status(booking):
+    # Use the settled sale ledger without taking a booking lock after a customer
+    # lock in collection paths (delivery uses booking -> customer lock order).
+    sale = booking.sale
+    if sale and sale.customer_id == booking.customer_id:
+        return 'CANCELLED' if sale_void(sale) else 'PAID' if sale.balance_due <= 0 else 'PARTIAL' if sale.paid_amount > 0 else 'PENDING'
+    return booking.payment_status
+
+
 class BookingSerializer(serializers.ModelSerializer):
+    payment_status = serializers.SerializerMethodField()
+
+    def get_payment_status(self, obj):
+        return current_booking_payment_status(obj)
+
+    payment_summary = serializers.SerializerMethodField()
+
+    def get_payment_summary(self, obj):
+        from .collections import payment_data
+        return payment_data(obj.sale) if obj.sale_id and obj.sale.customer_id == obj.customer_id else None
+
     order_items = serializers.SerializerMethodField()
 
     def get_order_items(self, obj):
@@ -1212,6 +1267,16 @@ class BookingSerializer(serializers.ModelSerializer):
 
 
 class StaffDirectSaleHistorySerializer(serializers.ModelSerializer):
+    accessory_items = serializers.SerializerMethodField()
+    payment_summary = serializers.SerializerMethodField()
+
+    def get_accessory_items(self, obj):
+        return sale_accessories.item_data(obj)
+
+    def get_payment_summary(self, obj):
+        from .collections import payment_data
+        return payment_data(obj)
+
     """Minimal read-only sale details for an already staff-scoped history query."""
 
     customer_name = serializers.SerializerMethodField()
@@ -1221,7 +1286,7 @@ class StaffDirectSaleHistorySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Sale
-        fields = ["id", "customer_name", "items", "total_amount", "created_at", "status", "cancelled_at"]
+        fields = ["id", "customer_name", "items", "accessory_items", "payment_summary", "total_amount", "created_at", "status", "cancelled_at"]
         read_only_fields = fields
 
     def get_customer_name(self, obj):
@@ -1236,6 +1301,12 @@ class StaffDirectSaleHistorySerializer(serializers.ModelSerializer):
 
 
 class DeliverySerializer(serializers.ModelSerializer):
+    payment_summary = serializers.SerializerMethodField()
+
+    def get_payment_summary(self, obj):
+        from .collections import payment_data
+        return payment_data(obj.booking.sale) if obj.booking.sale_id else None
+
     order_items = serializers.SerializerMethodField()
 
     def get_order_items(self, obj):
@@ -1256,7 +1327,10 @@ class DeliverySerializer(serializers.ModelSerializer):
     booking_status = serializers.CharField(source="booking.status", read_only=True)
     order_id = serializers.CharField(source="booking.order_id", read_only=True)
     booking_payment_method = serializers.CharField(source="booking.payment_method", read_only=True)
-    booking_payment_status = serializers.CharField(source="booking.payment_status", read_only=True)
+    booking_payment_status = serializers.SerializerMethodField()
+
+    def get_booking_payment_status(self, obj):
+        return current_booking_payment_status(obj.booking)
     staff_name = serializers.SerializerMethodField()
     rate = serializers.SerializerMethodField()
     original_amount = serializers.SerializerMethodField()
@@ -1307,6 +1381,12 @@ class DeliverySerializer(serializers.ModelSerializer):
 
 
 class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
+    payment_summary = serializers.SerializerMethodField()
+
+    def get_payment_summary(self, obj):
+        from .collections import payment_data
+        return payment_data(obj.booking.sale, include_actor=True)
+
     order_items = serializers.SerializerMethodField()
 
     def get_order_items(self, obj):
@@ -1329,7 +1409,10 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
     cylinder_type_name = serializers.CharField(source="booking.cylinder_type.name", read_only=True)
     quantity = serializers.IntegerField(source="booking.quantity", read_only=True)
     booking_payment_method = serializers.CharField(source="booking.payment_method", read_only=True)
-    booking_payment_status = serializers.CharField(source="booking.payment_status", read_only=True)
+    booking_payment_status = serializers.SerializerMethodField()
+
+    def get_booking_payment_status(self, obj):
+        return current_booking_payment_status(obj.booking)
     booking_rejection_reason = serializers.CharField(source="booking.rejection_reason", read_only=True)
     original_amount = serializers.SerializerMethodField()
     discount_amount = serializers.SerializerMethodField()
@@ -1339,7 +1422,7 @@ class StaffDeliveryHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Delivery
         fields = [
-            "id", "booking", "order_id", "order_items", "status", "booking_status", "booked_at",
+            "id", "booking", "order_id", "order_items", "payment_summary", "status", "booking_status", "booked_at",
             "started_at", "completed_at", "cancelled_at",
             "customer_name", "customer_phone", "customer_area",
             "cylinder_type_name", "quantity", *SNAPSHOT_FIELDS,

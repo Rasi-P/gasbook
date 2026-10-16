@@ -287,6 +287,8 @@ class SaleItem(TimeStampedModel):
 
 
 class Payment(TimeStampedModel):
+    # The first receipt of one collection carries its retry key; historical rows stay null.
+    client_ref = models.UUIDField(null=True, blank=True, unique=True, editable=False)
     customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="payments")
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
@@ -551,4 +553,4 @@ class Notification(TimeStampedModel):
         ordering = ["-created_at"]
 
 # Kept separate to keep accessory inventory out of cylinder stock accounting.
-from .product_models import ProductCategory, Product, ProductMovement, BookingItem  # noqa: E402,F401
+from .product_models import ProductCategory, Product, ProductMovement, BookingItem, SaleAccessoryItem  # noqa: E402,F401

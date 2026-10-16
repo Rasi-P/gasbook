@@ -149,7 +149,7 @@ class DeliveryCompleteTests(GasBookTestCase):
         self.assertEqual(sale.payment_mode, Sale.PaymentMode.SPLIT)
         self.assertEqual(Payment.objects.count(), 2)  # zero-amount row creates no Payment
         booking.refresh_from_db()
-        self.assertEqual(booking.payment_status, "COLLECTED")
+        self.assertEqual(booking.payment_status, "PARTIAL")
 
     def test_valid_paid_payment_mode_is_recorded_on_partial_collection(self):
         self.set_stock(self.shop, filled=5)
