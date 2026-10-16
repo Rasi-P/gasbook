@@ -1,6 +1,6 @@
 import { PricingBreakdown, type PricingSnapshot } from './PricingBreakdown';
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
-import { History } from 'lucide-react';
+import { ChevronDown, History } from 'lucide-react';
 import { api, extractApiError, type Paginated } from '../lib/api';
 import { formatDateTime } from '../lib/dateTime';
 import { LoadingState } from './AsyncState';
@@ -26,27 +26,48 @@ export type StaffHistoryEntry<T> = {
   occurred_at: string | null;
 } & ({ history_source: 'sale'; sale: StaffDirectSale } | { history_source: 'delivery'; delivery: T });
 
-export function StaffDirectSaleCard({ sale }: { sale: StaffDirectSale }) {
-  return <Card padding="sm" className="sa-list-card">
-    <div className="sa-order__top">
-      <strong className="sa-order__ref">Direct Sale #{sale.id}</strong>
-      <Badge tone={sale.status === 'cancelled' ? 'danger' : 'success'}>
-        {sale.status === 'cancelled' ? 'Cancelled' : 'Sale completed'}
-      </Badge>
+/** A consistent compact overview; saved line amounts stay available without crowding the list. */
+export function StaffHistoryCard({ reference, badge, times, customer, summary, amountLabel, amount, details }: {
+  reference: string; badge: ReactNode; times: ReactNode; customer: string; summary: string;
+  amountLabel: string; amount: ReactNode; details: ReactNode;
+}) {
+  return <Card padding="sm" className="sa-history-card">
+    <div className="sa-order__top sa-history-card__heading">
+      <strong className="sa-order__ref">{reference}</strong>{badge}
     </div>
-    <span className="event-times">
+    <div className="sa-history-card__times">{times}</div>
+    <div className="sa-history-card__customer" title={customer}>Customer: <strong>{customer || 'Not recorded'}</strong></div>
+    <div className="sa-history-card__summary" title={summary}>{summary}</div>
+    <div className="sa-amount-row sa-amount-row--footer">
+      <span className="sa-amount-row__label">{amountLabel}</span><strong>{amount}</strong>
+    </div>
+    <details className="sa-history-card__details">
+      <summary><span>View items &amp; pricing</span><ChevronDown size={16} /></summary>
+      <div className="sa-history-card__breakdown">{details}</div>
+    </details>
+  </Card>;
+}
+
+export function StaffDirectSaleCard({ sale }: { sale: StaffDirectSale }) {
+  const items = sale.items.filter(item => item.quantity > 0 || Number(item.total_amount) > 0);
+  return <StaffHistoryCard
+    reference={`Direct Sale #${sale.id}`}
+    badge={<Badge tone={sale.status === 'cancelled' ? 'danger' : 'success'}>
+        {sale.status === 'cancelled' ? 'Cancelled' : 'Sale completed'}
+      </Badge>}
+    times={<span className="event-times">
       <span>Recorded {formatDateTime(sale.created_at)}</span>
       {sale.status === 'cancelled' && <span>Cancelled {formatDateTime(sale.cancelled_at)}</span>}
-    </span>
-    {sale.items.filter(item => item.quantity > 0 || Number(item.total_amount) > 0).map(item => (
-      <div key={item.id} className="sa-list-card__text">{item.cylinder_type_name} ({item.quantity} qty)<PricingBreakdown value={item} /></div>
-    ))}
-    <div className="sa-muted">{sale.customer_name}</div>
-    <div className="sa-amount-row sa-amount-row--footer">
-      <span className="sa-amount-row__label">Sale amount:</span>
-      <strong>₹{Number(sale.total_amount).toLocaleString('en-IN')}</strong>
-    </div>
-  </Card>;
+    </span>}
+    customer={sale.customer_name}
+    summary={items.map(item => `${item.cylinder_type_name} (${item.quantity} qty)`).join(' · ')}
+    amountLabel={sale.status === 'cancelled' ? 'Original sale amount' : 'Sale amount'}
+    amount={`₹${Number(sale.total_amount).toLocaleString('en-IN')}`}
+    details={items.map(item => <section key={item.id} className="sa-history-card__item">
+      <div className="sa-history-card__item-heading"><span>{item.cylinder_type_name} ({item.quantity} qty)</span><strong>₹{Number(item.total_amount).toLocaleString('en-IN')}</strong></div>
+      <PricingBreakdown value={item} />
+    </section>)}
+  />;
 }
 
 /** Preserve server order: both sources are sorted together before server pagination. */

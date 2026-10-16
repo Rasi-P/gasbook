@@ -1,7 +1,7 @@
 import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
-import { StaffHistory } from '../../components/StaffHistory';
+import { StaffHistory, StaffHistoryCard } from '../../components/StaffHistory';
 import { useState, useEffect, type ReactNode } from 'react';
 import {
   AlertTriangle,
@@ -997,20 +997,21 @@ export default function StaffMobileLayout() {
         {/* ── History ── */}
         {activeTab === 'history' && !isLoading && !loadError && (
           <StaffHistory<Delivery> renderDelivery={(d) => (
-            <Card key={d.id} padding="sm" className="sa-list-card">
-              <div className="sa-order__top">
-                <strong className="sa-order__ref">Order #{orderRef(d)}</strong>
-                <Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>
-              </div>
-              <DeliveryTimes delivery={d} />
-              <div className="sa-list-card__text">{d.cylinder_type_name} ({d.quantity} qty)</div>
-              <div className="sa-muted">{d.customer_name}</div>
-              <BookingItems items={d.order_items} />
-        <div className="sa-amount-row sa-amount-row--footer">
-                <span className="sa-amount-row__label">Amount Collected:</span>
-                <AmountToCollect delivery={d} showOriginal={false} tone="neutral" />
-              </div>
-            </Card>
+            <StaffHistoryCard
+              reference={`Order #${orderRef(d)}`}
+              badge={<Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>}
+              times={<DeliveryTimes delivery={d} />}
+              customer={d.customer_name}
+              summary={d.order_items?.length
+                ? d.order_items.map(item => `${item.name} (${item.quantity} qty)`).join(' · ')
+                : `${d.cylinder_type_name} (${d.quantity} qty)`}
+              amountLabel="Order total"
+              amount={money(finalAmount(d))}
+              details={d.order_items?.length ? <BookingItems items={d.order_items} /> : <>
+                <div className="sa-history-card__item-heading"><span>{d.cylinder_type_name} ({d.quantity} qty)</span><strong>{money(finalAmount(d))}</strong></div>
+                <PricingBreakdown value={d} />
+              </>}
+            />
           )} />
         )}
 
