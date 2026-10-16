@@ -1,0 +1,14 @@
+.admin-notification-trigger { position: relative; }
+.admin-notification-count { position: absolute; top: -7px; right: -9px; min-width: 19px; padding: 2px 4px; border: 2px solid var(--surface, #fff); border-radius: 12px; background: #d74726; color: white; font-size: 10px; line-height: 1.2; font-weight: 700; }
+.admin-notification-controls { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.admin-notification-filters { display: flex; gap: 6px; }
+.admin-notification-list { display: grid; gap: 10px; }
+.admin-notification { padding: 14px; border: 1px solid var(--border); border-radius: 12px; overflow-wrap: anywhere; }
+.admin-notification--unread { background: #f5f1ff; border-color: #d8c9f4; }
+.admin-notification-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.admin-notification-title h3 { margin: 0; font-size: var(--text-sm); }
+.admin-notification-title span { flex-shrink: 0; font-size: var(--text-xs); color: #6d36c4; font-weight: 600; }
+.admin-notification time { display: block; margin-top: 5px; font-size: var(--text-xs); color: var(--text-secondary); }
+.admin-notification p { margin: 10px 0; white-space: pre-wrap; font-size: var(--text-sm); }
+.admin-notification-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.admin-notification-panel .pager { flex-wrap: wrap; margin-top: 16px; }

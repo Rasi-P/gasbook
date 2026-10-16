@@ -1,3 +1,4 @@
+import { useSearchParams } from 'react-router-dom';
 import { BookingDetailItems } from '../../components/BookingDetailItems';
 import { type BookingItem } from '../../components/BookingItems';
 import { type PricingSnapshot } from '../../components/PricingBreakdown';
@@ -78,7 +79,8 @@ export default function AdminBookings() {
   const [loadError, setLoadError] = useState('');
   const [staffLoadError, setStaffLoadError] = useState('');
   const [approveBusyId, setApproveBusyId] = useState<number | null>(null);
-  const [detailBooking, setDetailBooking] = useState<Booking | null>(null);
+  const [selectedBooking, setDetailBooking] = useState<Booking | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const [rejectBookingId, setRejectBookingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -110,6 +112,21 @@ export default function AdminBookings() {
   }), []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const requestedBookingId = searchParams.get('booking');
+  const linkedBooking = loadStatus === 'ready' && requestedBookingId
+    ? bookings.find(row => String(row.id) === requestedBookingId) : null;
+  const detailBooking = selectedBooking ?? linkedBooking ?? null;
+  const missingLinkedBooking = loadStatus === 'ready' && requestedBookingId && !linkedBooking;
+
+  function closeDetails() {
+    setDetailBooking(null);
+    if (requestedBookingId) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('booking');
+      setSearchParams(next, { replace: true });
+    }
+  }
 
   async function approve(id: number) {
     if (approveBusyId !== null) return;
@@ -167,6 +184,7 @@ export default function AdminBookings() {
         description="Approve customer requests, assign delivery staff, and watch status move through delivery."
       />
 
+      {missingLinkedBooking && <Alert tone="danger" role="alert" className="ui-alert--block-sm">This booking is no longer available.</Alert>}
       {message && <Alert tone="success" className="ui-alert--block-sm">{message}</Alert>}
       {error && <Alert tone="danger" role="alert" className="ui-alert--block-sm">{error}</Alert>}
       {staffLoadError && (
@@ -323,12 +341,12 @@ export default function AdminBookings() {
 
       <Modal
         open={detailBooking !== null}
-        onClose={() => setDetailBooking(null)}
+        onClose={closeDetails}
         closeOnEscape
         title={detailBooking ? `Booking #${detailBooking.id}` : 'Booking details'}
         className="bk-detail-modal"
         size="lg"
-        footer={<Button type="button" variant="secondary" autoFocus onClick={() => setDetailBooking(null)}>Close details</Button>}
+        footer={<Button type="button" variant="secondary" autoFocus onClick={closeDetails}>Close details</Button>}
       >
         {detailBooking && <div className="bk-detail-content">
           <div className="bk-detail-overview">

@@ -1,3 +1,4 @@
+import { AdminNotifications } from './AdminNotifications';
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
@@ -89,10 +90,12 @@ export function AppShell({ role, userName, children }: { role: string; userName:
               <IndianRupee size={18} />
             </IconButton>
           )}
-          <IconButton type="button" label="Notifications" variant="outline">
-            <Bell size={18} />
-          </IconButton>
-          <span className="shell-avatar" aria-hidden="true">{initials}</span>
+          <div className="shell-header__account">
+            {role === 'admin' ? <AdminNotifications /> : <IconButton type="button" label="Notifications" variant="outline">
+              <Bell size={18} />
+            </IconButton>}
+            <span className="shell-avatar" aria-hidden="true">{initials}</span>
+          </div>
         </div>
       </header>
 

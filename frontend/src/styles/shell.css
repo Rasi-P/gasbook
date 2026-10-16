@@ -50,6 +50,14 @@
   gap: 8px;
 }
 
+.shell-header__account {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 12px;
+  margin-left: auto;
+}
+
 .shell-date {
   align-items: center;
   color: var(--text-body);
@@ -418,6 +426,10 @@
 
   .shell-header .shell-brand {
     display: none;
+  }
+
+  .shell-header__tools {
+    flex: 1;
   }
 
   .shell-rates-trigger {
