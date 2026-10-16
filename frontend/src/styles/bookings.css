@@ -4,11 +4,11 @@
   min-width: 680px;
 }
 
-.bookings-table .bk-col-customer { width: 26%; }
-.bookings-table .bk-col-cylinder { width: 20%; }
-.bookings-table .bk-col-status { width: 24%; }
-.bookings-table .bk-col-staff { width: 18%; }
-.bookings-table .bk-col-actions { width: 12%; }
+.bookings-table .bk-col-customer { width: 22%; }
+.bookings-table .bk-col-cylinder { width: 32%; }
+.bookings-table .bk-col-status { width: 18%; }
+.bookings-table .bk-col-staff { width: 14%; }
+.bookings-table .bk-col-actions { width: 14%; }
 
 .bookings-table td {
   vertical-align: top;
@@ -59,6 +59,35 @@
   gap: 6px;
 }
 
+.bk-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.bk-action-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.bk-detail-content { display: grid; gap: 20px; overflow-wrap: anywhere; }
+.bk-detail-content h3 { margin: 0 0 8px; font-size: var(--text-sm); }
+.bk-detail-content p { margin: 8px 0 0; white-space: pre-wrap; }
+.bk-detail-content .booking-item-list { margin: 0; }
+.bk-detail-total { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; }
+
+@media (min-width: 680px) {
+  .bookings-table tbody tr { height: 158px; }
+}
+
+@media (min-width: 680px) and (max-width: 1199px) {
+  .bookings-table tbody tr { height: 180px; }
+}
+
 /* Phones: each booking becomes a card; labels sit above values so long text uses the full width. */
 @media (max-width: 679px) {
   .bookings-table {
@@ -81,4 +110,6 @@
   .bookings-table .bk-actions {
     justify-content: flex-start;
   }
+
+  .bookings-table .bk-action-stack { align-items: flex-start; }
 }

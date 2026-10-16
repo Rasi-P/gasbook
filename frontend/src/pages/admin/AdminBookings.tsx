@@ -77,6 +77,7 @@ export default function AdminBookings() {
   const [loadError, setLoadError] = useState('');
   const [staffLoadError, setStaffLoadError] = useState('');
   const [approveBusyId, setApproveBusyId] = useState<number | null>(null);
+  const [detailBooking, setDetailBooking] = useState<Booking | null>(null);
 
   const [rejectBookingId, setRejectBookingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('');
@@ -202,7 +203,7 @@ export default function AdminBookings() {
             <thead>
               <tr>
                 <Th className="bk-col-customer">Customer</Th>
-                <Th className="bk-col-cylinder">Cylinder</Th>
+                <Th className="bk-col-cylinder">Order &amp; items</Th>
                 <Th className="bk-col-status">Status</Th>
                 <Th className="bk-col-staff">Staff</Th>
                 <Th align="right" className="bk-col-actions">Actions</Th>
@@ -212,33 +213,33 @@ export default function AdminBookings() {
               {pageItems.map((booking) => (
                 <tr key={booking.id}>
                   <Td label="Customer">
-                    <strong className="bk-name">{booking.customer_name}</strong>
+                    <strong className="bk-name bk-clamp" title={booking.customer_name}>{booking.customer_name}</strong>
                     <span className="ui-cell-sub">{booking.customer_phone || booking.customer_area}</span>
-                    <span className="ui-cell-sub">{booking.customer_address}</span>
+                    <span className="ui-cell-sub bk-clamp" title={booking.customer_address}>{booking.customer_address}</span>
                   </Td>
-                  <Td label="Cylinder">
-                    <strong>{booking.quantity} x {booking.cylinder_type_name}</strong>
-                    <BookingTimes booking={booking} />
-                    {booking.order_items?.length ? <BookingItems items={booking.order_items} /> : <PricingBreakdown value={booking} />}
-                    <span className="ui-cell-sub">{booking.order_items?.length ? `Total: ${money(finalAmount(booking))}` : `${money(booking.rate)} each`}</span>
-                    {discountAmount(booking) > 0 && (
-                      <span className="bk-price">
-                        <s>{money(originalAmount(booking))}</s>
-                        <strong>{money(finalAmount(booking))}</strong>
+                  <Td label="Order & items">
+                    <strong className="bk-clamp">{booking.quantity} × {booking.cylinder_type_name}</strong>
+                    {booking.order_items?.some(item => item.type === 'accessory') && (
+                      <span className="ui-cell-sub bk-clamp" title={booking.order_items.filter(item => item.type === 'accessory').map(item => `${item.quantity} × ${item.name}`).join(', ')}>
+                        + {booking.order_items.filter(item => item.type === 'accessory').map(item => `${item.quantity} × ${item.name}`).join(', ')}
                       </span>
                     )}
-                    {booking.note && <span className="ui-cell-sub bk-note">{booking.note}</span>}
+                    <BookingTimes booking={booking} />
+                    <span className="bk-price">
+                      {discountAmount(booking) > 0 && <s>{money(originalAmount(booking))}</s>}
+                      <strong>Total: {money(finalAmount(booking))}</strong>
+                    </span>
                   </Td>
                   <Td label="Status">
                     <div className="bk-status">
                       <Badge tone={bookingStatusTone(booking.status)}>{booking.status.replaceAll('_', ' ')}</Badge>
                       {booking.status === 'rejected' && booking.rejection_reason && (
-                        <span className="bk-reason">Reason: {booking.rejection_reason}</span>
+                        <span className="bk-reason bk-clamp" title={booking.rejection_reason}>Reason: {booking.rejection_reason}</span>
                       )}
                       {booking.status === 'pending' && booking.needs_reassignment && (
                         <Badge tone="warning" square className="ui-badge--wrap">
                           Declined by {booking.delivery_staff_name || 'staff'}
-                          {booking.delivery_rejection_reason ? `: ${booking.delivery_rejection_reason}` : ''}
+                          {booking.delivery_rejection_reason && <span className="bk-clamp" title={booking.delivery_rejection_reason}>: {booking.delivery_rejection_reason}</span>}
                         </Badge>
                       )}
                       {booking.status !== 'pending' && booking.delivery_status && booking.delivery_status !== booking.status && (
@@ -268,10 +269,11 @@ export default function AdminBookings() {
                         })}
                       </Select>
                     ) : (
-                      booking.assigned_staff_name || '-'
+                      <span className="bk-clamp" title={booking.assigned_staff_name || undefined}>{booking.assigned_staff_name || '-'}</span>
                     )}
                   </Td>
                   <Td label="Actions" align="right">
+                    <div className="bk-action-stack">
                     {booking.status === 'pending' ? (
                       <div className="bk-actions">
                         <IconButton
@@ -301,6 +303,8 @@ export default function AdminBookings() {
                     ) : (
                       <Badge icon={<Truck />}>{booking.status.replaceAll('_', ' ')}</Badge>
                     )}
+                    <Button type="button" variant="secondary" size="sm" onClick={() => setDetailBooking(booking)}>View details</Button>
+                    </div>
                   </Td>
                 </tr>
               ))}
@@ -315,6 +319,45 @@ export default function AdminBookings() {
         )}
       </Card>
       )}
+
+      <Modal
+        open={detailBooking !== null}
+        onClose={() => setDetailBooking(null)}
+        closeOnEscape
+        title={detailBooking ? `Booking #${detailBooking.id}` : 'Booking details'}
+        className="bk-detail-modal"
+        footer={<Button type="button" variant="secondary" autoFocus onClick={() => setDetailBooking(null)}>Close details</Button>}
+      >
+        {detailBooking && <div className="bk-detail-content">
+          <section>
+            <h3>Customer</h3>
+            <strong>{detailBooking.customer_name}</strong>
+            {detailBooking.customer_phone && <div>{detailBooking.customer_phone}</div>}
+            {detailBooking.customer_address && <div>{detailBooking.customer_address}</div>}
+            {detailBooking.customer_area && <div>{detailBooking.customer_area}</div>}
+          </section>
+          <section>
+            <h3>Booking status</h3>
+            <Badge tone={bookingStatusTone(detailBooking.status)}>{detailBooking.status.replaceAll('_', ' ')}</Badge>
+            <BookingTimes booking={detailBooking} />
+            <div>Assigned staff: {detailBooking.assigned_staff_name || 'Unassigned'}</div>
+            {detailBooking.delivery_status && <div>Delivery: {detailBooking.delivery_status.replaceAll('_', ' ')}</div>}
+            {detailBooking.rejection_reason && <p className="bk-reason">Reason: {detailBooking.rejection_reason}</p>}
+            {detailBooking.needs_reassignment && <p>Declined by {detailBooking.delivery_staff_name || 'staff'}{detailBooking.delivery_rejection_reason ? `: ${detailBooking.delivery_rejection_reason}` : ''}</p>}
+          </section>
+          <section>
+            <h3>Items &amp; pricing</h3>
+            {detailBooking.order_items?.length ? <BookingItems items={detailBooking.order_items} /> : <>
+              <strong>{detailBooking.quantity} × {detailBooking.cylinder_type_name}</strong>
+              <div>{money(detailBooking.rate)} each</div>
+              <PricingBreakdown value={detailBooking} />
+            </>}
+            {discountAmount(detailBooking) > 0 && <p>Discount: {money(discountAmount(detailBooking))}</p>}
+            <div className="bk-detail-total"><span>Order total</span><strong>{money(finalAmount(detailBooking))}</strong></div>
+          </section>
+          {detailBooking.note && <section><h3>Note</h3><p>{detailBooking.note}</p></section>}
+        </div>}
+      </Modal>
 
       <Modal
         open={rejectBookingId !== null}
