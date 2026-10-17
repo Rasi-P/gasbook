@@ -29,6 +29,8 @@ import { Tabs } from '../components/ui/Tabs';
 
 type CylinderType = { id: number; name: string; deposit_amount: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
+type AccessoryProduct = { id: number; name: string; selling_price: string; is_active: boolean; available: boolean; stock: number; reserved: number };
+type AccessoryLine = { product: number; quantity: number | string };
 type SaleItem = { cylinder_type: number; quantity: number | string; empty_returned: number | string; rate_type: 'refill' | 'new'; rate?: string; deposit?: string };
 // The server validates active admins and eligible staff using the same handover rule.
 type StaffOption = { id: number; user: number; username: string; first_name: string; last_name: string; role: string; can_hand_over: boolean };
@@ -109,6 +111,13 @@ export default function Sales() {
 
   // Sale items (start empty — user adds as needed)
   const [items, setItems] = useState<SaleItem[]>([]);
+  const [products, setProducts] = useState<AccessoryProduct[]>([]);
+  const [accessories, setAccessories] = useState<AccessoryLine[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState('');
+  const [productsRevision, setProductsRevision] = useState(0);
+  const availableProducts = products.filter(p => p.is_active && p.available && p.stock > p.reserved);
+  const nextProduct = availableProducts.find(p => !accessories.some(line => line.product === p.id));
   const [paymentMode, setPaymentMode] = useState('cash');
   const [paidAmount, setPaidAmount] = useState('');
   const [paidPaymentMode, setPaidPaymentMode] = useState('cash');
@@ -173,6 +182,16 @@ export default function Sales() {
   }
 
   useEffect(() => { loadReferenceData(); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAllPages<AccessoryProduct>('/products/').then(rows => {
+      if (!cancelled) { setProducts(rows); setProductsError(''); }
+    }).catch(err => {
+      if (!cancelled) setProductsError(extractApiError(err, [], 'Could not load accessories.'));
+    }).finally(() => { if (!cancelled) setProductsLoading(false); });
+    return () => { cancelled = true; };
+  }, [productsRevision]);
 
   // Optional field: if the list cannot load, the sale can still be recorded without it.
   useEffect(() => {
@@ -285,25 +304,25 @@ export default function Sales() {
 
   // ── Totals ────────────────────────────────────────────────────────────────
 
-  type Quote = { total_amount: string; discount_amount: string };
+  type Quote = { total_amount: string; discount_amount: string; accessory_items?: { name: string; quantity: number; rate: string; total_amount: string }[] };
   const [quote, setQuote] = useState<{ key: string; data?: Quote; error?: string } | null>(null);
   const [quoteRevision, setQuoteRevision] = useState(0);
   const quoteRequest = JSON.stringify({ customer: selectedCustomerId, sale_items: items.map(item => ({
     cylinder_type: item.cylinder_type, quantity: Number(item.quantity), rate_type: item.rate_type,
     empty_returned: Number(item.empty_returned),
     refill_charge: itemAmounts(item).refill, deposit: itemAmounts(item).deposit,
-  })) });
+  })), accessory_lines: accessories.map(line => ({ product: line.product, quantity: Number(line.quantity) })) });
   const quoteKey = `${quoteRevision}:${quoteRequest}`;
   useEffect(() => {
     let cancelled = false;
-    if (!items.length) return;
+    if (returnMode || (!items.length && !accessories.length)) return;
     const timer = window.setTimeout(() => {
       api.post<Quote>('/sales/preview/', JSON.parse(quoteRequest))
         .then(({ data }) => { if (!cancelled) setQuote({ key: quoteKey, data }); })
         .catch(err => { if (!cancelled) setQuote({ key: quoteKey, error: extractApiError(err, [], 'Could not calculate pricing.') }); });
     }, 150);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [quoteRequest, quoteKey, items.length]);
+  }, [quoteRequest, quoteKey, items.length, accessories.length, returnMode]);
   useEffect(() => {
     const refresh = () => {
       fetchAllPages<CylinderType>('/cylinder-types/')
@@ -313,7 +332,10 @@ export default function Sales() {
     window.addEventListener('gas-rates-changed', refresh);
     return () => window.removeEventListener('gas-rates-changed', refresh);
   }, []);
-  const currentQuote = quote?.key === quoteKey ? quote : null;
+  const currentQuote = !returnMode && (items.length || accessories.length) && quote?.key === quoteKey ? quote : null;
+  // The API combines accessories and returns them in product-ID order.
+  const quotedAccessories = new Map([...accessories].sort((a, b) => a.product - b.product)
+    .map((line, index) => [line.product, currentQuote?.data?.accessory_items?.[index]]));
   const total = Number(currentQuote?.data?.total_amount ?? 0);
   const paid = paymentMode === 'split' ? (Number(saleSplit.cash || 0) + Number(saleSplit.gpay || 0) + Number(saleSplit.bank || 0)) : (paymentMode === 'credit' ? Number(paidAmount || 0) : total);
   const balance = Math.max(total - paid, 0);
@@ -326,7 +348,7 @@ export default function Sales() {
     e.preventDefault();
     if (saving) return;
     setMessage(''); setError(''); setExistingCustomer(null);
-    if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
+    if (!items.length && !accessories.length) { setError('Add at least one cylinder or accessory.'); return; }
     if (!currentQuote?.data) { setError('Wait for a valid price quote.'); return; }
     if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
       setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
@@ -354,6 +376,7 @@ export default function Sales() {
         paid_amount: paid.toFixed(2),
         quoted_total: Number(currentQuote.data.total_amount).toFixed(2),
         sale_items: JSON.parse(quoteRequest).sale_items,
+        accessory_lines: JSON.parse(quoteRequest).accessory_lines,
       };
       if (handoverStaff) salePayload.handover_staff = Number(handoverStaff);
       if (selectedCustomerId) salePayload.customer = selectedCustomerId;
@@ -384,6 +407,8 @@ export default function Sales() {
       setPaidAmount(''); setPaymentMode('cash'); setPaidPaymentMode('cash'); setSaleSplit({ cash: '', gpay: '', bank: '' });
       setPastAmount(''); setPastPaymentMode('cash'); setPastSplit({ cash: '', gpay: '', bank: '' });
       setItems([]);
+      setAccessories([]);
+      setProductsRevision(value => value + 1);
       setHandoverStaff('');
       setClientRef(newClientRef());
     } catch (err: unknown) {
@@ -393,7 +418,7 @@ export default function Sales() {
         setError('An earlier attempt of this sale was already saved. Check Sales history before entering it again.');
       } else {
         if (['rate_mismatch', 'quote_changed'].includes(getApiErrorCode(err) ?? '')) setQuoteRevision(value => value + 1);
-        setError(extractApiError(err, ['name', 'phone', 'address', 'customer', 'location', 'sale_items', 'paid_amount', 'split_payments', 'handover_staff', 'non_field_errors'], 'Failed to save sale. Check backend connection.'));
+        setError(extractApiError(err, ['name', 'phone', 'address', 'customer', 'location', 'sale_items', 'accessory_lines', 'paid_amount', 'split_payments', 'handover_staff', 'non_field_errors'], 'Failed to save sale. Check backend connection.'));
       }
     } finally {
       setSaving(false);
@@ -460,7 +485,7 @@ export default function Sales() {
 
   return (
     <div>
-      <PageHeader title="Sales" description="Multi-cylinder invoice entry and history." />
+      <PageHeader title="Sales" description="Cylinder and accessory sales, payments and history." />
 
       {/* Tab switcher */}
       <Tabs
@@ -549,7 +574,7 @@ export default function Sales() {
             </div>
             {!returnMode && (
               <div className="grid-2 sale-card__row">
-                <Field label="Handed over by" hint={staffLoadError || 'Optional. The admin or staff member who gave the cylinders to the customer.'}>
+                <Field label="Handed over by" hint={staffLoadError || 'Optional. The admin or staff member who handed the items to the customer.'}>
                   <Select value={handoverStaff} onChange={(e) => setHandoverStaff(e.target.value)}>
                     <option value="">Not specified</option>
                     {handoverOptions.map((s) => <option key={s.id} value={s.user}>{staffName(s)}</option>)}
@@ -763,6 +788,26 @@ export default function Sales() {
                 </div>
               </Card>
 
+              <Card className="sale-card" aria-label="Accessories">
+                <CardHeader title="Accessories" meta={<Button type="button" variant="secondary" size="sm" icon={<Plus />} disabled={saving || productsLoading || !!productsError || !nextProduct} onClick={() => { if (nextProduct) setAccessories(prev => [...prev, { product: nextProduct.id, quantity: 1 }]); }}>Add accessory</Button>} />
+                {productsLoading && <LoadingState label="Loading accessories…" />}
+                {productsError && <ErrorState message={productsError} onRetry={() => { setProductsLoading(true); setProductsRevision(value => value + 1); }} />}
+                {!productsLoading && !productsError && !accessories.length && <p className="muted">{availableProducts.length ? 'Add accessories to this sale, with or without cylinders.' : 'No accessories are currently available.'}</p>}
+                <div className="sale-accessories">
+                  {accessories.map((line, index) => {
+                    const product = products.find(p => p.id === line.product);
+                    const quoted = quotedAccessories.get(line.product);
+                    return <div className="sale-accessory" key={index}>
+                      <Field label="Product"><Select disabled={saving} value={line.product} onChange={e => setAccessories(rows => rows.map((r, i) => i === index ? { ...r, product: Number(e.target.value) } : r))}>{availableProducts.map(p => <option key={p.id} value={p.id} disabled={accessories.some((r, i) => i !== index && r.product === p.id)}>{p.name}</option>)}</Select></Field>
+                      <Field label="Rate (Rs.)"><Input readOnly value={quoted?.rate ?? product?.selling_price ?? ''} /></Field>
+                      <Field label="Accessory quantity" hint={product ? `${Math.max(0, product.stock - product.reserved)} available` : undefined}><Input type="number" inputMode="numeric" min="1" max={product ? product.stock - product.reserved : undefined} step="1" required disabled={saving} value={line.quantity} onChange={e => setAccessories(rows => rows.map((r, i) => i === index ? { ...r, quantity: e.target.value } : r))} /></Field>
+                      <div className="sale-accessory__subtotal"><span>Subtotal</span><strong>{quoted ? money(quoted.total_amount) : '—'}</strong></div>
+                      <IconButton type="button" label="Remove accessory" tone="danger" disabled={saving} onClick={() => setAccessories(rows => rows.filter((_, i) => i !== index))}><Trash2 size={17} /></IconButton>
+                    </div>;
+                  })}
+                </div>
+              </Card>
+
               {/* Payment */}
               <Card className="sale-card">
                 <CardHeader title="Payment" />
@@ -810,7 +855,7 @@ export default function Sales() {
                   </div>
                 )}
 
-                {items.length > 0 && !currentQuote && <p>Calculating pricing…</p>}
+                {(items.length > 0 || accessories.length > 0) && !currentQuote && <p>Calculating pricing…</p>}
                 {currentQuote?.error && <Alert tone="danger">{currentQuote.error} <Button type="button" onClick={() => setQuoteRevision(value => value + 1)}>Retry</Button></Alert>}
                 <div className="sale-total">
                   <span className="sale-total__label">Grand Total</span>
