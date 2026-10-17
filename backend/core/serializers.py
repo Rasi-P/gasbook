@@ -322,7 +322,7 @@ class SaleItemWriteSerializer(serializers.Serializer):
     rate_type = serializers.ChoiceField(choices=["new", "refill"], default="refill")
     # Optional legacy client assertion, never an override of the calculated price.
     rate = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
-    # Editable components for admin Direct Sales. Snapshot fields stay read-only.
+    # Editable cylinder components for authorized admin/staff Direct Sales. Snapshot fields stay read-only.
     deposit = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
     refill_charge = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
     empty_returned = serializers.IntegerField(min_value=0, max_value=MAX_COUNT, default=0)
@@ -538,8 +538,6 @@ class SaleSerializer(serializers.ModelSerializer):
         if getattr(getattr(user, 'role', None), 'code', '') == 'staff':
             if attrs.get('new_customer') or attrs.get('past_due_payments'):
                 raise ApiError('Select an existing customer. Collect older balances separately.', code='not_allowed', status=403)
-            if any('deposit' in line or 'refill_charge' in line for line in attrs.get('sale_items', [])):
-                raise ApiError('Staff must use configured customer prices.', code='price_override_forbidden', status=403)
             check_handover_staff(attrs.get('handover_staff'), user)
             attrs['handover_staff'] = user
         attrs["handover_staff"] = check_handover_staff(attrs.get("handover_staff"), user)
@@ -753,6 +751,11 @@ class SaleSerializer(serializers.ModelSerializer):
                     {"cylinder_type": line["cylinder_type"].pk, "quantity": line["quantity"], "rate": str(line["rate"]),
                      "empty_returned": line["empty_returned"],
                      "rate_type": line["rate_type"],
+                     # Capture the catalog and customer-agreed baseline at sale creation.
+                     # Applied components below and ActivityLog.user identify what changed and who sold it.
+                     "configured_deposit_unit_amount": str(line["cylinder_type"].deposit_amount),
+                     "configured_refill_unit_amount": str(line["cylinder_type"].refill_rate),
+                     "customer_refill_unit_amount": str(customer.get_rate_for_cylinder(line["cylinder_type"])),
                      "deposit_unit_amount": str(line["deposit_unit_amount"]),
                      "refill_unit_amount": str(line["refill_unit_amount"]),
                      "discount_amount": str(line["discount_amount"]),

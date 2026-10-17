@@ -7,6 +7,7 @@ import { Card, CardHeader } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Field, Input, Select } from '../../components/ui/Field';
 import { Alert } from '../../components/ui/Alert';
+import { DirectSaleRates } from '../../components/DirectSaleRates';
 import { PaymentCollectionForm } from '../../components/PaymentCollectionForm';
 import { collectionError, emptyCollection, receiptParts } from '../../lib/paymentCollection';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
@@ -18,11 +19,14 @@ type Customer = {
     phone: string;
     address: string;
     pending_amount: string;
+    custom_rates?: { cylinder_type: number; custom_price: string }[];
 };
 type Cylinder = {
     id: number;
     name: string;
     is_active: boolean;
+    refill_rate: string;
+    deposit_amount: string;
 };
 type Product = {
     id: number;
@@ -40,6 +44,8 @@ type CylinderLine = {
     quantity: number;
     rate_type: 'refill' | 'new';
     empty_returned: number;
+    refill_charge?: string;
+    deposit?: string;
 };
 type ProductLine = {
     product: number;
@@ -114,7 +120,20 @@ export default function StaffDirectSale({ onBack, onDone, onBusyChange }: {
         balance_due: string;
         payment_summary: PaymentFacts;
     };
-    const key = JSON.stringify({ customer: customer?.id, sale_items: lines, accessory_lines: accessories });
+    const key = JSON.stringify({ customer: customer?.id, sale_items: lines.map(({ deposit, ...line }) => ({ ...line, ...(line.rate_type === 'new' ? { deposit } : {}) })), accessory_lines: accessories });
+    function updateLine(index: number, patch: Partial<CylinderLine>) {
+        setLines(previous => previous.map((line, i) => i === index
+            ? { ...line, ...(patch.cylinder_type !== undefined ? { refill_charge: undefined, deposit: undefined } : {}), ...patch }
+            : line));
+    }
+    function lineRates(line: CylinderLine) {
+        const cylinder = cylinders.find(c => c.id === line.cylinder_type);
+        const agreed = customer?.custom_rates?.find(rate => rate.cylinder_type === line.cylinder_type);
+        return {
+            refill: line.refill_charge ?? agreed?.custom_price ?? cylinder?.refill_rate ?? '',
+            deposit: line.deposit ?? cylinder?.deposit_amount ?? '',
+        };
+    }
     const current = quote?.key === key ? quote.data : null;
     const availableCylinders = cylinders.filter(c => stock.some(s => s.location === Number(location) && s.cylinder_type === c.id && s.quantity > 0));
     useEffect(() => { let cancelled = false; Promise.all([fetchAllPages<Cylinder>('/cylinder-types/'), fetchAllPages<Product>('/products/'), fetchAllPages<Location>('/locations/'), fetchAllPages<{
@@ -210,11 +229,17 @@ export default function StaffDirectSale({ onBack, onDone, onBusyChange }: {
                 <div className="sa-sale__group-heading"><h3>Cylinders</h3><Button size="sm" variant="secondary" icon={<Plus size={15} />} disabled={locked || !availableCylinders.length} onClick={() => setLines([...lines, { cylinder_type: availableCylinders[0].id, quantity: 1, rate_type: 'refill', empty_returned: 0 }])}>Add cylinder</Button></div>
                 {!lines.length && <p className="sa-muted">{!catalogLoading && !availableCylinders.length ? 'No cylinders available at this location.' : 'Add a refill or a new cylinder.'}</p>}
                 {lines.map((line, index) => <div key={index} className="sa-sale__item">
-                    <div className="sa-sale__picker"><Field label="Cylinder"><Select disabled={locked} value={line.cylinder_type} onChange={e => setLines(lines.map((l, i) => i === index ? { ...l, cylinder_type: Number(e.target.value) } : l))}>{availableCylinders.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field><IconButton label="Remove cylinder" tone="danger" disabled={locked} onClick={() => setLines(lines.filter((_, i) => i !== index))}><Trash2 size={17} /></IconButton></div>
+                    <div className="sa-sale__picker"><Field label="Cylinder"><Select disabled={locked} value={line.cylinder_type} onChange={e => updateLine(index, { cylinder_type: Number(e.target.value) })}>{availableCylinders.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</Select></Field><IconButton label="Remove cylinder" tone="danger" disabled={locked} onClick={() => setLines(lines.filter((_, i) => i !== index))}><Trash2 size={17} /></IconButton></div>
                     <div className="sa-sale__item-grid">
                         <Field label="Rate type"><Select disabled={locked} value={line.rate_type} onChange={e => setLines(lines.map((l, i) => i === index ? { ...l, rate_type: e.target.value as 'new' | 'refill' } : l))}><option value="refill">Refill</option><option value="new">New Cylinder</option></Select></Field>
                         <Field as="div" label="Quantity"><QuantityControl label="Quantity" disabled={locked} value={line.quantity} onChange={quantity => setLines(lines.map((l, i) => i === index ? { ...l, quantity } : l))} /></Field>
                         <Field label="Empty returned"><Input type="number" inputMode="numeric" min="0" disabled={locked} value={line.empty_returned} onChange={e => setLines(lines.map((l, i) => i === index ? { ...l, empty_returned: Number(e.target.value) } : l))} /></Field>
+                    </div>
+                    <div className="sa-sale__rates">
+                        <DirectSaleRates rateType={line.rate_type} rateLabel="Refill Rate (Rs.)" disabled={locked}
+                            rate={lineRates(line).refill} deposit={lineRates(line).deposit}
+                            onRateChange={refill_charge => updateLine(index, { refill_charge })}
+                            onDepositChange={deposit => updateLine(index, { deposit })} />
                     </div>
                 </div>)}
             </section>

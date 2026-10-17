@@ -100,7 +100,7 @@ class StaffPaymentTests(GasBookTestCase):
         self.assertFalse(row['can_order_again'])
 
     def test_unauthorized_staff_and_tampered_prices(self):
-        for extra in [dict(sold_by=self.staff_b.pk),dict(handover_staff=self.staff_b.pk),dict(sale_items=[dict(cylinder_type=self.cylinder.pk,quantity=1,deposit='1',rate_type='new')]),dict(accessory_lines=[dict(product=self.product.pk,quantity=1,rate='1')]),dict(total_amount='1')]:
+        for extra in [dict(sold_by=self.staff_b.pk),dict(handover_staff=self.staff_b.pk),dict(sale_items=[dict(cylinder_type=self.cylinder.pk,quantity=1,deposit='1',rate_type='refill')]),dict(accessory_lines=[dict(product=self.product.pk,quantity=1,rate='1')]),dict(total_amount='1')]:
             response=self.client.post('/api/staff-sales/',self.payload(**extra),format='json')
             self.assertIn(response.status_code,[400,403],response.data)
         self.assertFalse(Sale.objects.exists())

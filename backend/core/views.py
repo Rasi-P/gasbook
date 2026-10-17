@@ -710,9 +710,6 @@ class SaleViewSet(
         if getattr(getattr(request.user, 'role', None), 'code', '') == 'staff':
             if customer is None:
                 raise ApiError('Select an existing customer.', code='required', field='customer')
-            raw_lines = request.data.get('sale_items', [])
-            if isinstance(raw_lines, list) and any(isinstance(line, dict) and ('deposit' in line or 'refill_charge' in line) for line in raw_lines):
-                raise ApiError('Staff must use configured customer prices.', code='price_override_forbidden', status=403)
         from . import sale_accessories
         accessory_input = sale_accessories.AccessoryInput(data=request.data.get('accessory_lines', []), many=True)
         accessory_input.is_valid(raise_exception=True)

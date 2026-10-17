@@ -1125,14 +1125,11 @@
 .sa-sale__payment .sa-amount-row { font-size: 13px; }
 .sa-sale__success { display: grid; gap: 14px; }
 .sa-sale__success > svg { color: var(--primary); }
-@media (min-width: 420px) {
-  .sa-sale__item-grid { grid-template-columns: 1fr 1.1fr 0.85fr; }
-}
 .sa-sale__subtotal .sa-sale__discount { color: var(--primary); }
 
 /* A focused, three-step sale workspace. */
 .sa__column--sale { max-width: 1040px; }
-.sa-sale { gap: 20px; }
+.sa-sale { gap: 16px; }
 .sa-sale__header h1 { font-size: 23px; letter-spacing: -.5px; }
 .sa-sale__header p { margin: 4px 0 0; color: var(--text-secondary); font-size: 13px; }
 .sa-sale__steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 5px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; gap: 4px; }
@@ -1142,28 +1139,44 @@
 .sa-sale__steps button[aria-current] > span { background: var(--primary); border-color: var(--primary); color: white; }
 .sa-sale__steps button:disabled { cursor: not-allowed; opacity: .5; }
 .sa-sale__workspace, .sa-sale__main { display: grid; gap: 18px; min-width: 0; }
-.sa-sale__section, .sa-sale__summary { padding: 20px; gap: 18px; }
-.sa-sale__section .ui-card__title { font-size: 18px; letter-spacing: -.25px; }
+.sa-sale__section, .sa-sale__summary { padding: 16px; gap: 14px; }
+.sa-sale__section .ui-card__title { font-size: 16px; letter-spacing: -.25px; }
 .sa-sale__section .ui-card__description { font-size: 13px; }
-.sa-sale__section .ui-input { min-height: 46px; }
+.sa-sale__section .ui-input { min-height: 44px; }
 .sa-sale__customer { background: var(--primary-light); padding: 12px; border-radius: 10px; }
 .sa-sale__customer .ui-btn { color: var(--primary); }
 .sa-sale__matches button { padding: 14px; min-height: 60px; }
 .sa-sale__group { display: grid; gap: 12px; }
-.sa-sale__group + .sa-sale__group { padding-top: 18px; }
+.sa-sale__group + .sa-sale__group { padding-top: 14px; }
 .sa-sale__group .sa-muted { margin: 0; }
-.sa-sale__item { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--bg); }
+.sa-sale__item { container: sale-item / inline-size; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--bg); }
 .sa-sale__item + .sa-sale__item { border: 1px solid var(--border); margin-top: 0; }
-.sa-sale__item-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-.sa-sale__quantity { max-width: 160px; }
-.sa-sale__quantity .ui-iconbtn { min-height: 44px; }
-.sa-sale__next { border-top: 1px solid var(--border); padding-top: 16px; display: grid; gap: 12px; }
+/* Group handling controls separately from prices; no orphaned return field. */
+.sa-sale__item-grid { grid-template-columns: minmax(128px, 1fr) minmax(0, 1fr); align-items: end; }
+.sa-sale__item-grid > .ui-field:first-child { grid-column: 1 / -1; }
+.sa-sale__rates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.sa-sale__item .ui-input { height: 44px; padding: 8px 10px; border-radius: 8px; font-variant-numeric: tabular-nums; }
+.sa-sale__item .ui-select { padding-right: 28px; }
+.sa-sale__picker { grid-template-columns: minmax(0, 1fr) 40px; align-items: end; }
+.sa-sale__picker .ui-iconbtn { width: 40px; height: 44px; }
+.sa-sale__quantity { width: 100%; max-width: 144px; grid-template-columns: 40px minmax(40px, 1fr) 40px; gap: 4px; }
+.sa-sale__quantity .ui-iconbtn { min-height: 44px; height: 44px; border-radius: 8px; }
+.sa-sale__quantity .ui-input { padding: 4px; }
+@container sale-item (min-width: 420px) {
+  .sa-sale__item-grid { grid-template-columns: minmax(0, 1fr) 144px 110px; }
+  .sa-sale__item-grid > .ui-field:first-child { grid-column: auto; }
+}
+@media (max-width: 767px) {
+  /* Keep phone inputs readable without triggering focus zoom on iOS. */
+  .sa-sale__item .ui-input { font-size: 16px; }
+}
+.sa-sale__next { border-top: 1px solid var(--border); padding-top: 12px; display: grid; gap: 12px; }
 .sa-sale__next .ui-btn, .sa-sale__section > .ui-btn { min-height: 48px; font-size: 14px; }
 .sa-sale__next-total { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .sa-sale__next-total strong { font-size: 22px; }
 .sa-sale__aside { display: none; min-width: 0; }
 .sa-sale--step-2 .sa-sale__aside { display: block; grid-row: 1; }
-.sa-sale__summary { display: grid; gap: 18px; }
+.sa-sale__summary { display: grid; gap: 14px; }
 .sa-sale__summary .ui-card__header { margin: 0; }
 .sa-sale__summary .ui-card__title { font-size: 16px; }
 .sa-sale__summary .ui-card__meta { color: var(--primary); }
@@ -1188,14 +1201,15 @@
   .sa-sale__item { padding: 10px; }
   .sa-sale__steps button { gap: 5px; font-size: 12px; }
   .sa-sale__steps button > span { width: 21px; height: 21px; }
-  .sa-sale__item-grid { grid-template-columns: 1fr; }
 }
 @media (min-width: 768px) {
   .sa__column--sale { padding-top: 32px; }
   .sa-sale__workspace { grid-template-columns: minmax(0, 1.45fr) minmax(280px, 1fr); align-items: start; }
   .sa-sale__aside, .sa-sale--step-2 .sa-sale__aside { display: block; grid-column: 2; grid-row: 1; position: sticky; top: 24px; }
   .sa-sale__main { grid-column: 1; grid-row: 1; }
-  .sa-sale__section, .sa-sale__summary { padding: 24px; }
+  .sa-sale__section, .sa-sale__summary { padding: 18px; }
+  .sa-sale__item .ui-input { min-height: 40px; height: 40px; padding-block: 6px; }
+  .sa-sale__item .ui-iconbtn { min-height: 40px; height: 40px; }
   .sa-sale__steps { max-width: 620px; }
 }
 .sa-sale__payment-methods .ui-chip svg { width: 20px; height: 20px; }
