@@ -566,19 +566,26 @@
 }
 
 /* ── Lists (all deliveries, history) ── */
-/* Every filter stays visible (no sideways scrolling), with field-friendly tap targets */
+/* A balanced two-row filter on narrow phones; one row when space permits. */
 .sa-filters .ui-tabs {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
 }
-
 .sa-filters .ui-tab {
-  min-height: 40px;
+  grid-column: span 2;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 6px 4px;
+  font-size: 12px;
 }
-
-/* An odd last filter ("All") takes the whole row instead of sitting alone in half of it */
-.sa-filters .ui-tab:last-child:nth-child(odd) {
-  grid-column: 1 / -1;
+.sa-filters .ui-tab:nth-child(-n + 2) { grid-column: span 3; }
+.sa-filters .ui-tab[aria-selected="true"] { background: var(--primary-light); color: var(--primary); }
+@media (min-width: 400px) {
+  .sa-filters .ui-tabs { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .sa-filters .ui-tab, .sa-filters .ui-tab:nth-child(-n + 2) { grid-column: auto; }
 }
 
 .sa-list {
@@ -726,6 +733,19 @@
   font-weight: var(--weight-semibold);
   gap: 2px;
 }
+
+/* Keep summaries bounded; the complete address and every item remain in details. */
+.sa-ocard .sa-order__top { align-items: start; }
+.sa-ocard .sa-order__ref { min-width: 0; overflow-wrap: anywhere; }
+.sa-ocard .event-times { font-size: 11px; line-height: 1.5; gap: 3px; }
+.sa-ocard__name { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; max-width: 100%; }
+.sa-ocard__address { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.sa-ocard__items { background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+.sa-ocard__items > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 2.9em; }
+.sa-ocard__meta { padding-top: 2px; }
+.sa-ocard__more { font-size: 12px; white-space: nowrap; }
+.sa-ocard .sa-amount-row--footer { margin-top: 0; }
+.sa-ocard .sa-amount__value { font-size: 18px; }
 
 .sa-ocard__confirm {
   background: var(--warning-tint);

@@ -5,7 +5,7 @@ import { PaymentCollectionForm } from '../../components/PaymentCollectionForm';
 import { emptyCollection, receiptParts, collectionError, type CollectionForm } from '../../lib/paymentCollection';
 import { PaymentSummary, type PaymentFacts } from '../../components/PaymentSummary';
 import { BookingDetailItems } from '../../components/BookingDetailItems';
-import { BookingItems, type BookingItem } from '../../components/BookingItems';
+import { type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
 import { StaffHistory, StaffHistoryCard } from '../../components/StaffHistory';
@@ -142,15 +142,17 @@ function AmountToCollect({
   delivery,
   showOriginal,
   tone = 'primary',
+  showBreakdown = true,
 }: {
   delivery: Delivery;
   showOriginal: boolean;
   tone?: AmountTone;
+  showBreakdown?: boolean;
 }) {
   const isDiscounted = showOriginal && discountAmount(delivery) > 0;
   return (
     <div className="sa-amount">
-      {!delivery.order_items?.length && <PricingBreakdown value={delivery} />}
+      {showBreakdown && !delivery.order_items?.length && <PricingBreakdown value={delivery} />}
       {isDiscounted && (
         <div className="sa-amount__original">
           {money(originalAmount(delivery))}
@@ -680,7 +682,7 @@ export default function StaffMobileLayout() {
           ) : null}
         </div>
 
-        <BookingItems items={order.order_items} />
+        <BookingDetailItems items={order.order_items || []} />
         <div className="sa-block">
           <div className="sa-block__eyebrow">CUSTOMER &amp; ADDRESS</div>
           <div className="sa-block__name">{order.customer_name}</div>
@@ -732,6 +734,9 @@ export default function StaffMobileLayout() {
     const delivered = order.status === 'delivered';
     const actions = renderOrderActions(order);
     const codConfirm = renderCodConfirm(order);
+    const itemSummary = order.order_items?.length
+      ? order.order_items.map(item => `${item.quantity} × ${item.name}`).join(' · ')
+      : `${order.quantity} × ${order.cylinder_type_name}`;
 
     return (
       <Card key={order.id} padding="sm" className={cx('sa-ocard', ACTIVE_STATUSES.includes(order.status) && 'sa-ocard--active')}>
@@ -741,28 +746,24 @@ export default function StaffMobileLayout() {
             <StatusBadge status={order.status} />
           </span>
           <DeliveryTimes delivery={order} />
-          <span className="sa-ocard__name">{order.customer_name}</span>
+          <span className="sa-ocard__name" title={order.customer_name}>{order.customer_name}</span>
           <span className="sa-ocard__line">
             <MapPin size={14} aria-hidden="true" />
-            <span>{order.customer_address || 'No address provided'}</span>
+            <span className="sa-ocard__address" title={order.customer_address}>{order.customer_address || 'No address provided'}</span>
+          </span>
+          <span className="sa-ocard__items sa-ocard__line">
+            <Cylinder size={14} aria-hidden="true" />
+            <span title={itemSummary}>{itemSummary}</span>
           </span>
           <span className="sa-ocard__meta">
-            <span className="sa-ocard__line">
-              <Cylinder size={14} aria-hidden="true" />
-              <span>{order.quantity} × {order.cylinder_type_name}</span>
-            </span>
             <PaymentBadge delivery={order} />
-          </span>
-          <span className="sa-ocard__more">
-            View details
-            <ChevronRight size={16} aria-hidden="true" />
+            <span className="sa-ocard__more">View details<ChevronRight size={16} aria-hidden="true" /></span>
           </span>
         </button>
 
-        <BookingItems items={order.order_items} />
         <div className="sa-amount-row sa-amount-row--footer">
           <span className="sa-amount-row__label">{delivered ? 'Amount Collected:' : 'Amount to Collect:'}</span>
-          <AmountToCollect delivery={order} showOriginal={!delivered} />
+          <AmountToCollect delivery={order} showOriginal={!delivered} showBreakdown={false} />
         </div>
 
         {codConfirm ? <div className="sa-ocard__confirm">{codConfirm}</div> : null}
