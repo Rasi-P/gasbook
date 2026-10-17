@@ -275,6 +275,7 @@ export default function StaffMobileLayout() {
 
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('Too far');
+  const [customRejectReason, setCustomRejectReason] = useState('');
   const [rejectBusy, setRejectBusy] = useState(false);
   const [actionBusyId, setActionBusyId] = useState<number | null>(null);
   const [codConfirmed, setCodConfirmed] = useState<Record<number, boolean>>({});
@@ -372,9 +373,9 @@ export default function StaffMobileLayout() {
 
   async function reject(id: number) {
     if (rejectBusy) return;
-    const reason = rejectReason.trim();
+    const reason = (rejectReason === 'other' ? customRejectReason : rejectReason).trim();
     if (!reason) {
-      showError('Please select a reason.');
+      showError('Please enter a reason for declining.');
       return;
     }
     if (reason.length > LIMITS.staffReason) {
@@ -563,9 +564,9 @@ export default function StaffMobileLayout() {
 
   // ── Order building blocks (shared by Home, the Deliveries list and the detail view) ──
 
-  // Shown for COD orders once accepted, as before; Complete stays disabled until it is ticked.
+  // Collect payment only after dispatch; starting delivery never requires payment entry.
   function renderCodConfirm(order: Delivery) {
-    if (!ACTIVE_STATUSES.includes(order.status) || isPaidOnline(order)) return null;
+    if (order.status !== 'out_for_delivery' || isPaidOnline(order)) return null;
     const value = paymentForms[order.id] || emptyCollection();
     return (
       <div className="sa-stack sa-stack--tight">
@@ -597,9 +598,24 @@ export default function StaffMobileLayout() {
             <option value="Too far">Too far</option>
             <option value="Unavailable">Unavailable</option>
             <option value="Vehicle issue">Vehicle issue</option>
+            <option value="other">Other — write a reason</option>
           </Select>
+          {rejectReason === 'other' && (
+            <Field label="Custom reason" required hint={`Required · ${customRejectReason.length}/${LIMITS.staffReason} characters`}>
+              <Textarea
+                aria-label="Custom reason"
+                value={customRejectReason}
+                onChange={e => setCustomRejectReason(e.target.value)}
+                placeholder="Tell the admin why you cannot take this delivery"
+                rows={3}
+                maxLength={LIMITS.staffReason}
+                required
+                disabled={rejectBusy}
+              />
+            </Field>
+          )}
           <div className="sa-reject__actions">
-            <Button type="button" variant="danger" onClick={() => reject(order.id)} disabled={rejectBusy} loading={rejectBusy}>
+            <Button type="button" variant="danger" onClick={() => reject(order.id)} disabled={rejectBusy || (rejectReason === 'other' && !customRejectReason.trim())} loading={rejectBusy}>
               {rejectBusy ? 'Declining…' : 'Confirm Reject'}
             </Button>
             <Button type="button" variant="secondary" onClick={() => setRejectingId(null)} disabled={rejectBusy}>
@@ -609,7 +625,7 @@ export default function StaffMobileLayout() {
         </div>
       ) : (
         <div className="sa-order__actions">
-          <Button type="button" variant="secondary" size="lg" onClick={() => setRejectingId(order.id)} disabled={busy}>
+          <Button type="button" variant="secondary" size="lg" onClick={() => { setRejectReason('Too far'); setCustomRejectReason(''); setRejectingId(order.id); }} disabled={busy}>
             Reject
           </Button>
           <Button type="button" size="lg" onClick={() => accept(order.id)} disabled={busy} loading={isBusy}>
@@ -699,7 +715,12 @@ export default function StaffMobileLayout() {
           ) : null}
         </div>
 
-        <div className={`sa-pay ${online ? 'sa-pay--online' : 'sa-pay--cod'}`}>
+        {!online && (order.status === 'assigned' || order.status === 'accepted') ? (
+          <div className="sa-amount-row sa-amount-row--footer">
+            <span className="sa-amount-row__label">Amount to collect on delivery</span>
+            <AmountToCollect delivery={order} showOriginal showBreakdown={false} />
+          </div>
+        ) : <div className={`sa-pay ${online ? 'sa-pay--online' : 'sa-pay--cod'}`}>
           <div className="sa-pay__row">
             <div className="sa-pay__text">
               <div className="sa-pay__title">
@@ -722,7 +743,7 @@ export default function StaffMobileLayout() {
             <div className="sa-pay__note">Includes {money(discount)} discount</div>
           ) : null}
           {renderCodConfirm(order)}
-        </div>
+        </div>}
 
         {renderOrderActions(order)}
       </>
