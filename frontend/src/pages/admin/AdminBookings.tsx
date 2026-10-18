@@ -5,7 +5,7 @@ import { type BookingItem } from '../../components/BookingItems';
 import { type PricingSnapshot } from '../../components/PricingBreakdown';
 import { BookingTimes } from '../../components/BookingTimes';
 import { useCallback, useEffect, useState } from 'react';
-import { Check, ClipboardList, Truck, X } from 'lucide-react';
+import { Check, ClipboardList, RefreshCw, Truck, X } from 'lucide-react';
 import { api, extractApiError, fetchAllPages, LIMITS } from '../../lib/api';
 import { ErrorState } from '../../components/AsyncState';
 import { Pager } from '../../components/Pager';
@@ -80,6 +80,7 @@ export default function AdminBookings() {
   const [loadStatus, setLoadStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [loadError, setLoadError] = useState('');
   const [staffLoadError, setStaffLoadError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
   const [approveBusyId, setApproveBusyId] = useState<number | null>(null);
   const [selectedBooking, setDetailBooking] = useState<Booking | null>(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -114,6 +115,13 @@ export default function AdminBookings() {
   }), []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Reloads in place: the table stays on screen (no skeleton flash) and filters/page are kept.
+  async function refresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await load(); } finally { setRefreshing(false); }
+  }
 
   const requestedBookingId = searchParams.get('booking');
   const linkedBooking = loadStatus === 'ready' && requestedBookingId
@@ -182,8 +190,24 @@ export default function AdminBookings() {
   return (
     <div>
       <PageHeader
+        className="bk-header"
         title="Booking Control"
         description="Approve customer requests, assign delivery staff, and watch status move through delivery."
+        actions={(
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            icon={<RefreshCw />}
+            className="bk-refresh"
+            aria-label="Refresh bookings"
+            loading={refreshing}
+            disabled={refreshing || loadStatus === 'loading'}
+            onClick={() => void refresh()}
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        )}
       />
 
       {missingLinkedBooking && <Alert tone="danger" role="alert" className="ui-alert--block-sm">This booking is no longer available.</Alert>}

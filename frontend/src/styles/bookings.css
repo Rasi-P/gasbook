@@ -136,3 +136,12 @@
 
   .bookings-table .bk-action-stack { align-items: flex-start; }
 }
+
+/* Phones: Refresh becomes a small icon button on the title row instead of a full-width bar. */
+@media (max-width: 679px) {
+  .bk-header { flex-wrap: nowrap; align-items: flex-start; }
+  .bk-header .ui-page-header__main { flex: 1 1 0; }
+  .bk-header .ui-page-header__actions { width: auto; flex: 0 0 auto; }
+  .bk-header .bk-refresh { flex: 0 0 auto; width: 40px; min-width: 40px; height: 40px; padding: 0; }
+  .bk-header .bk-refresh .ui-btn__label { display: none; }
+}
