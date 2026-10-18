@@ -70,10 +70,64 @@
   .rp-range__go {
     flex: 1 1 100%;
   }
+
+  /* From and To share one row; location and the Go button take their own. */
+  .rp-range__row {
+    gap: var(--space-3) var(--space-2);
+  }
+
+  .rp-range__field {
+    flex: 1 1 calc(50% - var(--space-2));
+    min-width: 0;
+  }
+
+  .rp-range__field:nth-child(n + 3) {
+    flex-basis: 100%;
+  }
 }
 
 @media (min-width: 680px) {
   .rp-stats {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* Phones: stat cards pair up (an odd last card spans the row) and narrow tables fit instead of scrolling. */
+@media (max-width: 679px) {
+  .rp-stats {
+    gap: var(--space-3);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .rp-stats > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .rp-stats .ui-stat__value {
+    font-size: var(--text-xl);
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .rp-table:not(.rp-table--wide) {
+    min-width: 0;
+  }
+
+  .rp-table:not(.rp-table--wide) th,
+  .rp-table:not(.rp-table--wide) td {
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+    padding: 10px 8px;
+    white-space: normal;
+  }
+
+  .rp-table:not(.rp-table--wide) th:first-child,
+  .rp-table:not(.rp-table--wide) td:first-child {
+    padding-left: 14px;
+  }
+
+  .rp-table:not(.rp-table--wide) th:last-child,
+  .rp-table:not(.rp-table--wide) td:last-child {
+    padding-right: 14px;
   }
 }

@@ -228,8 +228,8 @@ export default function Dashboard() {
         {data.stock_rows.length === 0 ? (
           <EmptyState title="No stock recorded yet" hint="Stock levels appear here once cylinders are loaded." />
         ) : (
-          <TableWrap fade>
-            <Table compact stickyFirst>
+          <TableWrap>
+            <Table compact stickyFirst className="dash-stock-table">
               <thead>
                 <tr>
                   <Th>Type</Th>

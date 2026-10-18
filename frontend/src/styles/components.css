@@ -785,7 +785,6 @@
 @media (max-width: 679px) {
   .ui-table--cards,
   .ui-table--cards tbody,
-  .ui-table--cards tr,
   .ui-table--cards td {
     display: block;
     width: 100%;
@@ -795,11 +794,16 @@
     display: none;
   }
 
+  /* Phone cards: two compact columns; long cells (first, last, or marked) take the full row. */
   .ui-table--cards tr {
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
+    column-gap: 14px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     margin-bottom: 12px;
-    padding: 4px 0;
+    padding: 8px 14px;
+    width: 100%;
   }
 
   .ui-table--cards tbody tr:hover td {
@@ -807,24 +811,34 @@
   }
 
   .ui-table--cards td {
-    align-items: flex-start;
     border-bottom: 0;
-    display: flex;
-    gap: 12px;
-    justify-content: space-between;
-    padding: 8px 14px;
-    text-align: right;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: 6px 0;
+    text-align: left;
+  }
+
+  .ui-table--cards td.ui-table__num,
+  .ui-table--cards td.ui-table__right,
+  .ui-table--cards td.ui-table__center {
+    text-align: left;
+  }
+
+  .ui-table--cards td:first-child,
+  .ui-table--cards td:last-child,
+  .ui-table--cards td[colspan] {
+    grid-column: 1 / -1;
   }
 
   .ui-table--cards td::before {
     color: var(--text-secondary);
     content: attr(data-label);
-    flex: 0 0 auto;
+    display: block;
     font-size: var(--text-xs);
     font-weight: var(--weight-semibold);
     letter-spacing: 0.04em;
-    line-height: 1.6;
-    text-align: left;
+    line-height: 1.5;
+    margin-bottom: 2px;
     text-transform: uppercase;
   }
 
@@ -1528,6 +1542,18 @@
 @media (max-width: 479px) {
   .ui-toolbar > * {
     flex: 1 1 100%;
+  }
+
+  /* A long option label must not push the select past the screen edge. */
+  .ui-toolbar > .ui-select-wrap {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .ui-toolbar .ui-select {
+    min-width: 0;
+    text-overflow: ellipsis;
+    width: 100%;
   }
 }
 

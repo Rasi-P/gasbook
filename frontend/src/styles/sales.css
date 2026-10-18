@@ -348,13 +348,31 @@
 
   .sales-history-table.ui-table--cards td,
   .sales-history-table.ui-table--cards td:first-child {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 4px;
-    text-align: left;
+    min-width: 0;
     position: static;
     white-space: normal;
-    min-width: 0;
+  }
+
+  .sales-history-table.ui-table--cards td[data-label="Customer"]::before,
+  .sales-history-table.ui-table--cards td[data-label="Actions"]::before {
+    display: none;
+  }
+
+  .sales-history-table.ui-table--cards td[data-label="Customer"] {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+  }
+
+  .sales-history-table.ui-table--cards td[data-label="Items"] {
+    grid-column: 1 / -1;
+  }
+
+  .sales-history-table.ui-table--cards td[data-label="Actions"] .ui-btn { width: 100%; }
+
+  .sales-history-table.ui-table--cards td[data-label="Actions"] {
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+    padding-top: 10px;
   }
 
   .sales-history-table.ui-table--cards .sale-items {

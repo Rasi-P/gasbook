@@ -100,6 +100,24 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* Phones: metrics pair up instead of stacking one per row. */
+@media (max-width: 479px) {
+  .sh-stats {
+    gap: var(--space-3);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sh-stats > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .sh-stats .ui-stat__value {
+    font-size: var(--text-xl);
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+}
+
 .sh-filters {
   display: grid;
   gap: var(--space-3);
@@ -124,6 +142,13 @@
 
 .sh-filters__clear {
   flex: 0 0 auto;
+}
+
+/* Phones: the two date fields share a row. */
+@media (max-width: 479px) {
+  .sh-filters__row { column-gap: var(--space-2); }
+  .sh-filters__search { flex-basis: 100%; }
+  .sh-filters__date { flex: 1 1 calc(50% - var(--space-2)); min-width: 0; }
 }
 
 .sh-filters__error {
@@ -215,17 +240,20 @@
     min-width: 0;
   }
 
-  .sh-table.ui-table--cards td {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 4px;
-    text-align: left;
-  }
-
   .sh-table.ui-table--cards td:first-child {
     border-bottom: 1px solid var(--border);
-    margin-bottom: 4px;
     padding-bottom: 10px;
+  }
+
+  .sh-table.ui-table--cards td:first-child::before {
+    display: none;
+  }
+
+  .sh-table.ui-table--cards td[data-label="Customer & items"],
+  .sh-table.ui-table--cards td[data-label="Amount"],
+  .sh-table.ui-table--cards td[data-label="Payment"],
+  .sh-table.ui-table--cards td[data-label="Status"] {
+    grid-column: 1 / -1;
   }
 
   .sh-table.ui-table--cards tr.sh-row--previous {
@@ -252,4 +280,9 @@
 .admin-sales-history .ui-table td { overflow-wrap: anywhere; }
 @media (min-width: 1100px) {
   .sh-stats.admin-sales-history__stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+/* Admin sales: recorded/handed-over and payment share a row on phones. */
+@media (max-width: 679px) {
+  .admin-sales-history .sh-table.ui-table--cards td[data-label="Payment"] { grid-column: auto; }
 }

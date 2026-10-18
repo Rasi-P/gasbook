@@ -111,30 +111,47 @@
   .bookings-table tbody tr { height: 180px; }
 }
 
-/* Phones: each booking becomes a card; labels sit above values so long text uses the full width. */
+/* Phones: each booking is a compact card. Customer and order span the row; status and staff sit side by side. */
 @media (max-width: 679px) {
   .bookings-table {
     min-width: 0;
   }
 
-  .bookings-table.ui-table--cards td {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 4px;
-    text-align: left;
+  .bookings-table.ui-table--cards td[data-label="Customer"],
+  .bookings-table.ui-table--cards td[data-label="Order & items"] {
+    grid-column: 1 / -1;
   }
 
-  .bookings-table.ui-table--cards td:first-child {
+  .bookings-table.ui-table--cards td[data-label="Customer"]::before,
+  .bookings-table.ui-table--cards td[data-label="Order & items"]::before,
+  .bookings-table.ui-table--cards td[data-label="Actions"]::before {
+    display: none;
+  }
+
+  .bookings-table.ui-table--cards td[data-label="Customer"] {
     border-bottom: 1px solid var(--border);
-    margin-bottom: 4px;
     padding-bottom: 10px;
   }
 
-  .bookings-table .bk-actions {
-    justify-content: flex-start;
+  .bookings-table.ui-table--cards td[data-label="Actions"] {
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+    padding-top: 10px;
   }
 
-  .bookings-table .bk-action-stack { align-items: flex-start; }
+  .bookings-table .bk-action-stack {
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  /* The status already shows above; the duplicate chip only costs a line. */
+  .bookings-table .bk-action-stack > .ui-badge { display: none; }
+  .bookings-table .bk-action-stack > .ui-btn { flex: 1 1 auto; }
+  .bookings-table .bk-actions { justify-content: flex-start; }
 }
 
 /* Phones: Refresh becomes a small icon button on the title row instead of a full-width bar. */

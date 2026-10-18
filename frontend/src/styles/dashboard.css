@@ -200,3 +200,54 @@
     transition: none;
   }
 }
+
+/* Phones: Live stock fits the card width (no sideways scroll, no sticky column to fall out of line). */
+@media (max-width: 679px) {
+  .ui-table.dash-stock-table {
+    min-width: 0;
+    table-layout: fixed;
+    width: 100%;
+  }
+
+  .dash-stock-table th,
+  .dash-stock-table td {
+    font-size: var(--text-sm);
+    overflow-wrap: break-word;
+    padding: 10px 4px;
+    vertical-align: middle;
+    white-space: normal;
+  }
+
+  .dash-stock-table th {
+    font-size: 9px;
+    letter-spacing: 0;
+    line-height: 1.25;
+    overflow-wrap: normal;
+    padding-inline: 2px;
+  }
+
+  .dash-stock-table th:first-child { padding-left: 12px; }
+  .dash-stock-table th:last-child { padding-right: 14px; }
+
+  .dash-stock-table th:nth-child(1) { width: 27%; }
+  .dash-stock-table th:nth-child(2),
+  .dash-stock-table th:nth-child(3) { width: 18%; }
+  .dash-stock-table th:nth-child(4) { width: 20%; }
+  .dash-stock-table th:nth-child(5) { width: 17%; }
+
+  .dash-stock-table td:nth-child(2),
+  .dash-stock-table td:nth-child(3) { font-size: 13px; white-space: nowrap; }
+
+  .dash-stock-table th:first-child,
+  .dash-stock-table td:first-child {
+    padding-left: 12px;
+    position: static;
+  }
+
+  .dash-stock-table td:first-child { font-size: 12px; }
+
+  .dash-stock-table th:last-child,
+  .dash-stock-table td:last-child {
+    padding-right: 14px;
+  }
+}
