@@ -26,6 +26,7 @@ import { SearchInput } from '../components/ui/SearchInput';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import { Table, TableWrap, Td, Th } from '../components/ui/Table';
 import { Tabs } from '../components/ui/Tabs';
+import { fetchActiveCylinderTypes, fetchActiveLocations, useCatalogRevision } from '../lib/catalog';
 
 type CylinderType = { id: number; name: string; deposit_amount: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
@@ -160,10 +161,10 @@ export default function Sales() {
   const [historyNotice, setHistoryNotice] = useState('');
 
   function loadReferenceData() {
-    Promise.all([fetchAllPages<CylinderType>('/cylinder-types/'), fetchAllPages<Location>('/locations/')])
-      .then(([types, allLocs]) => {
-        const locs = allLocs.filter((l) => !l.is_main_supplier && l.code !== 'supplier');
-        setCylinderTypes(types);
+    // Only active cylinder types and active stock locations can take a new sale (the server enforces the same).
+    Promise.all([fetchActiveCylinderTypes(), fetchActiveLocations('stock')])
+      .then(([types, locs]) => {
+        setCylinderTypes(types as unknown as CylinderType[]);
         setLocations(locs);
         const savedLoc = localStorage.getItem('lastSalesLoc');
         if (savedLoc && locs.find(l => l.id === Number(savedLoc))) {
@@ -181,7 +182,8 @@ export default function Sales() {
       });
   }
 
-  useEffect(() => { loadReferenceData(); }, []);
+  const catalogRevision = useCatalogRevision();
+  useEffect(() => { loadReferenceData(); }, [catalogRevision]);
 
   useEffect(() => {
     let cancelled = false;
@@ -325,8 +327,8 @@ export default function Sales() {
   }, [quoteRequest, quoteKey, items.length, accessories.length, returnMode]);
   useEffect(() => {
     const refresh = () => {
-      fetchAllPages<CylinderType>('/cylinder-types/')
-        .then(types => { setCylinderTypes(types); setQuoteRevision(value => value + 1); })
+      fetchActiveCylinderTypes()
+        .then(types => { setCylinderTypes(types as unknown as CylinderType[]); setQuoteRevision(value => value + 1); })
         .catch(() => setQuoteRevision(value => value + 1));
     };
     window.addEventListener('gas-rates-changed', refresh);

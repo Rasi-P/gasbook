@@ -43,6 +43,7 @@ class CylinderType(TimeStampedModel):
     refill_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     low_stock_threshold = models.PositiveIntegerField(default=5)
     is_active = models.BooleanField(default=True)
+    image = models.ImageField(upload_to="cylinder-images/", null=True, blank=True)
 
     objects = models.Manager()
 

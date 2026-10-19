@@ -60,18 +60,19 @@ class SaleValidationTests(SaleTestMixin, GasBookTestCase):
 
     # ---- locations ---------------------------------------------------------
 
-    def test_shop_and_kandam_are_the_eligible_sources(self):
-        for location in (self.shop, self.kandam):
+    def test_every_active_stock_location_is_an_eligible_source(self):
+        godown = StockLocation.objects.create(name="Godown 2", code="godown-2")
+        self.set_stock(godown, filled=10, empty=0)
+        for location in (self.shop, self.kandam, godown):
             response = self.post(self.payload(location=location.id))
             self.assertEqual(response.status_code, 201, response.data)
             self.assertEqual(self.stock_qty(location, Stock.Status.FILLED), 8)
 
-    def test_other_or_inactive_locations_are_refused(self):
+    def test_supplier_or_inactive_locations_are_refused(self):
         supplier = StockLocation.objects.create(name="Supplier", code="supplier")
-        van = StockLocation.objects.create(name="Van", code="van")
-        self.set_stock(van, filled=10)
+        plant = StockLocation.objects.create(name="Plant", code="plant", is_main_supplier=True)
         self.assert_rejected(self.payload(location=supplier.id), "invalid_location", "location")
-        self.assert_rejected(self.payload(location=van.id), "invalid_location", "location")
+        self.assert_rejected(self.payload(location=plant.id), "invalid_location", "location")
         self.assert_rejected(self.payload(location=999999), field="location")
         self.kandam.is_active = False
         self.kandam.save(update_fields=["is_active"])

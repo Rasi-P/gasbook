@@ -32,7 +32,8 @@ export default function RatesPanel({ open, onClose }: { open: boolean; onClose: 
   const [saveError, setSaveError] = useState('');
 
   function loadTypes() {
-    return fetchAllPages<CylinderType>('/cylinder-types/')
+    // Rates are edited for cylinder types that are in use; inactive ones are managed under Products & Inventory.
+    return fetchAllPages<CylinderType>('/cylinder-types/', { active: 1 })
       .then((rows) => { setTypes(rows); setLoadError(''); setStatus('ready'); })
       .catch((err) => { setLoadError(extractApiError(err, [], 'Could not load cylinder rates.')); setStatus('error'); });
   }

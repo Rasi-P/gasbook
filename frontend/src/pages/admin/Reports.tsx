@@ -46,10 +46,10 @@ type PendingDue = {
 };
 type CylinderSale = { cylinder_type__name: string; sale__location__name?: string; total_qty: number; total_amount: number };
 type StaffTotal = { user_id: number | null; name: string | null; username: string | null; role: string | null; count: number; amount: number | string };
-type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
+type Location = { id: number; name: string; code: string; is_main_supplier: boolean; is_active?: boolean };
+type StockColumn = { id: number; code: string; name: string; is_active: boolean; filled: number; empty: number };
 type StockRow = {
-  type: string; shop_filled: number; shop_empty: number;
-  kandam_filled: number; kandam_empty: number;
+  type: string; is_active?: boolean; locations: StockColumn[];
   with_customers: number; customer_credits: number;
   supplier_stock: number; physical_stock: number; total: number;
 };
@@ -65,6 +65,8 @@ type ReportsData = {
   summary: {
     sales: number; cancelled: number; net_sales: number; collection: number; refunds_paid: number; refunds_owed: number;
     expenses: number; movements: number; pending: number;
+    /** Of gross sales: the new-cylinder deposits billed on new connections. */
+    deposits_included?: number | string;
   };
   monthly: { sales: number; cancelled: number; net_sales: number; collection: number; expenses: number };
   cancellation_list: Cancellation[];
@@ -74,6 +76,7 @@ type ReportsData = {
   sales_list: Sale[];
   expense_list: Expense[];
   stock_snapshot: StockRow[];
+  stock_locations: { id: number; code: string; name: string; is_active: boolean; stock: number }[];
   load_summary: LoadRow[];
   movement_history: Movement[];
   supplier_balance?: { type: string; pending: number }[];
@@ -177,7 +180,7 @@ export default function Reports() {
           <Field label="Location" className="rp-range__field" hint={location ? 'Filters gross sales, cancellations and net sales in this range. Collections, refunds, expenses, stock, pending dues and This Month cover every location.' : undefined}>
             <Select value={location} onChange={(e) => { setLocation(e.target.value); fetchData(start, end, e.target.value); }}>
               <option value="">All locations</option>
-              {locations.map((l) => <option key={l.id} value={String(l.id)}>{l.name}</option>)}
+              {locations.map((l) => <option key={l.id} value={String(l.id)}>{l.is_active === false ? `${l.name} (inactive)` : l.name}</option>)}
             </Select>
           </Field>
         )}
@@ -223,7 +226,7 @@ export default function Reports() {
           {tab === 'summary' && (
             <>
               <section className="rp-stats">
-                <StatCard label="Gross sales" value={money(data.summary.sales)} hint="Sales made in this range" icon={<IndianRupee />} />
+                <StatCard label="Gross sales" value={money(data.summary.sales)} hint={Number(data.summary.deposits_included) > 0 ? `Includes ${money(Number(data.summary.deposits_included))} new-cylinder deposits` : 'Sales made in this range'} icon={<IndianRupee />} />
                 <StatCard label="Cancelled" value={money(data.summary.cancelled)} hint="Sales cancelled in this range" icon={<XCircle />} />
                 <StatCard label="Net sales" value={money(data.summary.net_sales)} hint="Gross sales minus cancelled" icon={<IndianRupee />} />
                 <StatCard label="Collection" value={money(data.summary.collection)} hint="Money in, less refunds paid" icon={<WalletCards />} />
@@ -350,20 +353,21 @@ export default function Reports() {
                     <thead>
                       <tr>
                         <Th>Type</Th>
-                        <Th align="center">Shop (F/E)</Th>
-                        <Th align="center">Kandam (F/E)</Th>
+                        {data.stock_locations.map((l) => <Th key={l.id} align="center">{l.name} (F/E)</Th>)}
                         <Th align="right">With Customers</Th>
                         <Th align="right">Extras From Customers</Th>
                         <Th align="right">Supplier Stock<span className="ui-cell-sub">(Base)</span></Th>
-                        <Th align="right">Total Physical<span className="ui-cell-sub">(Shop + Kandam)</span></Th>
+                        <Th align="right">Total Physical<span className="ui-cell-sub">(All locations)</span></Th>
                       </tr>
                     </thead>
                     <tbody>
                       {[...data.stock_snapshot].sort((a, b) => parseFloat(a.type) - parseFloat(b.type)).map((r) => (
                         <tr key={r.type}>
-                          <Td><strong>{r.type}</strong></Td>
-                          <Td align="center"><FilledEmpty filled={r.shop_filled} empty={r.shop_empty} /></Td>
-                          <Td align="center"><FilledEmpty filled={r.kandam_filled} empty={r.kandam_empty} /></Td>
+                          <Td><strong>{r.type}</strong>{r.is_active === false && <span className="ui-cell-sub">Inactive</span>}</Td>
+                          {data.stock_locations.map((l) => {
+                            const cell = r.locations.find((c) => c.id === l.id);
+                            return <Td key={l.id} align="center"><FilledEmpty filled={cell?.filled ?? 0} empty={cell?.empty ?? 0} /></Td>;
+                          })}
                           <Td numeric>
                             {r.with_customers > 0
                               ? <span className="ui-num-warning">{r.with_customers}</span>

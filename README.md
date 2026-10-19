@@ -123,8 +123,15 @@ VITE_API_BASE_URL=http://127.0.0.1:8001/api
 
 ### Gas Rates Panel
 - Floating ₹ button visible to admin on all pages
-- Shows today's selling price and refill rate per cylinder size
+- Shows today's new-cylinder deposit and refill rate per cylinder size
 - Inline edit — changes apply to all new sales immediately
+
+### Cylinder Types & Locations (Admin only)
+- **Products & Inventory → Cylinder Types**: add or edit a size with its picture, **refill price** and **new-cylinder deposit**. There is no separate selling price. A **refill** costs the refill price only; a **new connection** costs the refill price **plus** the deposit, each once per cylinder (a discount applies to the refill part only and never reduces the deposit). Prices apply to new transactions only; past bookings, sales and receipts keep the components they were charged. The deposit stays inside the billed total, as before; the Reports summary shows how much of gross sales is deposits. The old `selling_price` column is kept for older records but is read-only and unused for pricing.
+- **Products & Inventory → Locations**: add shops, godowns or a supplier without code changes. A new active location appears in stock, sales, delivery and report lists immediately. A location's type (stock location or supplier) and its generated code are fixed once created.
+- **Active / inactive**: inactive types and locations are refused by the API for new bookings, sales, deliveries and stock movements (not just hidden in the UI), but stay in history, receipts and reports. A location that still holds cylinders cannot be deactivated until they are moved; nothing is moved automatically. Existing stock of an inactive type can still be moved between stock locations, and cylinders can always be moved out of an inactive location.
+- A delivery takes stock from the staff member's configured location, else the shop; if neither is available and several stock locations are active, the app asks which one.
+- Cylinder pictures are stored with the other uploads (`MEDIA_ROOT/cylinder-images/`).
 
 ### Security
 - JWT authentication with 12-hour access token, 30-day refresh token
