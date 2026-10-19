@@ -278,6 +278,8 @@ export default function StaffMobileLayout() {
   const [customRejectReason, setCustomRejectReason] = useState('');
   const [rejectBusy, setRejectBusy] = useState(false);
   const [actionBusyId, setActionBusyId] = useState<number | null>(null);
+  // Set when the server needs to know which stock location a delivery takes cylinders from (shop unavailable, several others active).
+  const [locationChoice, setLocationChoice] = useState<{ id: number; isCod: boolean; totalAmount: number; locations: { id: number; name: string }[]; picked: string } | null>(null);
   const [codConfirmed, setCodConfirmed] = useState<Record<number, boolean>>({});
 
   // Dynamic Greeting based on time of day
@@ -409,7 +411,7 @@ export default function StaffMobileLayout() {
     }
   }
 
-  async function complete(id: number, isCod: boolean, totalAmount: number) {
+  async function complete(id: number, isCod: boolean, totalAmount: number, locationId?: number) {
     if (actionBusyId !== null) return;
     const form = collections[id] || {
       amount: String(totalAmount),
@@ -432,7 +434,8 @@ export default function StaffMobileLayout() {
       ...(Object.keys(emptyByType).length > 1 ? { empty_collected_by_type: emptyByType } : {}),
       ...(isCod ? (receiptParts(paymentForm).length ? { split_payments: receiptParts(paymentForm) } : {}) : {}),
       empty_collected: cylinderItems.length ? Object.values(emptyByType).reduce((sum, value) => sum + value, 0) : Number(form.empty || 0),
-      payment_collected: isCod ? receiptParts(paymentForm).reduce((sum,p)=>sum+Number(p.amount),0).toFixed(2) : '0.00'
+      payment_collected: isCod ? receiptParts(paymentForm).reduce((sum,p)=>sum+Number(p.amount),0).toFixed(2) : '0.00',
+      ...(locationId ? { location: locationId } : {}),
     };
 
     setActionBusyId(id);
@@ -443,7 +446,10 @@ export default function StaffMobileLayout() {
     } catch (err) {
       const code = getApiErrorCode(err);
       const detail = extractApiError(err, ['empty_collected', 'payment_collected', 'split_payments'], 'Failed to complete delivery.');
-      if (code === 'insufficient_stock') {
+      const offered = (err as { response?: { data?: { locations?: { id: number; name: string }[] } } })?.response?.data?.locations;
+      if (code === 'location_required' && Array.isArray(offered) && offered.length) {
+        setLocationChoice({ id, isCod, totalAmount, locations: offered, picked: String(offered[0].id) });
+      } else if (code === 'insufficient_stock') {
         showError(`Stock not loaded — contact admin: ${detail}`);
       } else if (code === 'already_completed') {
         showError(detail);
@@ -1254,6 +1260,39 @@ export default function StaffMobileLayout() {
             />
           </Field>
         </form>
+      </Modal>
+
+      <Modal
+        open={locationChoice !== null}
+        onClose={() => setLocationChoice(null)}
+        title="Where are these cylinders coming from?"
+        description="The shop is not available, so choose the stock location this delivery takes cylinders from."
+        size="sm"
+        footer={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => setLocationChoice(null)}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={actionBusyId !== null}
+              onClick={() => {
+                if (!locationChoice) return;
+                const choice = locationChoice;
+                setLocationChoice(null);
+                void complete(choice.id, choice.isCod, choice.totalAmount, Number(choice.picked));
+              }}
+            >
+              Complete delivery
+            </Button>
+          </>
+        )}
+      >
+        {locationChoice && (
+          <Field label="Stock location">
+            <Select value={locationChoice.picked} onChange={(e) => setLocationChoice({ ...locationChoice, picked: e.target.value })}>
+              {locationChoice.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </Select>
+          </Field>
+        )}
       </Modal>
     </div>
   );

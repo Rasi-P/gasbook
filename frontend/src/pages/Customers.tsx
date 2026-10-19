@@ -52,7 +52,7 @@ type Customer = {
   is_active?: boolean;
 };
 
-type CylinderTypeOption = { id: number; name: string; refill_rate?: string };
+type CylinderTypeOption = { id: number; name: string; refill_rate?: string; is_active?: boolean };
 type RowNotice = { id: number; text: string; tone: 'info' | 'error' | 'confirm' };
 
 type CylinderDiscount = {
@@ -335,7 +335,7 @@ export default function Customers() {
         .filter((discount) => discount.cylinder_type !== currentCylinderId)
         .map((discount) => discount.cylinder_type),
     );
-    return cylinderTypes.filter((type) => !usedIds.has(type.id));
+    return cylinderTypes.filter((type) => type.is_active !== false && !usedIds.has(type.id));
   }
 
   function startEdit(c: Customer) {

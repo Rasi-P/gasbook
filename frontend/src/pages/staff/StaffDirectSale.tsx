@@ -12,6 +12,7 @@ import { PaymentCollectionForm } from '../../components/PaymentCollectionForm';
 import { collectionError, emptyCollection, receiptParts } from '../../lib/paymentCollection';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { PaymentSummary, type PaymentFacts } from '../../components/PaymentSummary';
+import { fetchActiveCylinderTypes, fetchActiveLocations } from '../../lib/catalog';
 type Customer = {
     id: number;
     name: string;
@@ -136,12 +137,12 @@ export default function StaffDirectSale({ onBack, onDone, onBusyChange }: {
     }
     const current = quote?.key === key ? quote.data : null;
     const availableCylinders = cylinders.filter(c => stock.some(s => s.location === Number(location) && s.cylinder_type === c.id && s.quantity > 0));
-    useEffect(() => { let cancelled = false; Promise.all([fetchAllPages<Cylinder>('/cylinder-types/'), fetchAllPages<Product>('/products/'), fetchAllPages<Location>('/locations/'), fetchAllPages<{
+    useEffect(() => { let cancelled = false; Promise.all([fetchActiveCylinderTypes() as unknown as Promise<Cylinder[]>, fetchAllPages<Product>('/products/'), fetchActiveLocations('stock') as unknown as Promise<Location[]>, fetchAllPages<{
             location: number;
             cylinder_type: number;
             quantity: number;
         }>('/stock/?status=filled')]).then(([c, p, l, stockRows]) => { if (cancelled)
-        return; setCylinders(c.filter(c => c.is_active)); setStock(stockRows); setProducts(p); const allowed = l.filter(v => ['shop', 'kandam'].includes(v.code) && v.is_active); setLocations(allowed); setLocation(String(allowed[0]?.id || '')); }).catch(e => { if (!cancelled)
+        return; setCylinders(c.filter(c => c.is_active)); setStock(stockRows); setProducts(p); const allowed = l.filter(v => v.is_active !== false); setLocations(allowed); setLocation(String(allowed[0]?.id || '')); }).catch(e => { if (!cancelled)
         setError(extractApiError(e)); }).finally(() => { if (!cancelled) setCatalogLoading(false); }); return () => { cancelled = true; }; }, []);
     useEffect(() => {
         let cancelled = false;

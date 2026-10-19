@@ -14,7 +14,11 @@ from .exceptions import ApiError
 from .models import (
     ActivityLog,
     Booking,
+    BookingItem,
+    CustomerCylinderDiscount,
+    CustomerCylinderRate,
     CustomerProfile,
+    CylinderType,
     Delivery,
     Expense,
     Notification,
@@ -22,9 +26,11 @@ from .models import (
     PaymentReversal,
     Role,
     Sale,
+    SaleItem,
     SaleRefund,
     SaleVoid,
     Stock,
+    StockLocation,
     StockMovement,
     User,
 )
@@ -129,10 +135,167 @@ def lock_booking_and_delivery(booking_id):
 
 # ---- sales, payments and stock -----------------------------------------------
 
-# Where a direct sale may take cylinders from, by location code; ids are looked up at run
-# time. "With customers" is a figure calculated from sales, not a location, so it can never
-# be a source.
-DIRECT_SALE_LOCATION_CODES = ("shop", "kandam")
+# ---- locations and cylinder types ---------------------------------------------
+#
+# A location is either the supplier (cylinders are sent there to be refilled and come back
+# filled; it holds no stock of its own) or a stock location (shop, Kandam, any godown an
+# admin adds). Direct sales, deliveries and transfers may use any ACTIVE stock location.
+# "With customers" is a figure calculated from sales, not a location, so it is never one.
+
+OPEN_BOOKING_STATUSES = (
+    Booking.Status.PENDING,
+    Booking.Status.APPROVED,
+    Booking.Status.ACCEPTED,
+    Booking.Status.OUT_FOR_DELIVERY,
+)
+
+
+def is_supplier_location(location):
+    """The supplier is the location flagged as main supplier, or the legacy ``supplier`` code."""
+    return bool(location.is_main_supplier or location.code == "supplier")
+
+
+def stock_locations(active_only=True):
+    """Locations that hold stock (everything except the supplier)."""
+    queryset = StockLocation.objects.exclude(is_main_supplier=True).exclude(code="supplier")
+    return queryset.filter(is_active=True) if active_only else queryset
+
+
+def supplier_locations(active_only=True):
+    queryset = StockLocation.objects.filter(Q(is_main_supplier=True) | Q(code="supplier"))
+    return queryset.filter(is_active=True) if active_only else queryset
+
+
+def require_sellable_location(location, field="location"):
+    """Locations a sale or delivery may take stock from: active and not the supplier."""
+    if is_supplier_location(location):
+        raise ApiError(
+            f"{location.name} is the supplier; sales and deliveries take stock from a stock location.",
+            code="invalid_location",
+            field=field,
+        )
+    if not location.is_active:
+        raise ApiError(f"{location.name} is inactive.", code="location_inactive", field=field)
+    return location
+
+
+def lock_active_stock_location(location_id, field="location"):
+    """Lock a stock location row and re-check it is usable. Run inside transaction.atomic, so a
+    concurrent deactivation (which locks the same row and needs the stock to be zero) is
+    ordered either before this write, which is then refused, or after it, which then sees
+    the stock this write left."""
+    location = StockLocation.objects.select_for_update().get(pk=location_id)
+    return require_sellable_location(location, field)
+
+
+def default_delivery_location(staff_user):
+    """Where a delivery takes stock from when the request names no location: the staff
+    member's configured location, else the shop, else the only active stock location.
+    Returns None when that is ambiguous or nothing is available (the caller asks for a choice)."""
+    profile = getattr(staff_user, "staff_profile", None)
+    configured = getattr(profile, "vehicle_location", None)
+    if configured is not None and configured.is_active and not is_supplier_location(configured):
+        return configured
+    candidates = list(stock_locations().order_by("id"))
+    shop = next((loc for loc in candidates if loc.code == "shop"), None)
+    if shop is not None:
+        return shop
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def require_active_cylinder_type(cylinder_type, field="cylinder_type"):
+    if not cylinder_type.is_active:
+        raise ApiError(f"{cylinder_type.name} is inactive.", code="cylinder_inactive", field=field)
+    return cylinder_type
+
+
+def stock_totals(stock_rows):
+    """(filled, empty) cylinders held in the given Stock queryset."""
+    totals = {status: 0 for status in Stock.Status.values}
+    for status, quantity in stock_rows.values_list("status", "quantity"):
+        totals[status] += quantity
+    return totals[Stock.Status.FILLED], totals[Stock.Status.EMPTY]
+
+
+def location_usage(location):
+    """What depends on a location, for the admin's confirmation messages."""
+    filled, empty = stock_totals(location.stocks.all())
+    return {
+        "stock_filled": filled,
+        "stock_empty": empty,
+        "sales": Sale.objects.filter(location=location).count(),
+        "movements": StockMovement.objects.filter(Q(from_location=location) | Q(to_location=location)).count(),
+        "staff_assigned": location.staffprofile_set.count(),
+    }
+
+
+def cylinder_type_usage(cylinder_type):
+    """What depends on a cylinder type, for the admin's confirmation messages."""
+    filled, empty = stock_totals(cylinder_type.stocks.all())
+    bookings = Booking.objects.filter(Q(cylinder_type=cylinder_type) | Q(order_items__cylinder_type=cylinder_type)).distinct()
+    return {
+        "stock_filled": filled,
+        "stock_empty": empty,
+        "open_bookings": bookings.filter(status__in=OPEN_BOOKING_STATUSES).count(),
+        "bookings": bookings.count(),
+        "sale_lines": SaleItem.objects.filter(cylinder_type=cylinder_type).count(),
+        "movements": StockMovement.objects.filter(cylinder_type=cylinder_type).count(),
+        "customer_rates": (
+            CustomerCylinderRate.objects.filter(cylinder_type=cylinder_type).count()
+            + CustomerCylinderDiscount.objects.filter(cylinder_type=cylinder_type).count()
+        ),
+    }
+
+
+def _plural(count, one, many=None):
+    return f"{count} {one if count == 1 else (many or one + 's')}"
+
+
+def cylinder_type_delete_blockers(cylinder_type):
+    """Why a cylinder type cannot be deleted, as [{"code", "detail"}]. Empty means it can be: it has no stock, no
+    booking, sale or movement history and no customer-specific rates. Deactivating is the way to retire a used one."""
+    usage = cylinder_type_usage(cylinder_type)
+    blockers = []
+    held = usage["stock_filled"] + usage["stock_empty"]
+    if held:
+        blockers.append({"code": "has_stock", "detail": f"{_plural(held, 'cylinder')} of this type are still in stock ({usage['stock_filled']} filled, {usage['stock_empty']} empty)."})
+    history = [
+        text for count, text in (
+            (usage["bookings"], _plural(usage["bookings"], "booking")),
+            (usage["sale_lines"], _plural(usage["sale_lines"], "sale line")),
+            (usage["movements"], _plural(usage["movements"], "stock movement")),
+        ) if count
+    ]
+    if history:
+        blockers.append({"code": "has_history", "detail": f"It appears in {', '.join(history)}. Deleting it would break those records."})
+    if usage["customer_rates"]:
+        blockers.append({"code": "has_customer_rates", "detail": f"{_plural(usage['customer_rates'], 'customer-specific rate or discount')} refer to it. Remove them first."})
+    return blockers
+
+
+def location_delete_blockers(location):
+    """Why a location cannot be deleted: stock held, any sale or stock-movement history, staff set to deliver from it,
+    or being the only active location of its kind. Empty means it can be deleted."""
+    usage = location_usage(location)
+    blockers = []
+    held = usage["stock_filled"] + usage["stock_empty"]
+    if held:
+        blockers.append({"code": "has_stock", "detail": f"It still holds {_plural(held, 'cylinder')} ({usage['stock_filled']} filled, {usage['stock_empty']} empty). Move them out first."})
+    history = [
+        text for count, text in (
+            (usage["sales"], _plural(usage["sales"], "sale")),
+            (usage["movements"], _plural(usage["movements"], "stock movement")),
+        ) if count
+    ]
+    if history:
+        blockers.append({"code": "has_history", "detail": f"It appears in {', '.join(history)}. Deleting it would break those records."})
+    if usage["staff_assigned"]:
+        blockers.append({"code": "staff_assigned", "detail": f"{_plural(usage['staff_assigned'], 'staff member')} use it as their delivery location. Change that first."})
+    pool = supplier_locations() if is_supplier_location(location) else stock_locations()
+    if location.is_active and not pool.exclude(pk=location.pk).exists():
+        what = "supplier" if is_supplier_location(location) else "stock location"
+        blockers.append({"code": "last_active_location", "detail": f"It is the only active {what}."})
+    return blockers
 
 # Ways money is actually received; "credit" and "split" describe a sale, not a payment.
 RECEIPT_MODES = (Sale.PaymentMode.CASH, Sale.PaymentMode.GPAY, Sale.PaymentMode.BANK)
@@ -193,8 +356,14 @@ MAX_COUNT = 2147483647
 #      phone number                                       advisory_lock
 #   1. the customer row                                    lock_customer
 #   2. that customer's unpaid sales, oldest first          record_customer_payment
+#   2b. the stock location row (lock_active_stock_location), so a deactivation, which locks
+#       the same row and needs the stock to be zero, is ordered before or after the write.
+#       Every stock writer takes it BEFORE any stock row: a locked stock query that joins the
+#       location (the model's default ordering does) locks the location row as well.
 #   3. stock rows by cylinder type id, filled before empty lock_sale_stock / get_stock_row
-# Voiding a sale locks the customer, then that sale, then its stock rows as in 3; confirming
+# Stock movements lock their locations by id, then stock rows; deactivating a location locks
+# only that location row and reads (never locks) its stock.
+# Voiding a sale locks the customer, then that sale, then its location row, then its stock rows as in 3; confirming
 # its refund locks the customer, then the sale's void. Delivery completion locks its booking
 # and delivery, then the customer, then stock in the same order, and never a customer after
 # stock. Nothing that holds a customer lock goes on to lock a booking or delivery.
@@ -522,6 +691,10 @@ def void_sale(sale, actor, reason, outcome):
         raise ApiError("This sale has no customer, so it cannot be cancelled here.", code="guest_sale", status=409)
     customer = lock_customer(sale.customer_id)
     sale = Sale.objects.select_for_update().get(pk=sale.pk)
+    # The sale's location row next, before any stock row: the order every stock write uses.
+    # (A locked stock query that joins the location, as the empty-row lock below does, locks
+    # that row too, so taking it late would meet a transfer holding it and waiting for stock.)
+    StockLocation.objects.select_for_update().get(pk=sale.location_id)
 
     blockers = [b for b in void_blockers(sale) if b["code"] != "insufficient_empty_stock"]
     if blockers:

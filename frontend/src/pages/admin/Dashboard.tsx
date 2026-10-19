@@ -30,10 +30,15 @@ import { Table, TableWrap, Td, Th } from '../../components/ui/Table';
 type DashboardData = {
   total_cylinders: number; filled_cylinders: number; empty_cylinders: number;
   shop_stock: number; kandam_stock: number;
+  /** Every stock location to show: active ones, plus any inactive one that still holds cylinders. */
+  locations: { id: number; code: string; name: string; is_active: boolean; stock: number }[];
   today_sales: number; today_collection: number; pending_payments: number;
   today_cancelled?: number; today_net_sales?: number;
   low_stock: { cylinder_type: string; location: string; status: string; quantity: number; threshold: number }[];
-  stock_rows: { id: number; type: string; shop_filled: number; shop_empty: number; kandam_filled: number; kandam_empty: number; total: number; with_customers: number }[];
+  stock_rows: {
+    id: number; type: string; is_active?: boolean; total: number; with_customers: number;
+    locations: { id: number; code: string; name: string; is_active: boolean; filled: number; empty: number }[];
+  }[];
   recent_activity: { id: number; action: string; description: string; user_name: string }[];
 };
 
@@ -79,8 +84,7 @@ export default function Dashboard() {
         <>
           <Select aria-label="Branch filter" selectSize="sm">
             <option>All Branches</option>
-            <option>Main Shop</option>
-            <option>Kandam</option>
+            {(data?.locations ?? []).map((l) => <option key={l.id}>{l.name}</option>)}
           </Select>
           <Button type="button" variant="secondary" size="sm" icon={<RefreshCw />} onClick={loadDashboard}>
             Refresh
@@ -165,7 +169,7 @@ export default function Dashboard() {
             <div className="ui-tiles">
               <Tile label="Filled" value={data.filled_cylinders} />
               <Tile label="Empty" value={data.empty_cylinders} />
-              <Tile label="At shop" value={data.shop_stock} />
+              <Tile label="In locations" value={data.filled_cylinders + data.empty_cylinders} />
               <Tile label="With customers" value={customerTotal} />
             </div>
           </Card>
@@ -173,8 +177,9 @@ export default function Dashboard() {
           <Card>
             <CardHeader title="Locations" meta={<Warehouse size={18} className="ui-card-icon" aria-hidden="true" />} />
             <div className="dash-bars">
-              <Bar label="Main shop" value={data.shop_stock} total={data.total_cylinders} />
-              <Bar label="Kandam" value={data.kandam_stock} total={data.total_cylinders} />
+              {data.locations.map((l) => (
+                <Bar key={l.id} label={l.is_active ? l.name : `${l.name} (inactive)`} value={l.stock} total={data.total_cylinders} />
+              ))}
               <Bar label="With customers" value={customerTotal} total={data.total_cylinders} />
             </div>
           </Card>
@@ -233,8 +238,7 @@ export default function Dashboard() {
               <thead>
                 <tr>
                   <Th>Type</Th>
-                  <Th align="center">Shop (F/E)</Th>
-                  <Th align="center">Kandam (F/E)</Th>
+                  {data.locations.map((l) => <Th key={l.id} align="center">{l.name} (F/E)</Th>)}
                   <Th align="right">With customers</Th>
                   <Th align="right">Total</Th>
                 </tr>
@@ -242,9 +246,11 @@ export default function Dashboard() {
               <tbody>
                 {data.stock_rows.map((item) => (
                   <tr key={item.id}>
-                    <Td><strong>{item.type}</strong></Td>
-                    <Td align="center"><FilledEmpty filled={item.shop_filled} empty={item.shop_empty} /></Td>
-                    <Td align="center"><FilledEmpty filled={item.kandam_filled} empty={item.kandam_empty} /></Td>
+                    <Td><strong>{item.type}</strong>{item.is_active === false && <span className="ui-cell-sub">Inactive</span>}</Td>
+                    {data.locations.map((l) => {
+                      const cell = item.locations.find((c) => c.id === l.id);
+                      return <Td key={l.id} align="center"><FilledEmpty filled={cell?.filled ?? 0} empty={cell?.empty ?? 0} /></Td>;
+                    })}
                     <Td numeric>
                       {item.with_customers > 0
                         ? <span className="ui-num-warning">{item.with_customers}</span>

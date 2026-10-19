@@ -17,9 +17,10 @@ import { PageHeader } from '../components/ui/PageHeader';
 import { SearchInput } from '../components/ui/SearchInput';
 import { SkeletonRows } from '../components/ui/Skeleton';
 import { Tabs } from '../components/ui/Tabs';
+import { fetchActiveCylinderTypes, fetchActiveLocations, isSupplierLocation, useCatalogRevision } from '../lib/catalog';
 
 type Tab = 'movement' | 'new_load' | 'refuel' | 'history';
-type Location = { id: number; name: string; code: string };
+type Location = { id: number; name: string; code: string; is_main_supplier?: boolean; kind?: 'stock' | 'supplier' };
 type CylinderType = { id: number; name: string };
 type RefuelItem = { cylinder_type: number; quantity: string; status?: string };
 type StockRow = { id: number; cylinder_type: number; location: number; status: string; quantity: number; cylinder_type_name: string; location_name: string };
@@ -44,7 +45,8 @@ export default function Stock() {
   const [refError, setRefError] = useState('');
 
   const loadReferenceData = useCallback(() => {
-    Promise.all([fetchAllPages<Location>('/locations/'), fetchAllPages<CylinderType>('/cylinder-types/')])
+    // Only active locations and cylinder types can take new stock operations (the server enforces the same).
+    Promise.all([fetchActiveLocations(), fetchActiveCylinderTypes()])
       .then(([locs, types]) => {
         setLocations(locs);
         setCylinderTypes(types);
@@ -57,7 +59,8 @@ export default function Stock() {
       });
   }, []);
 
-  useEffect(() => { loadReferenceData(); }, [loadReferenceData]);
+  const catalogRevision = useCatalogRevision();
+  useEffect(() => { loadReferenceData(); }, [loadReferenceData, catalogRevision]);
 
   // ── Movement form ────────────────────────────────────────────────────────
   const [fromLocation, setFromLocation] = useState(0);
@@ -133,7 +136,7 @@ export default function Stock() {
   const [historyFilter, setHistoryFilter] = useState<'all' | 'new_load' | 'refuel_sent' | 'refuel_received'>('all');
 
   // Derived lists
-  const moveLocations = locations.filter((l) => l.code !== 'supplier');
+  const moveLocations = locations.filter((l) => !isSupplierLocation(l));
   const moveLocationOptions = moveLocations.map((l) => ({ value: l.id, label: l.name }));
   const loadLocationOptions = moveLocations.map((l) => ({ value: l.id, label: l.name }));
   const cylinderOptions = cylinderTypes.map((t) => ({ value: t.id, label: t.name }));
@@ -179,7 +182,7 @@ export default function Stock() {
 
   // Set defaults once data loads
   useEffect(() => {
-    const nonSupplier = locations.filter((l) => l.code !== 'supplier');
+    const nonSupplier = locations.filter((l) => !isSupplierLocation(l));
     if (nonSupplier.length >= 1 && fromLocation === 0) {
       const getInitialLoc = (key: string, fallback: number) => {
         const savedStr = localStorage.getItem(key);
@@ -273,7 +276,7 @@ export default function Stock() {
     setLoadMsg(''); setLoadErr('');
     setLoadSaving(true);
     try {
-      const supplier = locations.find((l) => l.code === 'supplier');
+      const supplier = locations.find(isSupplierLocation);
       if (!supplier) { setLoadErr('Supplier location not found.'); return; }
 
       const validItems = loadItems.filter(item => item.cylinder_type > 0 && Number(item.quantity) > 0);
@@ -311,7 +314,7 @@ export default function Stock() {
     e.preventDefault();
     setRefuelSendMsg(''); setRefuelSendErr(''); setRefuelSendSaving(true);
     try {
-      const supplier = locations.find((l) => l.code === 'supplier');
+      const supplier = locations.find(isSupplierLocation);
       if (!supplier) { setRefuelSendErr('Supplier location not found.'); return; }
       const fromName = locations.find((l) => l.id === refuelSendLoc)?.name ?? '';
 
@@ -350,7 +353,7 @@ export default function Stock() {
   async function handleQuickReceive(items: RefuelItem[]) {
     setRefuelRecvMsg(''); setRefuelRecvErr(''); setRefuelRecvSaving(true);
     try {
-      const supplier = locations.find((l) => l.code === 'supplier');
+      const supplier = locations.find(isSupplierLocation);
       if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
       const toName = locations.find((l) => l.id === refuelRecvLoc)?.name ?? '';
 
@@ -381,7 +384,7 @@ export default function Stock() {
     e.preventDefault();
     setRefuelRecvMsg(''); setRefuelRecvErr(''); setRefuelRecvSaving(true);
     try {
-      const supplier = locations.find((l) => l.code === 'supplier');
+      const supplier = locations.find(isSupplierLocation);
       if (!supplier) { setRefuelRecvErr('Supplier location not found.'); return; }
       const toName = locations.find((l) => l.id === refuelRecvLoc)?.name ?? '';
 

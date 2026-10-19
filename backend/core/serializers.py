@@ -3,10 +3,12 @@ from decimal import Decimal
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.db import transaction
 from django.db.models import Q
+from django.utils.text import slugify
 from django.core.validators import RegexValidator
 from rest_framework import serializers
 
 from .exceptions import ApiError
+from .uploads import validate_image_upload
 from . import sale_accessories
 from .pricing import calculate_pricing, snapshot, SNAPSHOT_FIELDS
 from .models import (
@@ -15,11 +17,15 @@ from .models import (
     SaleRefund, StaffProfile, Stock, StockLocation, StockMovement, User, quantize_money,
 )
 from .services import (
-    DIRECT_SALE_LOCATION_CODES,
     MAX_COUNT,
     MAX_MONEY,
     RECEIPT_MODES,
+    advisory_lock,
     check_handover_staff,
+    is_supplier_location,
+    location_usage,
+    lock_active_stock_location,
+    require_sellable_location,
     is_active_staff,
     create_customer,
     customer_outstanding,
@@ -196,9 +202,45 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ["id", "username", "first_name", "last_name", "role", "is_active", "phone", "address", "email"]
 
 
+def normalize_name(value):
+    """Collapse runs of whitespace so "  5kg  " and "5kg" are the same name."""
+    return " ".join(str(value).split())
+
+
+def delete_replaced_file(old_name, field_file):
+    """Remove a replaced/cleared upload from storage once the change has committed."""
+    if old_name and old_name != getattr(field_file, "name", None):
+        storage = field_file.storage
+        transaction.on_commit(lambda: storage.delete(old_name))
+
+
+def default_active_on_create(serializer, attrs):
+    """A new record is active unless the request says otherwise. HTML forms drop unchecked boxes, so a
+    multipart create that leaves ``is_active`` out would otherwise read as False; a PUT/PATCH that
+    leaves it out must not reactivate an inactive record either, so this applies only on create."""
+    if serializer.instance is None and "is_active" not in serializer.initial_data:
+        attrs["is_active"] = True
+
+
 class CylinderTypeSerializer(serializers.ModelSerializer):
+    """Cylinder types are the catalog. Two amounts price a transaction (see core.pricing): the
+    refill rate, charged for every refill, and the new-cylinder deposit, charged IN ADDITION on a
+    new connection. A new connection therefore costs refill rate + deposit; a refill costs the
+    refill rate only. Editing them never reprices past transactions, which keep their own snapshots.
+
+    ``selling_price`` is a legacy column that no longer prices anything and cannot be edited through
+    the API: it is returned read-only so older records and clients keep working, and a new type
+    gets 0. The column itself is kept (older sale lines are still classified against it)."""
+
+    name = serializers.CharField(max_length=80)
+    weight = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=Decimal("0.01"))
+    selling_price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     deposit_amount = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
     refill_rate = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
+    low_stock_threshold = serializers.IntegerField(min_value=0, max_value=MAX_COUNT, required=False)
+    is_active = serializers.BooleanField(required=False)
+    image = serializers.ImageField(required=False, allow_null=True, validators=[validate_image_upload])
+    remove_image = serializers.BooleanField(write_only=True, required=False, default=False)
     customer_rate = serializers.SerializerMethodField()
     discount_amount = serializers.SerializerMethodField()
     final_price = serializers.SerializerMethodField()
@@ -207,6 +249,77 @@ class CylinderTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = CylinderType
         fields = "__all__"
+
+    def validate_name(self, value):
+        value = normalize_name(value)
+        if not value:
+            raise serializers.ValidationError("Enter a name for the cylinder type.")
+        return value
+
+    def _assert_name_free(self, name):
+        clash = CylinderType.objects.filter(name__iexact=name)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        existing = clash.first()
+        if existing is not None:
+            suffix = "" if existing.is_active else " (inactive; reactivate it instead)"
+            raise ApiError(
+                f"A cylinder type named {existing.name} already exists{suffix}.",
+                code="duplicate_name",
+                status=400,
+                field="name",
+                name=["A cylinder type with this name already exists."],
+                existing_id=existing.pk,
+            )
+
+    def validate(self, attrs):
+        # A first, lock-free pass gives early, friendly errors; create/update repeat it under a lock.
+        if "name" in attrs:
+            self._assert_name_free(attrs["name"])
+        if self.instance is None:
+            # A type with no stated rate would silently charge nothing: both amounts are explicit on create
+            # (the deposit may be 0, but it has to be said).
+            missing = {f: ["This field is required."] for f in ("refill_rate", "deposit_amount") if f not in attrs}
+            if missing:
+                raise serializers.ValidationError(missing)
+        default_active_on_create(self, attrs)
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        validated_data.pop("remove_image", None)
+        validated_data["selling_price"] = Decimal("0.00")  # legacy column, not part of the business model
+        advisory_lock("cylinder-type-name", validated_data["name"].lower())
+        self._assert_name_free(validated_data["name"])
+        instance = super().create(validated_data)
+        self._log("cylinder_type_created", instance)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        remove_image = validated_data.pop("remove_image", False)
+        old_image = instance.image.name if instance.image else None
+        if "name" in validated_data:
+            advisory_lock("cylinder-type-name", validated_data["name"].lower())
+            self._assert_name_free(validated_data["name"])
+        if remove_image and "image" not in validated_data:
+            validated_data["image"] = None
+        was_active = instance.is_active
+        instance = super().update(instance, validated_data)
+        delete_replaced_file(old_image, instance.image)
+        if was_active != instance.is_active:
+            self._log("cylinder_type_activated" if instance.is_active else "cylinder_type_deactivated", instance)
+        return instance
+
+    def _log(self, action, instance):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        ActivityLog.objects.create(
+            action=action,
+            description=f"{instance.name}: {action.replace('cylinder_type_', '').replace('_', ' ')}",
+            user=user if user is not None and user.is_authenticated else None,
+            metadata={"cylinder_type_id": instance.pk},
+        )
 
     def _get_pricing(self, obj):
         request = self.context.get("request")
@@ -228,9 +341,123 @@ class CylinderTypeSerializer(serializers.ModelSerializer):
 
 
 class StockLocationSerializer(serializers.ModelSerializer):
+    """Locations are created by admins without code changes. The ``code`` is generated from the
+    name when the location is created and never changes afterwards (the code of the
+    supplier and the type flag decide how stock treats a location, so they are fixed once a
+    location exists). ``kind`` is derived: ``supplier`` or ``stock``."""
+
+    name = serializers.CharField(max_length=80)
+    code = serializers.SlugField(read_only=True)
+    is_main_supplier = serializers.BooleanField(required=False, default=False)
+    is_active = serializers.BooleanField(required=False)
+    kind = serializers.SerializerMethodField()
+
     class Meta:
         model = StockLocation
-        fields = "__all__"
+        fields = ["id", "name", "code", "is_main_supplier", "is_active", "kind", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
+    def get_kind(self, obj):
+        return "supplier" if is_supplier_location(obj) else "stock"
+
+    def validate_name(self, value):
+        value = normalize_name(value)
+        if not value:
+            raise serializers.ValidationError("Enter a name for the location.")
+        return value
+
+    def _assert_name_free(self, name):
+        clash = StockLocation.objects.filter(name__iexact=name)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise ApiError(
+                f"A location named {clash.first().name} already exists.",
+                code="duplicate_name",
+                field="name",
+                name=["A location with this name already exists."],
+            )
+
+    def validate(self, attrs):
+        if self.instance is not None and "is_main_supplier" in attrs and attrs["is_main_supplier"] != self.instance.is_main_supplier:
+            raise ApiError(
+                "A location's type cannot be changed after it is created. Add a new location instead.",
+                code="type_locked",
+                field="is_main_supplier",
+                is_main_supplier=["A location's type cannot be changed after it is created."],
+            )
+        if "name" in attrs:
+            self._assert_name_free(attrs["name"])
+        default_active_on_create(self, attrs)
+        return attrs
+
+    @staticmethod
+    def _new_code(name):
+        base = slugify(name)[: StockLocation._meta.get_field("code").max_length - 6] or "location"
+        code, n = base, 1
+        while StockLocation.objects.filter(code=code).exists():
+            n += 1
+            code = f"{base}-{n}"
+        return code
+
+    @transaction.atomic
+    def create(self, validated_data):
+        advisory_lock("location-name", validated_data["name"].lower())
+        self._assert_name_free(validated_data["name"])
+        advisory_lock("location-code", slugify(validated_data["name"]))
+        validated_data["code"] = self._new_code(validated_data["name"])
+        instance = super().create(validated_data)
+        self._log("location_created", instance)
+        return instance
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        instance = StockLocation.objects.select_for_update().get(pk=instance.pk)
+        if "name" in validated_data:
+            advisory_lock("location-name", validated_data["name"].lower())
+            self._assert_name_free(validated_data["name"])
+        was_active = instance.is_active
+        if was_active and validated_data.get("is_active") is False:
+            self._check_can_deactivate(instance)
+        instance = super().update(instance, validated_data)
+        if was_active != instance.is_active:
+            self._log("location_activated" if instance.is_active else "location_deactivated", instance)
+        return instance
+
+    @staticmethod
+    def _check_can_deactivate(location):
+        """Deactivating must not strand stock or leave the business with nowhere to sell from."""
+        usage = location_usage(location)
+        held = usage["stock_filled"] + usage["stock_empty"]
+        if held:
+            raise ApiError(
+                f"{location.name} still holds {held} cylinder(s) ({usage['stock_filled']} filled, "
+                f"{usage['stock_empty']} empty). Move them to another location before deactivating it.",
+                code="has_stock",
+                status=409,
+                field="is_active",
+                **usage,
+            )
+        from .services import stock_locations, supplier_locations
+        pool = supplier_locations() if is_supplier_location(location) else stock_locations()
+        if not pool.exclude(pk=location.pk).exists():
+            what = "supplier" if is_supplier_location(location) else "stock location"
+            raise ApiError(
+                f"{location.name} is the only active {what}; add or activate another one first.",
+                code="last_active_location",
+                status=409,
+                field="is_active",
+            )
+
+    def _log(self, action, instance):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        ActivityLog.objects.create(
+            action=action,
+            description=f"{instance.name}: {action.replace('location_', '').replace('_', ' ')}",
+            user=user if user is not None and user.is_authenticated else None,
+            metadata={"location_id": instance.pk, "code": instance.code},
+        )
 
 
 class StockSerializer(serializers.ModelSerializer):
@@ -278,13 +505,49 @@ class StockMovementSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("From and to locations must be different.")
         if attrs["quantity"] <= 0:
             raise serializers.ValidationError("Quantity must be greater than zero.")
+        self.check_active(attrs["from_location"], attrs["to_location"], attrs["cylinder_type"])
         return attrs
+
+    @staticmethod
+    def check_active(from_location, to_location, cylinder_type):
+        """New movements only touch active records, with one deliberate exception so stock is
+        never stranded: cylinders may be moved OUT of an inactive stock location (to empty it
+        before it is deactivated for good, or after it was reactivated by mistake), and
+        existing stock of an inactive cylinder type may be moved between stock locations."""
+        if not to_location.is_active:
+            raise ApiError(f"{to_location.name} is inactive and cannot receive cylinders.", code="location_inactive", field="to_location")
+        from_supplier = is_supplier_location(from_location)
+        if not from_location.is_active and from_supplier:
+            raise ApiError(f"{from_location.name} is inactive.", code="location_inactive", field="from_location")
+        if not cylinder_type.is_active and from_supplier:
+            raise ApiError(
+                f"{cylinder_type.name} is inactive; the supplier cannot load it. Reactivate it first.",
+                code="cylinder_inactive",
+                field="cylinder_type",
+            )
+        if not cylinder_type.is_active and is_supplier_location(to_location):
+            raise ApiError(
+                f"{cylinder_type.name} is inactive and cannot be sent for refilling. Reactivate it first.",
+                code="cylinder_inactive",
+                field="cylinder_type",
+            )
 
     @transaction.atomic
     def create(self, validated_data):
         user = self.context["request"].user
         from_location = validated_data["from_location"]
         quantity = validated_data["quantity"]
+        # Lock the locations (by id) and re-check, so a concurrent deactivation, which also
+        # locks the row, is ordered cleanly before or after this movement.
+        locked = {
+            loc.pk: loc
+            for loc in StockLocation.objects.select_for_update().filter(
+                pk__in={from_location.pk, validated_data["to_location"].pk}
+            ).order_by("pk")
+        }
+        validated_data["from_location"] = from_location = locked[from_location.pk]
+        validated_data["to_location"] = locked[validated_data["to_location"].pk]
+        self.check_active(from_location, validated_data["to_location"], validated_data["cylinder_type"])
 
         if not from_location.is_main_supplier and from_location.code != "supplier":
             source = get_stock_row(validated_data["cylinder_type"], from_location, validated_data["status"])
@@ -556,15 +819,7 @@ class SaleSerializer(serializers.ModelSerializer):
         past_due = attrs.get("past_due_payments")
         attrs["_past_due"] = receipt_parts(past_due, "past_due_payments") if past_due is not None else []
 
-        location = attrs["location"]
-        if location.code not in DIRECT_SALE_LOCATION_CODES:
-            raise ApiError(
-                f"Direct sales take stock only from the shop or Kandam (godown), not {location.name}.",
-                code="invalid_location",
-                field="location",
-            )
-        if not location.is_active:
-            raise ApiError(f"{location.name} is inactive.", code="location_inactive", field="location")
+        require_sellable_location(attrs["location"])
 
         accessories = sale_accessories.quote(attrs.get('accessory_lines', []))
         if not attrs.get('sale_items') and not accessories:
@@ -704,6 +959,7 @@ class SaleSerializer(serializers.ModelSerializer):
         for line in lines:
             going_out, coming_back = needed.get(line["cylinder_type"], (0, 0))
             needed[line["cylinder_type"]] = (going_out + line["quantity"], coming_back + line["empty_returned"])
+        lock_active_stock_location(location.pk)
         locked = lock_sale_stock(location, needed)
         accessories = sale_accessories.quote(accessory_input, lock=True)
         if sum((i['total_amount'] for i in accessories), Decimal('0')) != accessory_total:

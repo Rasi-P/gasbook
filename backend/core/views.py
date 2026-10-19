@@ -10,7 +10,7 @@ from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.db import transaction
-from django.db.models import Count, Exists, OuterRef, Q, Sum
+from django.db.models import Count, DecimalField, ExpressionWrapper, Exists, F, OuterRef, Q, Sum
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
@@ -40,8 +40,11 @@ from .services import (
     clean_reason,
     confirm_refund,
     create_customer,
+    cylinder_type_delete_blockers,
+    cylinder_type_usage,
     deactivate_customer,
     deactivate_user,
+    default_delivery_location,
     default_staff_customers,
     delete_customer,
     delete_user,
@@ -49,6 +52,9 @@ from .services import (
     ensure_customer_phone_free,
     get_stock_row,
     is_admin_user,
+    location_delete_blockers,
+    location_usage,
+    lock_active_stock_location,
     lock_booking_and_delivery,
     lock_customer,
     not_voided,
@@ -57,9 +63,11 @@ from .services import (
     parse_non_negative_int,
     reactivate_customer,
     reactivate_user,
+    require_sellable_location,
     sale_void,
     staff_assignment_details,
     staff_handovers,
+    stock_locations,
     user_search_q,
     void_preview,
     void_sale,
@@ -294,34 +302,95 @@ def refuse_delete_while_holding_stock(stock_rows, name, kind):
         )
 
 
+def refuse_delete_with_blockers(blockers, kind):
+    """409 for the first reason a record cannot be deleted. History keeps the code ``protected`` (what the foreign
+    keys raised before), with a readable message; every reason is returned in ``blockers`` for the screen."""
+    if blockers:
+        first = blockers[0]
+        raise ApiError(
+            f"{first['detail']} Deactivate the {kind} instead.",
+            code="protected" if first["code"] == "has_history" else first["code"],
+            status=409,
+            blockers=blockers,
+        )
+
+
+def filter_active_param(queryset, request):
+    """?active=1 keeps active rows, ?active=0 inactive ones; anything else returns all (history screens need all)."""
+    active = request.query_params.get("active")
+    if active in ("1", "true"):
+        return queryset.filter(is_active=True)
+    if active in ("0", "false"):
+        return queryset.filter(is_active=False)
+    return queryset
+
+
 class CylinderTypeViewSet(viewsets.ModelViewSet):
+    """Everyone signed in may read the catalog; only admins change it. Inactive types stay in
+    the list (history and reports need them): use ?active=1 for the types that can be sold."""
+
     queryset = CylinderType.objects.all()
     serializer_class = CylinderTypeSerializer
     permission_classes = [IsAdminOrReadOnly]
     search_fields = ["name"]
+
+    def get_queryset(self):
+        queryset = filter_active_param(super().get_queryset(), self.request)
+        term = (self.request.query_params.get("search") or "").strip()
+        return queryset.filter(name__icontains=term) if term else queryset
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAdminUserRole])
+    def usage(self, request, pk=None):
+        """What depends on this type, so the admin can confirm before deactivating or deleting it."""
+        cylinder = self.get_object()
+        return Response({**cylinder_type_usage(cylinder), "delete_blockers": cylinder_type_delete_blockers(cylinder)})
 
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         # Lock the row so stock cannot be added between the check and the delete.
         cylinder = CylinderType.objects.select_for_update().get(pk=self.get_object().pk)
         refuse_delete_while_holding_stock(cylinder.stocks.all(), cylinder.name, "cylinder type")
-        return super().destroy(request, *args, **kwargs)
+        refuse_delete_with_blockers(cylinder_type_delete_blockers(cylinder), "cylinder type")
+        name, pk = cylinder.name, cylinder.pk
+        response = super().destroy(request, *args, **kwargs)
+        ActivityLog.objects.create(action="cylinder_type_deleted", description=f"{name}: deleted", user=request.user, metadata={"cylinder_type_id": pk})
+        return response
 
 
 class StockLocationViewSet(viewsets.ModelViewSet):
     """Staff may read locations; only admins change them, because a location's settings
-    decide where stock can be sold from."""
+    decide where stock can be sold from. ?active=1 lists the locations new operations may
+    use; ?kind=stock|supplier narrows by type."""
 
     queryset = StockLocation.objects.all()
     serializer_class = StockLocationSerializer
     permission_classes = [IsStaffOrAdmin, IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        queryset = filter_active_param(super().get_queryset(), self.request)
+        kind = self.request.query_params.get("kind")
+        if kind == "stock":
+            queryset = queryset.exclude(is_main_supplier=True).exclude(code="supplier")
+        elif kind == "supplier":
+            queryset = queryset.filter(Q(is_main_supplier=True) | Q(code="supplier"))
+        return queryset
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAdminUserRole])
+    def usage(self, request, pk=None):
+        """What depends on this location, so the admin can confirm before deactivating or deleting it."""
+        location = self.get_object()
+        return Response({**location_usage(location), "delete_blockers": location_delete_blockers(location)})
 
     @transaction.atomic
     def destroy(self, request, *args, **kwargs):
         # Lock the row so stock cannot be added between the check and the delete.
         location = StockLocation.objects.select_for_update().get(pk=self.get_object().pk)
         refuse_delete_while_holding_stock(location.stocks.all(), location.name, "location")
-        return super().destroy(request, *args, **kwargs)
+        refuse_delete_with_blockers(location_delete_blockers(location), "location")
+        name, pk, code = location.name, location.pk, location.code
+        response = super().destroy(request, *args, **kwargs)
+        ActivityLog.objects.create(action="location_deleted", description=f"{name}: deleted", user=request.user, metadata={"location_id": pk, "code": code})
+        return response
 
 
 class StockViewSet(viewsets.ReadOnlyModelViewSet):
@@ -338,6 +407,9 @@ class StockViewSet(viewsets.ReadOnlyModelViewSet):
         status = self.request.query_params.get("status")
         if location:
             queryset = queryset.filter(location__code=location)
+        location_id = self.request.query_params.get("location_id")
+        if location_id and location_id.isdigit():
+            queryset = queryset.filter(location_id=int(location_id))
         if status:
             queryset = queryset.filter(status=status)
         return queryset
@@ -406,7 +478,7 @@ class StockMovementViewSet(
         ).order_by("created_at")
         
         pending_balances = []
-        for cylinder in CylinderType.objects.filter(is_active=True):
+        for cylinder in CylinderType.objects.all():
             movements = supplier_movements.filter(cylinder_type=cylinder)
             pending = 0
             for m in movements:
@@ -1578,13 +1650,24 @@ class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
             payment_method = payment_method or (Sale.PaymentMode.CREDIT if total > 0 else Sale.PaymentMode.CASH)
         note = str(data.get("note", "") or "")[:300]
 
-        # --- location ---
-        staff_profile = getattr(delivery.staff, "staff_profile", None)
-        location = staff_profile.vehicle_location if staff_profile else None
-        if location is None:
-            location = StockLocation.objects.filter(code="shop").first() or StockLocation.objects.first()
-        if location is None:
-            raise ApiError("No stock location configured.", code="no_location")
+        # --- location: the one named in the request, else the staff member's own, else the shop ---
+        requested_location = data.get("location")
+        if requested_location not in (None, ""):
+            try:
+                location = StockLocation.objects.get(pk=int(requested_location))
+            except (ValueError, TypeError, StockLocation.DoesNotExist):
+                raise ApiError("Choose a valid stock location.", code="invalid", field="location")
+        else:
+            location = default_delivery_location(delivery.staff)
+            if location is None:
+                raise ApiError(
+                    "Choose the stock location this delivery takes cylinders from.",
+                    code="location_required",
+                    field="location",
+                    locations=list(stock_locations().values("id", "name")),
+                )
+        require_sellable_location(location)
+        lock_active_stock_location(location.pk)
 
         mixed_lines = booking_items.cylinder_lines(booking)
         empties = {booking.cylinder_type_id: empty_collected}
@@ -1758,6 +1841,15 @@ def customer_credentials(request, pk):
 
 def money_sum(queryset, field):
     return queryset.aggregate(total=Sum(field))["total"] or 0
+
+
+def deposits_in_sales(sales):
+    """New-cylinder deposits inside the billed totals of ``sales``: what new-connection lines charged on top
+    of the refill rate, from the amounts saved on each line (never from today's rates). A deposit is part of a
+    sale's total and of the money collected, as it has always been; this shows how much of that total it is."""
+    lines = SaleItem.objects.filter(sale__in=sales, rate_type="new", deposit_unit_amount__isnull=False)
+    amount = ExpressionWrapper(F("deposit_unit_amount") * F("quantity"), output_field=DecimalField(max_digits=14, decimal_places=2))
+    return lines.aggregate(total=Sum(amount))["total"] or 0
 
 
 def cancelled_sales_total(voids):
@@ -2237,6 +2329,62 @@ def register(request):
     return Response(response_data, status=drf_status.HTTP_201_CREATED)
 
 
+def stock_matrix():
+    """{(cylinder type id, location id, status): quantity} in one query, for the stock screens."""
+    return {
+        (row["cylinder_type_id"], row["location_id"], row["status"]): row["quantity"] or 0
+        for row in Stock.objects.values("cylinder_type_id", "location_id", "status").annotate(quantity=Sum("quantity"))
+    }
+
+
+def visible_stock_locations(matrix):
+    """Stock locations to show in stock tables: every active one, plus any inactive one that
+    still holds cylinders, so deactivating a location never hides stock from the totals."""
+    held = {location_id for (_type, location_id, _status), quantity in matrix.items() if quantity}
+    return [
+        location
+        for location in stock_locations(active_only=False).order_by("id")
+        if location.is_active or location.pk in held
+    ]
+
+
+def location_columns(matrix, cylinder_id, locations):
+    return [
+        {
+            "id": location.pk,
+            "code": location.code,
+            "name": location.name,
+            "is_active": location.is_active,
+            "filled": matrix.get((cylinder_id, location.pk, Stock.Status.FILLED), 0),
+            "empty": matrix.get((cylinder_id, location.pk, Stock.Status.EMPTY), 0),
+        }
+        for location in locations
+    ]
+
+
+def legacy_location_keys(columns):
+    """shop_* / kandam_* keys older clients read; any other location appears only in ``locations``."""
+    keys = {}
+    for prefix in ("shop", "kandam"):
+        column = next((c for c in columns if c["code"] == prefix), None)
+        keys[f"{prefix}_filled"] = column["filled"] if column else 0
+        keys[f"{prefix}_empty"] = column["empty"] if column else 0
+    return keys
+
+
+def location_summary(matrix, locations):
+    return [
+        {
+            "id": location.pk,
+            "code": location.code,
+            "name": location.name,
+            "is_active": location.is_active,
+            "stock": sum(q for (_t, loc, _s), q in matrix.items() if loc == location.pk),
+        }
+        for location in locations
+    ]
+
+
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard(request):
@@ -2249,6 +2397,8 @@ def dashboard(request):
     empty = stocks.filter(status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0
     shop_stock = stocks.filter(location__code="shop").aggregate(total=Sum("quantity"))["total"] or 0
     kandam_stock = stocks.filter(location__code="kandam").aggregate(total=Sum("quantity"))["total"] or 0
+    matrix = stock_matrix()
+    locations = visible_stock_locations(matrix)
     today_sales = Sale.objects.filter(created_at__date=today)
     today_payments = Payment.objects.filter(created_at__date=today)
     # Cancelled sales are dated by their void; see cancelled_sales_total.
@@ -2289,7 +2439,8 @@ def dashboard(request):
     # Using a chronological running balance where returned empties pay off existing debt first,
     # and excess returns (banked credits) do NOT artificially lower the debt below 0.
     customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type")
-    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
+    # Every type, active or not: cylinders discontinued types left with customers still count.
+    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.all()}
     
     for customer in customers:
         # We must process sales chronologically to maintain the correct running balance.
@@ -2318,19 +2469,24 @@ def dashboard(request):
                 with_customers_by_type[tid] += debt
 
     stock_rows = []
-    for cylinder in CylinderType.objects.filter(is_active=True):
+    for cylinder in CylinderType.objects.all():
         cylinder_stocks = stocks.filter(cylinder_type=cylinder)
         with_customers = with_customers_by_type.get(cylinder.id, 0)
+        columns = location_columns(matrix, cylinder.id, locations)
+        type_filled = cylinder_stocks.filter(status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0
+        type_empty = cylinder_stocks.filter(status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0
+        # An inactive type stays listed while any of it is in stock or with customers.
+        if not cylinder.is_active and not (type_filled or type_empty or with_customers):
+            continue
         stock_rows.append(
             {
                 "id": cylinder.id,
                 "type": cylinder.name,
-                "filled": cylinder_stocks.filter(status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0,
-                "empty": cylinder_stocks.filter(status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0,
-                "shop_filled": cylinder_stocks.filter(location__code="shop", status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0,
-                "shop_empty": cylinder_stocks.filter(location__code="shop", status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0,
-                "kandam_filled": cylinder_stocks.filter(location__code="kandam", status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0,
-                "kandam_empty": cylinder_stocks.filter(location__code="kandam", status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0,
+                "is_active": cylinder.is_active,
+                "filled": type_filled,
+                "empty": type_empty,
+                "locations": columns,
+                **legacy_location_keys(columns),
                 "total": (cylinder_stocks.aggregate(total=Sum("quantity"))["total"] or 0) + with_customers,
                 "with_customers": with_customers,
             }
@@ -2346,6 +2502,7 @@ def dashboard(request):
             "empty_cylinders": empty,
             "shop_stock": shop_stock,
             "kandam_stock": kandam_stock,
+            "locations": location_summary(matrix, locations),
             "today_sales": money_sum(today_sales, "total_amount"),
             "today_cancelled": today_cancelled,
             "today_net_sales": money_sum(today_sales, "total_amount") - today_cancelled,
@@ -2432,8 +2589,8 @@ def reports(request):
     # Calculate with_customers correctly by summing physical possession per customer per cylinder type
     # Using a chronological running balance
     customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type", "custom_rates")
-    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
-    customer_credits_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
+    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.all()}
+    customer_credits_by_type = {c.id: 0 for c in CylinderType.objects.all()}
     
     for customer in customers:
         # As of the end date: sales voided by then no longer leave cylinders with the customer.
@@ -2475,26 +2632,26 @@ def reports(request):
             if tid in customer_credits_by_type and data["credits"] > 0:
                 customer_credits_by_type[tid] += data["credits"]
                     
-    for cylinder in CylinderType.objects.filter(is_active=True):
-        cstocks = stocks.filter(cylinder_type=cylinder)
+    matrix = stock_matrix()
+    report_locations = visible_stock_locations(matrix)
+    for cylinder in CylinderType.objects.all():
         with_customers = with_customers_by_type.get(cylinder.id, 0)
         customer_credits = customer_credits_by_type.get(cylinder.id, 0)
-        
-        shop_filled = cstocks.filter(location__code="shop", status="filled").aggregate(t=Sum("quantity"))["t"] or 0
-        shop_empty = cstocks.filter(location__code="shop", status="empty").aggregate(t=Sum("quantity"))["t"] or 0
-        kandam_filled = cstocks.filter(location__code="kandam", status="filled").aggregate(t=Sum("quantity"))["t"] or 0
-        kandam_empty = cstocks.filter(location__code="kandam", status="empty").aggregate(t=Sum("quantity"))["t"] or 0
-        
+        columns = location_columns(matrix, cylinder.id, report_locations)
+        physical = sum(c["filled"] + c["empty"] for c in columns)
+        # Historical view: an inactive type is listed for as long as anything of it is held.
+        if not cylinder.is_active and not (physical or with_customers or customer_credits):
+            continue
+
         stock_snapshot.append({
             "type": cylinder.name,
-            "shop_filled": shop_filled,
-            "shop_empty": shop_empty,
-            "kandam_filled": kandam_filled,
-            "kandam_empty": kandam_empty,
+            "is_active": cylinder.is_active,
+            "locations": columns,
+            **legacy_location_keys(columns),
             "with_customers": with_customers,
             "customer_credits": customer_credits,
-            "supplier_stock": shop_filled + shop_empty + kandam_filled + kandam_empty + with_customers - customer_credits,
-            "physical_stock": shop_filled + shop_empty + kandam_filled + kandam_empty,
+            "supplier_stock": physical + with_customers - customer_credits,
+            "physical_stock": physical,
         })
 
     range_loads = range_movements.filter(
@@ -2513,7 +2670,7 @@ def reports(request):
         Q(from_location__is_main_supplier=True) | Q(to_location__is_main_supplier=True)
     ).order_by("created_at")
     
-    for cylinder in CylinderType.objects.filter(is_active=True):
+    for cylinder in CylinderType.objects.all():
         movements = supplier_movements.filter(cylinder_type=cylinder)
         sent_total = 0
         received_total = 0
@@ -2549,6 +2706,8 @@ def reports(request):
                 "sales": money_sum(range_sales, "total_amount"),
                 "cancelled": range_cancelled,
                 "net_sales": money_sum(range_sales, "total_amount") - range_cancelled,
+                # of "sales" (gross, like it): the new-cylinder deposits billed on new connections.
+                "deposits_included": deposits_in_sales(range_sales),
                 "collection": money_sum(range_payments, "amount"),
                 "refunds_paid": -money_sum(range_payments.filter(amount__lt=0, reverses_link__sale_refund__isnull=False), "amount"),
                 "refunds_owed": money_sum(SaleVoid.objects.filter(outcome=SaleVoid.Outcome.REFUND, refund__isnull=True), "refund_due"),
@@ -2597,6 +2756,7 @@ def reports(request):
             "sales_list": range_sales_list,
             "expense_list": range_expense_list,
             "stock_snapshot": stock_snapshot,
+            "stock_locations": location_summary(matrix, report_locations),
             "supplier_balance": supplier_balance,
             "load_summary": list(load_summary),
             "movement_history": StockMovementSerializer(
