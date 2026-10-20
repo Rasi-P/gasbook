@@ -7,6 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import authenticate
+from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.db import transaction
@@ -14,7 +15,7 @@ from django.db.models import Count, DecimalField, ExpressionWrapper, Exists, F, 
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
-from rest_framework import permissions, viewsets, filters, mixins
+from rest_framework import permissions, viewsets, filters, mixins, serializers
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.fields import DateTimeField
@@ -23,7 +24,7 @@ from rest_framework import status as drf_status
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
+    ActivityLog, Booking, BookingItem, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
     CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem, SaleRefund, SaleVoid,
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
@@ -104,6 +105,8 @@ from .serializers import (
 
 
 def get_staff_image_url(request, user):
+    if settings.DEMO_DISABLE_UPLOADS:
+        return None
     profile = getattr(user, "staff_profile", None)
     if not profile or not profile.image:
         return None
@@ -238,6 +241,9 @@ def build_direct_sale_history_entry(sale):
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
+    from .authentication import LoginAccountThrottle, LoginIPThrottle
+    throttle_classes = [LoginAccountThrottle, LoginIPThrottle]
+
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
         username = (request.data.get("username") or "").strip()
@@ -329,7 +335,7 @@ class CylinderTypeViewSet(viewsets.ModelViewSet):
     """Everyone signed in may read the catalog; only admins change it. Inactive types stay in
     the list (history and reports need them): use ?active=1 for the types that can be sold."""
 
-    queryset = CylinderType.objects.all()
+    queryset = CylinderType.objects.order_by("weight", "name", "pk")
     serializer_class = CylinderTypeSerializer
     permission_classes = [IsAdminOrReadOnly]
     search_fields = ["name"]
@@ -1122,9 +1128,22 @@ class BookingViewSet(
         booking, created = booking_items.checkout(request)
         return Response(BookingSerializer(booking, context={"request": request}).data, status=201 if created else 200)
 
+    @action(detail=False, methods=["get"], url_path="checkout-status", permission_classes=[permissions.IsAuthenticated])
+    def checkout_status(self, request):
+        """Recover a lost checkout response without creating or changing anything."""
+        profile = booking_items.customer(request)
+        field = serializers.UUIDField()
+        client_ref = field.run_validation(request.query_params.get("client_ref"))
+        line = BookingItem.objects.select_related("booking").filter(
+            client_ref=client_ref, booking__customer=profile).first()
+        # Absence is not proof that another in-flight request will not commit.
+        return Response({"booking": BookingSerializer(line.booking, context={"request": request}).data if line else None})
+
     @action(detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated])
     def preview(self, request):
-        if isinstance(request.data.get('items'), list) and any(isinstance(i, dict) and 'product' in i for i in request.data['items']):
+        # Both cart kinds use the same signed pricing snapshot. Preserve the
+        # historical empty preview response below for clients clearing a cart.
+        if isinstance(request.data.get('items'), list) and request.data['items']:
             return Response(booking_items.preview(request))
         if getattr(getattr(request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can preview booking totals.")
@@ -1899,8 +1918,7 @@ def serialize_me(request):
             location_name = loc.name
         assigned_area = request.user.staff_profile.assigned_area or None
         vehicle_number = request.user.staff_profile.vehicle_number or None
-        if request.user.staff_profile.image:
-            staff_image_url = request.build_absolute_uri(request.user.staff_profile.image.url)
+        staff_image_url = get_staff_image_url(request, request.user)
             
     return {
         "id": request.user.id,
@@ -2001,6 +2019,9 @@ def user_detail(request, pk):
         user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
         new_image = request.FILES.get("image")
+        if new_image:
+            from .uploads import validated_image
+            new_image = validated_image(new_image)
         remove_image = str(request.data.get("remove_staff_image", "")).strip().lower() in {"1", "true", "yes", "on"}
         # Work on the instance cached by select_related so the response reflects the
         # saved state (a second StaffProfile instance would leave the cache stale).
@@ -2008,15 +2029,15 @@ def user_detail(request, pk):
         if profile is None and getattr(getattr(user, "role", None), "code", "") == "staff":
             profile = StaffProfile.objects.create(user=user)
         if profile is not None:
+            old_image_name = profile.image.name
             if remove_image and profile.image:
-                profile.image.delete(save=False)
                 profile.image = None
             if new_image:
-                if profile.image:
-                    profile.image.delete(save=False)
                 profile.image = new_image
             if remove_image or new_image:
                 profile.save(update_fields=["image", "updated_at"])
+                from .serializers import delete_replaced_file
+                delete_replaced_file(old_image_name, profile.image)
             user.staff_profile = profile
 
     return Response({
@@ -2263,7 +2284,9 @@ def change_password(request):
     request.user.must_change_password = False
     request.user.plain_password = ""
     request.user.save(update_fields=["password", "must_change_password", "plain_password"])
-    return Response({"detail": "Password updated successfully."})
+    from rest_framework_simplejwt.tokens import RefreshToken
+    replacement = RefreshToken.for_user(request.user)
+    return Response({"detail": "Password updated successfully.", "access": str(replacement.access_token), "refresh": str(replacement)})
 
 
 @api_view(["POST"])
@@ -2283,6 +2306,9 @@ def register(request):
     area = contact.get("area", "")
     vehicle_number = contact.get("vehicle_number", "")
     staff_image = request.FILES.get("image")
+    if staff_image:
+        from .uploads import validated_image
+        staff_image = validated_image(staff_image)
     if not username:
         return Response({"detail": "Username required.", "code": "required", "field": "username"}, status=drf_status.HTTP_400_BAD_REQUEST)
     if not phone:

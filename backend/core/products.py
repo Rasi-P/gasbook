@@ -10,6 +10,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from .exceptions import ApiError
 from .models import Product, ProductCategory, ProductMovement
+from .uploads import SafeImageField
 
 
 def require_enabled():
@@ -35,18 +36,14 @@ class ProductInput(StrictSerializer):
     description = serializers.CharField(max_length=3000, allow_blank=True, required=False)
     category = serializers.CharField(max_length=80)
     selling_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0'))
-    image = serializers.ImageField(required=False, allow_null=True)
+    image = SafeImageField(required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False)
     initial_stock = serializers.IntegerField(min_value=0, max_value=100000, required=False)
-
-    def validate_image(self, value):
-        if value is not None and (value.size > 5*1024*1024 or value.image.format not in ('PNG', 'JPEG', 'WEBP') or max(value.image.size) > 4096):
-            raise serializers.ValidationError('Use a JPEG, PNG or WebP image up to 5 MB and 4096 pixels.')
-        return value
 
 
 class ProductSerializer(serializers.ModelSerializer):
     category = serializers.CharField(source='category.name')
+    image = SafeImageField(read_only=True)
     available = serializers.SerializerMethodField()
     class Meta:
         model = Product

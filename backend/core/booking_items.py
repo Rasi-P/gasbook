@@ -1,8 +1,7 @@
-"""Mixed items on the existing Booking; no accessory order/payment workflow."""
+"""Atomic, retryable cylinder and mixed carts on the existing Booking."""
 import hashlib
 import json
 from decimal import Decimal
-from django.conf import settings
 from django.core import signing
 from django.db import transaction
 from rest_framework import serializers
@@ -11,7 +10,7 @@ from .exceptions import ApiError
 from .models import Booking, BookingItem, CylinderType, Product, ProductMovement, SaleItem, Stock
 from .pricing import calculate_pricing, snapshot
 from .products import StrictSerializer, require_enabled, move
-from .services import lock_customer, get_stock_row, MAX_MONEY
+from .services import advisory_lock, lock_customer, get_stock_row, MAX_MONEY
 
 
 class ItemInput(StrictSerializer):
@@ -37,7 +36,6 @@ class CheckoutInput(StrictSerializer):
 
 
 def customer(request):
-    require_enabled()
     if getattr(getattr(request.user, 'role', None), 'code', '') != 'customer':
         raise PermissionDenied('Only customers can place bookings.')
     profile = getattr(request.user, 'customer_profile', None)
@@ -52,6 +50,8 @@ def priced_items(profile, items, lock=False):
     if not items or len(items) > 50:
         raise ApiError('Choose between 1 and 50 items.', code='invalid')
     ids = [i['product'] for i in items if 'product' in i]
+    if ids:
+        require_enabled()
     products = Product.objects.filter(id__in=ids).order_by('pk')
     if lock:
         products = products.select_for_update()
@@ -108,7 +108,9 @@ def checkout(request):
     profile = customer(request)
     data = CheckoutInput(data=request.data); data.is_valid(raise_exception=True)
     values = data.validated_data
-    # Serialize this customer's retries before reserving any product.
+    # Lock the globally unique retry key before the customer and product locks.
+    # This also serializes collisions between two different customer accounts.
+    advisory_lock('booking-checkout', values['client_ref'])
     profile = lock_customer(profile.pk)
     canonical = {k:v for k,v in values.items() if k not in ('quote','client_ref')}
     digest = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).hexdigest()
@@ -117,7 +119,7 @@ def checkout(request):
         if previous.booking.customer_id != profile.pk or previous.request_hash != digest:
             raise ApiError('Retry key belongs to another booking request.', code='conflict', status=409)
         return previous.booking, False
-    if not any('product' in i for i in values['items']) or not any('cylinder_type' in i for i in values['items']):
+    if not any('cylinder_type' in i for i in values['items']):
         raise ApiError('Add accessories together with a cylinder booking.', code='cylinder_required')
     result, products = priced_items(profile, values['items'], lock=True)
     try:
@@ -150,8 +152,8 @@ def checkout(request):
 
 
 def saved_items(booking):
-    if not settings.ACCESSORIES_ENABLED:
-        return []
+    # Feature flags gate new accessory purchases, never persisted financial or
+    # fulfillment facts (including cylinder-only carts).
     if not hasattr(booking, '_saved_inventory_items'):
         booking._saved_inventory_items = list(booking.order_items.all())
     return booking._saved_inventory_items

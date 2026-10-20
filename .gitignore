@@ -20,6 +20,28 @@ backend/*.log
 backend/.env
 frontend/.env
 
+# Local Neon demo connection and CLI context (never commit credentials).
+/.env.local
+/.neon
+/node_modules/
+
+# Environment files at any depth; keep safe templates trackable.
+.env
+.env.*
+!.env.example
+
+# Local provider metadata, credentials and private-key files.
+.neon
+.vercel/
+.secrets/
+credentials.json
+credentials.local.*
+secrets.local.*
+*.key
+*.pem
+*.p12
+*.pfx
+
 # Frontend build
 frontend/node_modules/
 frontend/dist/
@@ -38,3 +60,5 @@ frontend/dist/
 
 # Uploaded accessory images are runtime media; demo sources live in core/demo_products.
 /backend/media/product-images/
+/backend/media/staff-images/
+/backend/media/cylinder-images/

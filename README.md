@@ -171,40 +171,73 @@ GET  /api/reports/?start=YYYY-MM-DD&end=YYYY-MM-DD
 /api/activity/
 ```
 
-## Deployment
+## Deployment — ₹0 personal demo
 
-### Render (Backend)
-- Use `render.yaml` — add a PostgreSQL database and set `DATABASE_URL`
-- Set `SECRET_KEY`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` environment variables
+Follow [the deployment runbook](docs/production-deployment.md) and its approval gates.
+Use fake customers, bookings and payment records only; no real orders, payments or customer data.
+Keep billing disabled and use provider-generated domains.
 
-### Vercel (Frontend)
-- Deploy the `frontend/` folder
-- Set `VITE_API_BASE_URL` to your Render backend URL ending in `/api`
+- **Backend:** Render Free, native Python, using `render.demo.yaml`.
+- **Database:** the separately verified, dedicated Neon Free demo project.
+- **Frontends:** separate Vercel Hobby projects for admin and customer, for personal non-commercial demonstration.
+- **Images:** bundled frontend artwork/placeholders with `DEMO_DISABLE_UPLOADS=True`; no persistent disk or media service.
 
-### Docker
+`render.demo.yaml` is a review template, not permission to create or deploy a service.
+Keep `render.yaml` as the earlier commercial proposal; do not apply it to this ₹0 demo.
 
-The backend service reads `backend/.env`, which is gitignored — create it first:
+### Backend configuration
+
+Keep `GASBOOK_ENV=production`, `DEBUG=False`, `DEMO_DISABLE_UPLOADS=True` and `ACCESSORIES_ENABLED=False`.
+Privately configure `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` and
+`CSRF_TRUSTED_ORIGINS` using the verified backend and both frontend origins. Never commit their secret values.
+Supply the approved Neon connection with TLS through Render's environment; Django does not load root `.env.local`.
+The template pins Python, serves static files with WhiteNoise and runs Gunicorn. Build/start commands must not
+run migrations, bootstrap or seed commands.
+
+### Frontend configuration
+
+| Project | Repository / root | Install | Build | Output |
+| --- | --- | --- | --- | --- |
+| Admin | `gasbook` / `frontend` | `npm ci` | `npm run build` | `dist` |
+| Customer | `gasbook-customer` / `.` | `bun install --frozen-lockfile` | `bun run build` | `dist` |
+
+Use Node 24.x. Each build requires `VITE_API_BASE_URL` set to the actual Render HTTPS API URL ending in `/api`.
+Do not deploy a localhost or build-test placeholder URL. Preserve the admin Vercel SPA fallback for `/login`
+and `/admin-dashboard`; customer navigation uses application state/hash. Never put database credentials in `VITE_*`.
+
+### Separate approval steps
+
+1. Review the exact files and obtain explicit commit/push approval. Recheck Git deployment triggers before any push.
+   Resource creation, linking and each deployment require separate approval; linking can trigger an initial deployment.
+2. Verify the dedicated demo database identity, backup/restore status and complete migration plan before requesting
+   **migration approval**. Preserve migration 0015's legacy-order guard. Apply migrations only in the approved release
+   environment; `/ready/` remains 503 until the required migrations are applied.
+3. After migration verification, request **separate admin-bootstrap approval**. Use the interactive `bootstrap_admin`
+   command with a unique password and the business admin role. Keep `seed_demo` blocked in the hosted demo.
+   Enter only approved synthetic business data.
+4. Deploy the backend only after approval and verify its actual status, HTTPS, `/health/` and `/ready/`.
+   Then separately approve both frontend deployments using its verified URL and run the fake-data smoke tests.
+
+### Local Docker development
+
+Use `docker-compose.dev.yml` only with an explicitly verified local development database.
+Compose loads the gitignored `backend/.env`; its explicit development settings and internal database/cache addresses
+take precedence. Create the file only if it is missing; keep existing configuration:
 
 ```bash
-cp backend/.env.example backend/.env
+cp -n backend/.env.example backend/.env
 # then edit it: use the Docker hostnames
 #   DATABASE_URL=postgres://gasbook:gasbook123@db:5432/gasbook
 #   REDIS_URL=redis://redis:6379/0
-docker-compose up --build
+docker compose -f docker-compose.dev.yml up --build
 ```
 
 Frontend: http://localhost:8080 — Backend API: http://localhost:8001/api
 
-Seed demo data (one-off, optional):
+All published development ports bind to `127.0.0.1`: PostgreSQL 5434, Redis 6379, backend 8001 and frontend 8080.
+Container-to-container traffic still uses the Compose service names. Existing named volumes retain local data;
+do not remove volumes or treat this stack as a disposable test environment.
 
-```bash
-docker compose run --rm backend python manage.py seed_demo
-```
-
-For development with hot reload (frontend on http://localhost:5173):
-
-```bash
-docker compose -f docker-compose.dev.yml up --build
-```
-
-> For production: change the seed admin password, set a strong `SECRET_KEY`, and disable `DEBUG`.
+The startup command above starts local services only; it does not run migrations, seed data or bootstrap an admin.
+Each database operation needs its own verified target and explicit approval. Never point this stack at Neon,
+production or `gasbook_qa`, and never reuse its development credentials for the hosted demo.

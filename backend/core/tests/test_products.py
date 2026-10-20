@@ -209,6 +209,19 @@ class ProductBookingTests(GasBookTestCase):
         response=self.client.post('/api/bookings/',{'cylinder_type':self.cylinder.pk,'quantity':1},format='json')
         self.assertEqual(response.status_code,201,response.data)
 
+    def test_disabling_accessories_preserves_saved_lines_and_successful_replays(self):
+        payload = self.payload()
+        created = self.client.post('/api/bookings/checkout/', payload, format='json')
+        self.assertEqual(created.status_code, 201)
+        with override_settings(ACCESSORIES_ENABLED=False):
+            replay = self.client.post('/api/bookings/checkout/', payload, format='json')
+            self.assertEqual(replay.status_code, 200)
+            self.assertEqual(replay.data['order_items'], created.data['order_items'])
+            changed_key = {**payload, 'client_ref': str(uuid.uuid4())}
+            self.assertEqual(self.client.post('/api/bookings/checkout/', changed_key, format='json').status_code, 503)
+        self.assertEqual(Booking.objects.count(), 1)
+        self.assertEqual(ProductMovement.objects.filter(kind='reservation').count(), 1)
+
     def test_seed_is_repeatable_and_uses_renderable_local_images(self):
         import os
         from unittest.mock import patch

@@ -1,5 +1,5 @@
 import { formatDateTime } from '../../lib/dateTime';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   IndianRupee, WalletCards, XCircle,
   AlertTriangle, Package, Boxes, CheckCircle2, Receipt, Truck, Users,
@@ -29,6 +29,7 @@ type Sale = {
   total_amount: number; paid_amount: number; balance_due: number;
   accessory_items?: import('../../components/BookingItems').BookingItem[];
   payment_mode: string; location_name: string; items: SaleItem[];
+  note?: string;
   payments?: { amount: number; mode: string; date: string }[];
 };
 type Expense = {
@@ -102,10 +103,11 @@ function yesterday() {
 }
 
 export default function Reports() {
-  const [start, setStart] = useState(today());
-  const [end, setEnd] = useState(today());
+  const [initialRange] = useState(() => ({ start: today(), end: today() }));
+  const [start, setStart] = useState(initialRange.start);
+  const [end, setEnd] = useState(initialRange.end);
   const [data, setData] = useState<ReportsData | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('summary');
   const [locations, setLocations] = useState<Location[]>([]);
@@ -114,20 +116,24 @@ export default function Reports() {
   // ISO yyyy-mm-dd strings compare lexicographically.
   const rangeError = start && end && start > end ? 'From date must be on or before To date.' : '';
 
-  function fetchData(s: string, e: string, loc = location) {
-    if (!s || !e || s > e) return;
-    setLoading(true);
-    setError('');
-    api.get('/reports/', { params: { start: s, end: e, ...(loc ? { location: loc } : {}) } })
+  const requestReport = useCallback((s: string, e: string, loc: string) => {
+    return api.get('/reports/', { params: { start: s, end: e, ...(loc ? { location: loc } : {}) } })
       .then((r) => setData(r.data as ReportsData))
       .catch((err) => {
         setError(extractApiError(err, [], 'Could not load report.'));
         setData(null);
       })
       .finally(() => setLoading(false));
+  }, []);
+
+  function fetchData(s: string, e: string, loc = location) {
+    if (!s || !e || s > e) return;
+    setLoading(true);
+    setError('');
+    void requestReport(s, e, loc);
   }
 
-  useEffect(() => { fetchData(start, end); }, []);
+  useEffect(() => { void requestReport(initialRange.start, initialRange.end, ''); }, [initialRange, requestReport]);
 
   // The location filter is optional; without the list the report still covers every location.
   useEffect(() => {
@@ -285,7 +291,7 @@ export default function Reports() {
                         acc[cyl][curr.to_location__name] = (acc[cyl][curr.to_location__name] || 0) + curr.total_qty;
                         acc[cyl].total += curr.total_qty;
                         return acc;
-                      }, {} as Record<string, any>);
+                      }, {} as Record<string, Record<string, number>>);
                       const locs = Array.from(new Set(data.load_summary.map(l => l.to_location__name))).sort();
 
                       return (
@@ -325,11 +331,11 @@ export default function Reports() {
               {/* Supplier Balance */}
               <Card padding="none" className="ui-list">
                 <CardHeader title="Supplier Balance (All Time)" meta={<Badge variant="outline">Pending to Receive</Badge>} />
-                {(data as any).supplier_balance && (data as any).supplier_balance.length === 0
+                {data.supplier_balance && data.supplier_balance.length === 0
                   ? <EmptyState compact title="No supplier records found." />
                   : (
                     <div>
-                      {data.supplier_balance && [...data.supplier_balance].sort((a: any, b: any) => parseFloat(a.type) - parseFloat(b.type)).map((b: any, i: number) => (
+                      {data.supplier_balance && [...data.supplier_balance].sort((a, b) => parseFloat(a.type) - parseFloat(b.type)).map((b, i) => (
                         <div key={i} className="ui-list-row">
                           <div className="ui-list-row__main">
                             <span className="ui-list-row__name">{b.type}</span>
@@ -420,7 +426,7 @@ export default function Reports() {
                   </thead>
                   <tbody>
                     {data.sales_list.map((sale) => {
-                      const isReturn = (sale as any).note === 'Empty cylinders returned';
+                      const isReturn = sale.note === 'Empty cylinders returned';
                       return (
                       <tr key={sale.id}>
                         <Td label="Customer"><strong className="sh-customer">{sale.customer_name || 'Walk-in'}</strong></Td>
@@ -575,21 +581,22 @@ function StaffTotalsTable({ heading, unit, rows }: { heading: string; unit: stri
 
 /** Cylinder × location quantity table (Summary → Cylinder-wise Sales and Stock → Sold in Range). Aggregation unchanged. */
 function CylinderSalesTable({ rows }: { rows: CylinderSale[] }) {
+  type Group = { total_qty: number; total_amount: number; locations: Record<string, { qty: number; amount: number }> };
   const saleGroups = rows.reduce((acc, curr) => {
     const cyl = curr.cylinder_type__name;
     const loc = curr.sale__location__name || 'Unknown';
     const colKey = loc;
 
-    if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0 };
-    if (!acc[cyl][colKey]) acc[cyl][colKey] = { qty: 0, amount: 0 };
+    if (!acc[cyl]) acc[cyl] = { total_qty: 0, total_amount: 0, locations: {} };
+    if (!acc[cyl].locations[colKey]) acc[cyl].locations[colKey] = { qty: 0, amount: 0 };
 
-    acc[cyl][colKey].qty += curr.total_qty;
-    acc[cyl][colKey].amount += curr.total_amount;
+    acc[cyl].locations[colKey].qty += curr.total_qty;
+    acc[cyl].locations[colKey].amount += curr.total_amount;
 
     acc[cyl].total_qty += curr.total_qty;
     acc[cyl].total_amount += curr.total_amount;
     return acc;
-  }, {} as Record<string, any>);
+  }, {} as Record<string, Group>);
 
   const colKeys = Array.from(new Set(rows.map(s => {
     return s.sale__location__name || 'Unknown';
@@ -614,7 +621,7 @@ function CylinderSalesTable({ rows }: { rows: CylinderSale[] }) {
               <Td><strong>{cyl}</strong></Td>
               {colKeys.map((col) => (
                 <Td key={col} numeric>
-                  {dataObj[col] ? <span>{dataObj[col].qty}</span> : <span className="ui-num-placeholder">-</span>}
+                  {dataObj.locations[col] ? <span>{dataObj.locations[col].qty}</span> : <span className="ui-num-placeholder">-</span>}
                 </Td>
               ))}
               <Td numeric><span className="ui-num-strong">{dataObj.total_qty}</span></Td>

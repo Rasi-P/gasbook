@@ -3,14 +3,30 @@ services:
     name: gasbook-api
     runtime: python
     rootDir: backend
-    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate
-    startCommand: gunicorn gasbook.wsgi:application
+    branch: main
+    autoDeployTrigger: "off"
+    buildCommand: python -m pip install --upgrade pip==26.2.0 && python -m pip install -r requirements.txt && python manage.py collectstatic --noinput
+    startCommand: gunicorn gasbook.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --access-logfile - --error-logfile -
+    healthCheckPath: /ready/
+    # No database/disk/plan creation here: review paid resources and their IDs first.
+    # Mount the approved disk at /var/data/media before accepting uploads.
     envVars:
+      - key: GASBOOK_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: 3.12.15
       - key: DEBUG
-        value: False
+        value: "False"
       - key: SECRET_KEY
-        generateValue: true
+        # Supply a private >=50-character key; Render's generated value is shorter.
+        sync: false
       - key: ALLOWED_HOSTS
-        value: gasbook-api.onrender.com
+        sync: false
+      - key: DATABASE_URL
+        sync: false
       - key: CORS_ALLOWED_ORIGINS
-        value: https://gasbook.vercel.app
+        sync: false
+      - key: CSRF_TRUSTED_ORIGINS
+        sync: false
+      - key: MEDIA_ROOT
+        value: /var/data/media

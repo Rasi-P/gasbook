@@ -1,7 +1,5 @@
 @import "./styles/tokens.css";
-@import "tailwindcss/base";
-@import "tailwindcss/components";
-@import "tailwindcss/utilities";
+@import "tailwindcss";
 @import "./styles/auth.css";
 @import "./styles/components.css";
 @import "./styles/shell.css";
@@ -14,6 +12,15 @@
 @import "./styles/staff.css";
 @import "./styles/reports.css";
 @import "./styles/staff-app.css";
+
+@config "../tailwind.config.js";
+
+/* Retain Tailwind 3's default border color during the security migration. */
+@layer base {
+  *, ::before, ::after, ::backdrop, ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+}
 
 /* Design tokens live in ./styles/tokens.css */
 

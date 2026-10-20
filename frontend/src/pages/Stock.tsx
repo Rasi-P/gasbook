@@ -44,24 +44,6 @@ export default function Stock() {
   const [refStatus, setRefStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [refError, setRefError] = useState('');
 
-  const loadReferenceData = useCallback(() => {
-    // Only active locations and cylinder types can take new stock operations (the server enforces the same).
-    Promise.all([fetchActiveLocations(), fetchActiveCylinderTypes()])
-      .then(([locs, types]) => {
-        setLocations(locs);
-        setCylinderTypes(types);
-        setRefError('');
-        setRefStatus('ready');
-      })
-      .catch((err) => {
-        setRefError(extractApiError(err, [], 'Could not load locations and cylinder types.'));
-        setRefStatus('error');
-      });
-  }, []);
-
-  const catalogRevision = useCatalogRevision();
-  useEffect(() => { loadReferenceData(); }, [loadReferenceData, catalogRevision]);
-
   // ── Movement form ────────────────────────────────────────────────────────
   const [fromLocation, setFromLocation] = useState(0);
   const [toLocation, setToLocation] = useState(0);
@@ -91,6 +73,46 @@ export default function Stock() {
   const [refuelRecvMsg, setRefuelRecvMsg] = useState('');
   const [refuelRecvErr, setRefuelRecvErr] = useState('');
   const [refuelRecvSaving, setRefuelRecvSaving] = useState(false);
+
+  const loadReferenceData = useCallback(() => {
+    // Only active locations and cylinder types can take new stock operations (the server enforces the same).
+    Promise.all([fetchActiveLocations(), fetchActiveCylinderTypes()])
+      .then(([locs, types]) => {
+        setLocations(locs);
+        setCylinderTypes(types);
+        const nonSupplier = locs.filter(l => !isSupplierLocation(l));
+        if (nonSupplier.length) {
+          const primary = nonSupplier[0].id;
+          const secondary = nonSupplier.find(l => l.id !== primary)?.id ?? primary;
+          const initial = (key: string, fallback: number) => {
+            const saved = Number(localStorage.getItem(key));
+            return nonSupplier.some(l => l.id === saved) ? saved : fallback;
+          };
+          setFromLocation(current => current || initial('lastStockFromLoc', primary));
+          setToLocation(current => current || initial('lastStockToLoc', secondary));
+          setLoadTo(current => current || initial('lastStockLoadTo', primary));
+          setRefuelSendLoc(current => current || initial('lastStockRefuelSendLoc', primary));
+          setRefuelRecvLoc(current => current || initial('lastStockRefuelRecvLoc', primary));
+        }
+        if (types.length) {
+          const defaults = (items: RefuelItem[]) => items.map(item => item.cylinder_type === 0
+            ? { ...item, cylinder_type: types[0].id } : item);
+          setMoveItems(defaults);
+          setLoadItems(defaults);
+          setRefuelSendItems(defaults);
+          setRefuelRecvItems(defaults);
+        }
+        setRefError('');
+        setRefStatus('ready');
+      })
+      .catch((err) => {
+        setRefError(extractApiError(err, [], 'Could not load locations and cylinder types.'));
+        setRefStatus('error');
+      });
+  }, []);
+
+  const catalogRevision = useCatalogRevision();
+  useEffect(() => { loadReferenceData(); }, [loadReferenceData, catalogRevision]);
 
   const [justSentItems, setJustSentItems] = useState<RefuelItem[] | null>(null);
   const [supplierPending, setSupplierPending] = useState<{cylinder_type_id: number, cylinder_type_name: string, pending: number}[]>([]);
@@ -179,36 +201,6 @@ export default function Stock() {
     );
     return statusOptions.filter(opt => !otherStatusesForSameType.has(opt.value));
   };
-
-  // Set defaults once data loads
-  useEffect(() => {
-    const nonSupplier = locations.filter((l) => !isSupplierLocation(l));
-    if (nonSupplier.length >= 1 && fromLocation === 0) {
-      const getInitialLoc = (key: string, fallback: number) => {
-        const savedStr = localStorage.getItem(key);
-        if (savedStr && nonSupplier.find(l => l.id === Number(savedStr))) {
-          return Number(savedStr);
-        }
-        return fallback;
-      };
-
-      const fallbackPrimary = nonSupplier[0].id;
-      const fallbackSecondary = nonSupplier.find(l => l.id !== fallbackPrimary)?.id ?? fallbackPrimary;
-
-      setFromLocation(getInitialLoc('lastStockFromLoc', fallbackPrimary));
-      setToLocation(getInitialLoc('lastStockToLoc', fallbackSecondary));
-      setLoadTo(getInitialLoc('lastStockLoadTo', fallbackPrimary));
-      setRefuelSendLoc(getInitialLoc('lastStockRefuelSendLoc', fallbackPrimary));
-      setRefuelRecvLoc(getInitialLoc('lastStockRefuelRecvLoc', fallbackPrimary));
-    }
-    if (cylinderTypes.length > 0) {
-      const defaultId = cylinderTypes[0].id;
-      setMoveItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-      setLoadItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-      setRefuelSendItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-      setRefuelRecvItems(prev => prev.map(item => item.cylinder_type === 0 ? { ...item, cylinder_type: defaultId } : item));
-    }
-  }, [locations, cylinderTypes, fromLocation]);
 
   // Persist location selections
   useEffect(() => { if (fromLocation) localStorage.setItem('lastStockFromLoc', String(fromLocation)); }, [fromLocation]);
@@ -858,7 +850,7 @@ export default function Stock() {
             <Select
               aria-label="Movement type"
               value={historyFilter}
-              onChange={(e) => setHistoryFilter(e.target.value as any)}
+              onChange={(e) => setHistoryFilter(e.target.value as typeof historyFilter)}
             >
               <option value="all">All Movements</option>
               <option value="new_load">New Loads</option>

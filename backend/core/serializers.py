@@ -8,7 +8,7 @@ from django.core.validators import RegexValidator
 from rest_framework import serializers
 
 from .exceptions import ApiError
-from .uploads import validate_image_upload
+from .uploads import SafeImageField
 from . import sale_accessories
 from .pricing import calculate_pricing, snapshot, SNAPSHOT_FIELDS
 from .models import (
@@ -239,7 +239,7 @@ class CylinderTypeSerializer(serializers.ModelSerializer):
     refill_rate = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0"), required=False)
     low_stock_threshold = serializers.IntegerField(min_value=0, max_value=MAX_COUNT, required=False)
     is_active = serializers.BooleanField(required=False)
-    image = serializers.ImageField(required=False, allow_null=True, validators=[validate_image_upload])
+    image = SafeImageField(required=False, allow_null=True)
     remove_image = serializers.BooleanField(write_only=True, required=False, default=False)
     customer_rate = serializers.SerializerMethodField()
     discount_amount = serializers.SerializerMethodField()

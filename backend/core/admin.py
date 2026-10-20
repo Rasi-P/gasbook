@@ -1,5 +1,8 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
+from django.db import models
+
+from .uploads import SafeImageFormField
 
 from .models import (
     ActivityLog, Booking, CustomerCylinderRate, CustomerProfile,
@@ -37,11 +40,16 @@ class FinancialRecordAdmin(ViewOnlyAdmin):
 
 
 admin.site.register(Role)
-admin.site.register(CylinderType)
+
+
+@admin.register(CylinderType, StaffProfile)
+class ImageUploadAdmin(admin.ModelAdmin):
+    formfield_overrides = {models.ImageField: {"form_class": SafeImageFormField}}
+
+
 admin.site.register(StockLocation)
 admin.site.register(Expense)
 admin.site.register(CustomerProfile)
-admin.site.register(StaffProfile)
 admin.site.register(CustomerCylinderRate)
 admin.site.register(Booking)
 admin.site.register(Delivery)

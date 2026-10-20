@@ -90,6 +90,35 @@ try{
  await expect(admin.getByRole('row').filter({hasText:'payment-customer'})).toHaveCount(2);
  await admin.getByText('Payment details',{exact:true}).first().click();
  await expect(admin.getByLabel('Payment details').first()).toContainText('Outstanding balance');
+ // Regression coverage for the pages whose state initialization and types were
+ // corrected during lint remediation; all responses still use the real API.
+ await admin.goto('http://localhost:5173/stock');
+ await admin.getByRole('tab',{name:'Movement',exact:true}).click();
+ await expect(admin.getByRole('button',{name:'From location',exact:true})).toContainText('Shop');
+ await expect(admin.getByRole('button',{name:'To location',exact:true})).toContainText('Shop');
+ await expect(admin.getByRole('button',{name:'Cylinder type',exact:true})).toContainText('5kg');
+ await admin.reload();
+ await admin.getByRole('tab',{name:'Movement',exact:true}).click();
+ await expect(admin.getByRole('button',{name:'From location',exact:true})).toContainText('Shop');
+ const reportResponse=admin.waitForResponse(r=>r.url().includes('/api/reports/'));
+ await admin.goto('http://localhost:5173/reports');
+ const report=await(await reportResponse).json();
+ await expect(admin.getByRole('button',{name:'Go',exact:true})).toBeEnabled();
+ expect(report.summary.sales).toBe(970);
+ await expect(admin.getByRole('cell',{name:'5kg',exact:true}).first()).toBeVisible();
+ await expect(admin.getByRole('cell',{name:'Rs. 720',exact:true}).first()).toBeVisible();
+ const from=admin.getByLabel('From',{exact:true});
+ await from.fill('2020-01-01');
+ const appliedResponse=admin.waitForResponse(r=>r.url().includes('/api/reports/')&&new URL(r.url()).searchParams.get('start')==='2020-01-01');
+ await admin.getByRole('button',{name:'Go',exact:true}).click();
+ expect((await(await appliedResponse).json()).summary.sales).toBe(970);
+ const [locationResponse]=await Promise.all([
+  admin.waitForResponse(r=>r.url().includes('/api/reports/')&&new URL(r.url()).searchParams.has('location')),
+  admin.getByRole('combobox',{name:/^Location/}).selectOption({label:'Shop'}),
+ ]);
+ expect((await locationResponse.json()).summary.sales).toBe(970);
+ await admin.goto('http://localhost:5173/staff');
+ await expect(admin.locator('.ui-list-row__name').filter({hasText:'Payment staff'})).toBeVisible();
  assert.deepEqual(errors,[]);
  console.log('PASS real API: split/partial COD, bank balance settlement, mixed staff Direct Sale, lost-response/reload retry, today totals, customer/admin history, seven responsive widths.');
 }catch(error){

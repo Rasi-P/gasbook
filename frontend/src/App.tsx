@@ -31,14 +31,14 @@ function RoleGuard({ allowed, role, children }: { allowed: string[]; role: strin
 export default function App() {
   const location = useLocation();
   const isAuthPage = location.pathname === '/login';
-  const [role, setRole] = useState('');
-  const [userName, setUserName] = useState('');
+  const [role, setRole] = useState(() => localStorage.getItem('gasbook_role') || '');
+  const [userName, setUserName] = useState(() => localStorage.getItem('gasbook_name') || '');
   const [mustChange, setMustChange] = useState(() => localStorage.getItem(FORCE_PASSWORD_CHANGE_KEY) === '1');
   const [meError, setMeError] = useState('');
 
   const loadMe = useCallback(() => {
-    setMeError('');
     api.get('/auth/me/').then((r) => {
+      setMeError('');
       localStorage.setItem('gasbook_role', r.data.role);
       localStorage.setItem('gasbook_name', r.data.name);
       localStorage.setItem('gasbook_vehicle_location', r.data.vehicle_location_name || '');
@@ -55,14 +55,6 @@ export default function App() {
 
   useEffect(() => {
     if (!isAuthPage && isAuthenticated()) {
-      const storedRole = localStorage.getItem('gasbook_role');
-      const storedName = localStorage.getItem('gasbook_name');
-      if (storedRole) {
-        setRole(storedRole);
-      }
-      if (storedName) {
-        setUserName(storedName);
-      }
       loadMe();
     }
   }, [isAuthPage, loadMe]);

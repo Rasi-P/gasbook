@@ -44,10 +44,13 @@ class PasswordChangeRequiredTests(GasBookTestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 200, response.json())
+        replacement_access = response.json()["access"]
 
-        # access restored immediately with the same token
+        # A password change revokes the old token; the current client receives replacements.
         response = self.client.get("/api/deliveries/")
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 401)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {replacement_access}")
+        self.assertEqual(self.client.get("/api/deliveries/").status_code, 200)
 
     def test_unflagged_user_unaffected_and_token_endpoints_open(self):
         self.bearer(self.staff_a)

@@ -38,6 +38,40 @@ class ProductConcurrencyTests(TransactionTestCase):
         self.assertEqual(sorted(r[0] for r in results),[200,201],results)
         self.assertEqual(Booking.objects.count(),1);self.assertEqual(ProductMovement.objects.count(),1)
 
+    def cylinder_payload(self, user):
+        self.client.force_authenticate(user)
+        items = [dict(cylinder_type=self.cylinder.pk, quantity=2, rate_type='refill')]
+        quote = self.client.post('/api/bookings/preview/', {'items': items}, format='json').data['quote']
+        return dict(items=items, quote=quote, client_ref=str(uuid.uuid4()), delivery_address='Synthetic address', delivery_phone='')
+
+    def test_concurrent_cylinder_retry_creates_one_booking_and_notification_set(self):
+        from core.models import Notification
+        body = self.cylinder_payload(self.users[0])
+        request = (self.users[0], '/api/bookings/checkout/', body)
+        results = run_concurrently([request, request])
+        self.assertEqual(sorted(r[0] for r in results), [200, 201], results)
+        self.assertEqual(Booking.objects.count(), 1)
+        self.assertEqual(BookingItem.objects.count(), 1)
+        notifications = Notification.objects.count()
+        self.assertGreater(notifications, 0)
+        self.client.force_authenticate(self.users[0])
+        self.assertEqual(self.client.post('/api/bookings/checkout/', body, format='json').status_code, 200)
+        self.assertEqual(Notification.objects.count(), notifications)
+
+    def test_concurrent_cross_customer_key_collision_rejected_without_duplicate(self):
+        left, right = [self.cylinder_payload(user) for user in self.users]
+        right['client_ref'] = left['client_ref']
+        results = run_concurrently([(self.users[0], '/api/bookings/checkout/', left), (self.users[1], '/api/bookings/checkout/', right)])
+        self.assertEqual(sorted(r[0] for r in results), [201, 409], results)
+        self.assertEqual(Booking.objects.count(), 1)
+
+    def test_concurrent_changed_payload_same_key_rejected(self):
+        left = self.cylinder_payload(self.users[0])
+        right = {**left, 'delivery_address': 'Other address'}
+        results = run_concurrently([(self.users[0], '/api/bookings/checkout/', body) for body in (left, right)])
+        self.assertEqual(sorted(r[0] for r in results), [201, 409], results)
+        self.assertEqual(Booking.objects.count(), 1)
+
     def test_simultaneous_stock_click_retry_applies_once(self):
         body=dict(client_ref=str(uuid.uuid4()),delta=1,reason='Received')
         request=(self.admin,f'/api/products/{self.product.pk}/stock/',body)

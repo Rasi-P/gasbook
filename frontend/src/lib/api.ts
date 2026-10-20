@@ -64,6 +64,7 @@ api.interceptors.response.use(
             .post(`${API_BASE_URL}/auth/token/refresh/`, { refresh })
             .then((r) => {
               localStorage.setItem('gasbook_access', r.data.access);
+              if (r.data.refresh) localStorage.setItem('gasbook_refresh', r.data.refresh);
               return r.data.access;
             })
             .finally(() => { refreshPromise = null; });
@@ -93,6 +94,10 @@ export async function changePassword(currentPassword: string, newPassword: strin
     new_password: newPassword,
     confirm_new_password: confirmPassword,
   });
+  if (data.access && data.refresh) {
+    localStorage.setItem('gasbook_access', data.access);
+    localStorage.setItem('gasbook_refresh', data.refresh);
+  }
   return data;
 }
 

@@ -9,7 +9,7 @@ import { type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
 import { formatDateTime } from '../../lib/dateTime';
 import { StaffHistory, StaffHistoryCard } from '../../components/StaffHistory';
-import { useState, useEffect, type ReactNode } from 'react';
+import { useCallback, useState, useEffect, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Banknote,
@@ -265,8 +265,8 @@ export default function StaffMobileLayout() {
   >({});
   const [message, setMessage] = useState('');
   const [messageTone, setMessageTone] = useState<'info' | 'error'>('info');
-  const [userName, setUserName] = useState('');
-  const [vehicleLocation, setVehicleLocation] = useState('');
+  const [userName, setUserName] = useState(() => localStorage.getItem('gasbook_name') || 'Staff Partner');
+  const [vehicleLocation, setVehicleLocation] = useState(() => localStorage.getItem('gasbook_vehicle_location') || '');
   const [staffProfile, setStaffProfile] = useState<StaffProfileData | null>(null);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [editProfileValues, setEditProfileValues] = useState({ full_name: '', phone: '', email: '', address: '' });
@@ -300,13 +300,8 @@ export default function StaffMobileLayout() {
     setMessage(text);
   }
 
-  function load() {
-    setIsLoading(true);
-    setLoadError('');
-    setUserName(localStorage.getItem('gasbook_name') || 'Staff Partner');
-    setVehicleLocation(localStorage.getItem('gasbook_vehicle_location') || '');
-
-    Promise.all([
+  const requestStaffData = useCallback(() => {
+    return Promise.all([
       api.get('/auth/me/'),
       fetchAllPages<Delivery>('/deliveries/'),
       fetchAllPages<NotificationItem>('/notifications/')
@@ -344,9 +339,15 @@ export default function StaffMobileLayout() {
         setLoadError(extractApiError(err, [], 'Could not load your deliveries.'));
       })
       .finally(() => setIsLoading(false));
+  }, []);
+
+  function load() {
+    setIsLoading(true);
+    setLoadError('');
+    void requestStaffData();
   }
 
-  useEffect(load, []);
+  useEffect(() => { void requestStaffData(); }, [requestStaffData]);
 
   const handleMarkRead = async (id: number) => {
     try {

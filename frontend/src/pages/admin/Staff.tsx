@@ -1,5 +1,5 @@
 import AdminSalesHistory from './AdminSalesHistory';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck, Users, ChevronRight } from 'lucide-react';
 import { api, extractApiError, getApiErrorCode, getApiStatus, LIMITS } from '../../lib/api';
 import { ErrorState } from '../../components/AsyncState';
@@ -74,7 +74,7 @@ export default function Staff() {
   const [rowNotice, setRowNotice] = useState<RowNotice | null>(null);
   const [historyUser, setHistoryUser] = useState<StaffUser | null>(null);
 
-  function load() {
+  const load = useCallback(() => {
     return Promise.allSettled([
       api.get('/auth/users/'),
       api.get('/auth/roles/'),
@@ -92,14 +92,14 @@ export default function Staff() {
         const roles = rolesResult.value.data as { code: string; name: string }[];
         setAvailableRoles(roles);
         setRolesError('');
-        if (roles.length > 0 && !role) setRole(roles[0].code);
+        if (roles.length > 0) setRole(current => current || roles[0].code);
       } else {
         setRolesError(extractApiError(rolesResult.reason, [], 'Could not load roles.'));
       }
     });
-  }
+  }, []);
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [load]);
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();

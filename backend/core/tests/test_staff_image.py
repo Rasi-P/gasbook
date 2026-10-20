@@ -36,9 +36,12 @@ class RemoveStaffImageTests(GasBookTestCase):
         path = self.give_image(self.staff_a_profile)
         self.auth(self.admin)
 
-        response = self.client.patch(
-            f"/api/auth/users/{self.staff_a.pk}/", {"remove_staff_image": "true"}, format="multipart"
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.patch(
+                f"/api/auth/users/{self.staff_a.pk}/", {"remove_staff_image": "true"}, format="multipart"
+            )
+            # The old file must survive until the transaction commits.
+            self.assertTrue(os.path.exists(path))
         self.assertEqual(response.status_code, 200, response.data)
         self.assertIsNone(response.json()["staff_image_url"])
         self.assertIs(response.json()["is_active"], True)
@@ -100,7 +103,9 @@ class RemoveStaffImageTests(GasBookTestCase):
 
         old_path = self.give_image(self.staff_a_profile, name="before.png")
         upload = SimpleUploadedFile("after.png", PNG_BYTES, content_type="image/png")
-        response = self.client.patch(f"/api/auth/users/{self.staff_a.pk}/", {"image": upload}, format="multipart")
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.patch(f"/api/auth/users/{self.staff_a.pk}/", {"image": upload}, format="multipart")
+            self.assertTrue(os.path.exists(old_path))
         self.assertEqual(response.status_code, 200, response.data)
         url = response.json()["staff_image_url"]
         self.assertIsNotNone(url)

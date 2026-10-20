@@ -1,7 +1,7 @@
 import { PaymentSummary, type PaymentFacts } from '../components/PaymentSummary';
 import { DirectSaleRates } from '../components/DirectSaleRates';
 import { formatDateTime } from '../lib/dateTime';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
   AlertTriangle, Banknote, Building2, CheckCircle2, CreditCard, Plus,
@@ -78,6 +78,18 @@ function staffName(s: StaffOption) {
 }
 
 type ExistingCustomer = { id: number; name: string; phone: string };
+type CustomerSuggestion = {
+  id: number; name: string; phone: string; address: string; pending_balance: number | string;
+  credit_balance: number | string; empties_owed: Record<number, { owed: number; name: string }>;
+  sales_count: number; custom_rates: { cylinder_type: number; custom_price: string }[];
+  empty_credits: Record<number, { credit: number; name: string }>; is_active?: boolean;
+};
+type SalePayload = {
+  client_ref: string; location: number; payment_mode: string; paid_amount: string; quoted_total: string;
+  sale_items: SaleItem[]; accessory_lines: AccessoryLine[]; handover_staff?: number; customer?: number;
+  new_customer?: { name: string; phone: string; address: string }; paid_payment_mode?: string;
+  split_payments?: { mode: string; amount: number }[]; past_due_payments?: { mode: string; amount: string }[];
+};
 
 /** The customer already using a phone number, when a new-customer sale was refused for it. */
 function duplicateCustomerFrom(err: unknown): ExistingCustomer | null {
@@ -99,10 +111,9 @@ export default function Sales() {
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
-  type CustomerSuggestion = { id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: Record<number, { owed: number; name: string }>; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }>; is_active?: boolean };
   const [customerSuggestions, setCustomerSuggestions] = useState<CustomerSuggestion[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
-  const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerSuggestion | null>(null);
   const [location, setLocation] = useState(0);
   // Who physically handed the cylinders over (optional). The server accepts only active staff.
   const [staffOptions, setStaffOptions] = useState<StaffOption[]>([]);
@@ -218,7 +229,6 @@ export default function Sales() {
 
   useEffect(() => {
     if (!customerName.trim() || selectedCustomerId !== null) {
-      setCustomerSuggestions([]);
       return;
     }
     let cancelled = false;
@@ -234,7 +244,7 @@ export default function Sales() {
     return () => { cancelled = true; clearTimeout(t); };
   }, [customerName, selectedCustomerId]);
 
-  function fetchHistory() {
+  const fetchHistory = useCallback(() => {
     const params: Record<string, string> = {};
     if (search) params.search = search;
     if (filterPending) params.pending = '1';
@@ -246,11 +256,11 @@ export default function Sales() {
         setHistoryError(extractApiError(err, [], 'Could not load sales history.'));
         setHistoryStatus('error');
       });
-  }
+  }, [search, filterPending, filterHandover, filterVoid, setSales, setHistoryError, setHistoryStatus]);
 
   useEffect(() => {
     if (tab === 'history') fetchHistory();
-  }, [tab, search, filterPending, filterHandover, filterVoid]);
+  }, [tab, fetchHistory]);
 
   // ── Item helpers ──────────────────────────────────────────────────────────
 
@@ -264,7 +274,7 @@ export default function Sales() {
 
   function itemAmounts(item: SaleItem) {
     const cylinder = cylinderTypes.find(type => type.id === item.cylinder_type);
-    const agreed = selectedCustomerId === selectedCustomer?.id
+    const agreed = selectedCustomer && selectedCustomerId === selectedCustomer.id
       ? selectedCustomer.custom_rates?.find((value: { cylinder_type: number; custom_price: string }) => value.cylinder_type === item.cylinder_type)
       : undefined;
     return {
@@ -370,7 +380,7 @@ export default function Sales() {
       }
       // One request records everything (a new customer, the sale, its payments, past dues) or
       // nothing; client_ref makes a retry of the same request return the saved sale.
-      const salePayload: any = {
+      const salePayload: SalePayload = {
         client_ref: clientRef,
         location,
         payment_mode: paymentMode,
@@ -529,12 +539,12 @@ export default function Sales() {
                   <Input
                     leadingIcon={<User />}
                     value={customerName}
-                    onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); }}
+                    onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); setCustomerSuggestions([]); }}
                     placeholder="Search or enter new customer"
                     autoComplete="off"
                     maxLength={LIMITS.name}
                   />
-                  {customerSuggestions.length > 0 && (
+                  {customerName.trim() && selectedCustomerId === null && customerSuggestions.length > 0 && (
                     <div className="dropdown-list">
                       {customerSuggestions.map((c) => (
                         <button key={c.id} type="button" className="suggest-item"
@@ -601,7 +611,7 @@ export default function Sales() {
                   <span className="ui-tile__label">Empties Owed</span>
                   {selectedCustomer.empties_owed && Object.values(selectedCustomer.empties_owed).length > 0 ? (
                     <div className="sale-summary__badges">
-                      {Object.values(selectedCustomer.empties_owed).map((ec: any) => (
+                      {Object.values(selectedCustomer.empties_owed).map((ec) => (
                         <Badge key={ec.name} tone="danger">{ec.owed} × {ec.name}</Badge>
                       ))}
                     </div>
@@ -613,7 +623,7 @@ export default function Sales() {
                   <span className="ui-tile__label">Empty Credits</span>
                   {selectedCustomer.empty_credits && Object.values(selectedCustomer.empty_credits).length > 0 ? (
                     <div className="sale-summary__badges">
-                      {Object.values(selectedCustomer.empty_credits).map((ec: any) => (
+                      {Object.values(selectedCustomer.empty_credits).map((ec) => (
                         <Badge key={ec.name} tone="success">{ec.credit} × {ec.name}</Badge>
                       ))}
                     </div>
