@@ -49,3 +49,62 @@ def production_media_root():
     if not value or not Path(value).is_absolute():
         raise ImproperlyConfigured("An absolute MEDIA_ROOT on persistent storage is required in production.")
     return Path(value)
+
+
+def _demo_database_target_matches(database):
+    """Constrain every source of connection-target options, without connecting.
+
+    Django merges OPTIONS into libpq parameters, and libpq can fill omitted
+    parameters from PG* environment variables or a service file. Permit only
+    reviewed non-target options; unknown options must fail closed.
+    """
+    options = database.get("OPTIONS", {})
+    allowed_options = {"sslmode", "sslrootcert", "channel_binding", "connect_timeout", "application_name"}
+    target_environment = {
+        "PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE",
+        "PGSERVICE", "PGSERVICEFILE", "PGSYSCONFDIR", "PGOPTIONS",
+    }
+    if not isinstance(options, dict) or options.keys() - allowed_options:
+        return False
+    if any(os.environ.get(name) for name in target_environment):
+        return False
+    if any(not isinstance(value, str) for key, value in options.items() if key != "connect_timeout"):
+        return False
+    if "connect_timeout" in options and (
+        type(options["connect_timeout"]) is not int or options["connect_timeout"] <= 0
+    ):
+        return False
+    return (
+        database.get("ENGINE") == "django.db.backends.postgresql"
+        and database.get("NAME") == "neondb"
+        and database.get("HOST") in {
+            "ep-calm-shape-b3nzc13z.ap-southeast-1.aws.neon.tech",
+            "ep-calm-shape-b3nzc13z-pooler.ap-southeast-1.aws.neon.tech",
+        }
+        and database.get("PORT") in {None, "", 5432, "5432"}
+        and options.get("sslmode") in {"require", "verify-ca", "verify-full"}
+        and options.get("channel_binding", "prefer") in {"disable", "prefer", "require"}
+    )
+
+
+def demo_django_admin_enabled(*, production, debug, database, hosts, uploads_disabled, accessories_enabled):
+    """An opt-in for this specific demo, never a general production admin switch.
+
+    These are public resource identifiers, not credentials. Moving the demo to a
+    different service/endpoint requires a reviewed code change, not a broad flag.
+    This validates configuration only and never opens a database connection.
+    """
+    if not boolean("DEMO_DJANGO_ADMIN_ENABLED"):
+        return False
+    if not (
+        production and not debug
+        and os.environ.get("RENDER_SERVICE_ID") == "srv-dbbk71tg1s2s7398rfag"
+        and hosts == ["gasbook-demo-api.onrender.com"]
+        and _demo_database_target_matches(database)
+        and uploads_disabled and not accessories_enabled
+    ):
+        raise ImproperlyConfigured(
+            "DEMO_DJANGO_ADMIN_ENABLED is restricted to the approved GasBook demo "
+            "service/database with production security and demo restrictions."
+        )
+    return True

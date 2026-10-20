@@ -6,7 +6,9 @@ import dj_database_url
 
 from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
-from .environment import boolean, csv, production_hosts, production_origins, production_media_root
+from .environment import (
+    boolean, csv, demo_django_admin_enabled, production_hosts, production_origins, production_media_root,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -38,7 +40,7 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = False
 SECURE_HSTS_PRELOAD = False
 
 INSTALLED_APPS = [
-    "django.contrib.admin",
+    "core.admin_config.GasBookAdminConfig",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -186,3 +188,8 @@ SIMPLE_JWT = {
 
 # Enable only after the minimal inventory migration has been reviewed/applied.
 ACCESSORIES_ENABLED = os.environ.get('ACCESSORIES_ENABLED', 'False') == 'True'
+
+DEMO_DJANGO_ADMIN_ENABLED = demo_django_admin_enabled(
+    production=PRODUCTION, debug=DEBUG, database=DATABASES["default"], hosts=ALLOWED_HOSTS,
+    uploads_disabled=DEMO_DISABLE_UPLOADS, accessories_enabled=ACCESSORIES_ENABLED,
+)

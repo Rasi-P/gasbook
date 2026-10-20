@@ -15,7 +15,7 @@ urlpatterns = [
     path("api/", include("core.urls")),
 ]
 
-# Business staff use the React management UI. Raw Django admin has no public
-# production route; API login throttling does not protect AdminSite.login.
-if not settings.PRODUCTION:
+# Production stays closed except for the explicitly validated dedicated demo.
+# GasBookAdminSite supplies its own login throttle and temporary-password guard.
+if not settings.PRODUCTION or settings.DEMO_DJANGO_ADMIN_ENABLED:
     urlpatterns.append(path("admin/", admin.site.urls))

@@ -163,7 +163,9 @@ Do not apply it until the dedicated database, candidate Git SHA, URLs/settings a
 even when automatic Git deploys are disabled. [Blueprint semantics](https://render.com/docs/blueprint-spec).
 
 Use `GASBOOK_ENV`'s existing production mode for public HTTPS; do not add a development-mode bypass for a demo.
-Keep Django AdminSite disabled. The React `/login` and `/admin-dashboard` routes provide business-admin access.
+Django AdminSite remains disabled by default. The dedicated demo can explicitly opt in to the protected `/admin/`
+interface using the policy below; this does not enable AdminSite for other production deployments.
+The React `/login` and `/admin-dashboard` routes retain their existing business-admin behavior.
 Use the existing interactive `bootstrap_admin` command with a unique password and business admin role only after the
 dedicated target and migration approval. Keep `seed_demo` blocked; manually enter approved synthetic records.
 
@@ -172,6 +174,7 @@ dedicated target and migration approval. Keep `seed_demo` blocked; manually ente
 | Render | `GASBOOK_ENV`, `DEBUG`, `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`, `PYTHON_VERSION`, `PORT`, `ACCESSORIES_ENABLED` |
 | Each Vercel project | `VITE_API_BASE_URL`; optional `VITE_SUPPORT_CONTACT_NAME`, `VITE_SUPPORT_WHATSAPP_NUMBER` only if demonstrably non-real demo contact details |
 | Demo images | `DEMO_DISABLE_UPLOADS=True`; no `MEDIA_ROOT` or media credentials. No ImageKit environment variables are required. |
+| Optional dedicated-demo Django Admin | `DEMO_DJANGO_ADMIN_ENABLED` (default False); `RENDER_SERVICE_ID` is supplied by Render, not a new credential. Enable only after code/test and deployment approval. |
 
 Retain admin root `frontend`, `npm ci`, `npm run build`, output `dist`, and its existing Vercel SPA fallback.
 Retain customer root `.`, `bun install --frozen-lockfile`, `bun run build`, output `dist`, and state/hash routing.
@@ -345,10 +348,82 @@ HSTS starts at one hour. Subdomain inclusion and preload are deliberately disabl
 
 Login has account and IP throttles (10/minute and 60/minute). These use the in-process cache shared by the initial single Gunicorn worker's threads.
 They are best-effort abuse reduction, have concurrency limits, and reset on restart. Do not add workers/instances expecting a shared limit.
-Provider edge rate limiting or a shared cache is a later option. Django admin login does not use these API throttles,
-so its entire `/admin/` route is absent in production. There is no production enable switch. Business admins/staff retain the
-React management interface and business roles; local development/test AdminSite access and CSRF protection are preserved.
-Reopening production AdminSite requires a separate protected-access design; an origin reachable around an access proxy is not protected.
+Provider edge rate limiting or a shared cache is a later option. Django admin login does not use these API throttles.
+It now has a separate `GasBookAdminSite` implementation, while its route remains absent in production by default.
+Local development/test AdminSite access and the existing model registrations remain available.
+
+### Optional Django Admin for the dedicated demo
+
+The original security gap had two parts: DRF login throttles do not wrap Django's session login, and the JWT
+`must_change_password` check does not govern AdminSite sessions. A URL flag alone would leave both gaps open.
+
+`DEMO_DJANGO_ADMIN_ENABLED=True` is accepted only with all of:
+
+- `GASBOOK_ENV=production`, `DEBUG=False`, HTTPS/TLS and the normal production settings.
+- Render service ID `srv-dbbk71tg1s2s7398rfag` and the sole allowed host `gasbook-demo-api.onrender.com`.
+- PostgreSQL database `neondb` on the dedicated Neon endpoint `ep-calm-shape-b3nzc13z` (direct or pooled),
+  using its exact `ap-southeast-1.aws.neon.tech` hostname and default/explicit port 5432, with TLS required.
+  This endpoint belongs to the previously verified `gasbook-demo`
+  project `long-rain-96731013`; the settings check does not connect to Neon or replace a pre-deployment identity audit.
+- `DEMO_DISABLE_UPLOADS=True` and `ACCESSORIES_ENABLED=False`.
+
+The opt-in validates the parsed Django connection configuration, including possible libpq overrides.
+Only `sslmode`, `sslrootcert`, `channel_binding`, `connect_timeout` and `application_name` are accepted in
+database `OPTIONS`. Target overrides such as `dbname`, `host`, `hostaddr`, `port`, `service` and `options`,
+and all unknown options, fail closed. Non-empty `PGHOST`, `PGHOSTADDR`, `PGPORT`, `PGDATABASE`, `PGSERVICE`,
+`PGSERVICEFILE`, `PGSYSCONFDIR` or `PGOPTIONS` also prevent enabling AdminSite. They can otherwise supply
+connection targets or service-file configuration outside the apparent URL. Use the approved dedicated
+`DATABASE_URL`; additional options require review instead of silently changing the effective target.
+The ordinary direct/pooled TLS URL and `channel_binding` remain supported. Accepted TLS modes remain
+`require`, `verify-ca` and `verify-full`: `require` requires encryption but is not hostname-certificate
+verification. No TLS/provider configuration was changed by this local patch.
+
+Any enabled-but-mismatched configuration fails startup without printing credentials. Leaving the flag unset/False
+keeps `/admin/` absent in every production deployment, including the demo. Replacing a demo service or endpoint
+requires a reviewed update to the public identifier allowlist in `gasbook/environment.py`.
+Do not manually spoof `RENDER_SERVICE_ID` on another deployment.
+
+The protected AdminSite retains Django's staff/active checks, CSRF, secure sessions and existing model permissions:
+
+- Its login form refuses a correct temporary password while `must_change_password=True`. Change that password
+  through the React management app first, then use the new password at `/admin/`. The form does not clear the flag.
+  The password-change API rejects reuse of the current password with HTTP 400 / `password_reuse`, for flagged
+  and ordinary accounts. Existing password validators still apply. The password hash and forced-change flag
+  are saved together only after a genuinely different password is accepted; failed validation/save cannot
+  clear the persisted flag. Successful changes continue to revoke old JWTs and existing Django sessions.
+- Its permission hook also blocks an already authenticated session if the flag is later set, including direct
+  model URLs and POSTs. Django's normal session password-hash checks still invalidate sessions after a password reset.
+- In production, a lock-protected sliding window admits at most 10 login POSTs per username/socket-peer pair,
+  30 per socket peer and 60 globally in 60 seconds, including successful attempts. Excess attempts receive 429,
+  `Retry-After` and no-store headers before password authentication. CSRF is checked before the limiter.
+  The account key reuses Django's `UsernameField` stripping/NFKC normalization before case-folding, so ASCII
+  and full-width equivalents share the budget. Django's username-length bound also avoids normalization work
+  on already-invalid oversized names. Peer/global limits and concurrency locking are unchanged.
+- Forwarded IP headers are ignored. No account-wide database lockout is recorded: a different peer has its own
+  account budget, subject to the peer/global limits. Rejected requests do not extend the window.
+  Rotating usernames/peers cannot grow the limiter beyond the global admitted-attempt budget.
+- Failed/throttled login messages contain no username, password, token, address or request body.
+
+**Single-worker limit:** this is deliberately scoped to the existing one-Gunicorn-worker/four-thread demo.
+The lock makes concurrent threads atomic; counters are process-local and reset on restart. Multiple workers or
+instances would each have a budget and require a shared atomic limiter before enabling AdminSite. Render may give
+many visitors the same socket-peer address, so a busy/abused peer or global bucket can briefly delay legitimate
+logins. This is bounded rate limiting, not protection against a sustained distributed denial-of-service attack.
+Keep the explicit single-worker Render start command; the Dockerfile's default three-worker command is not suitable.
+The independent React API throttle is unchanged; its password-change endpoint now rejects password reuse as described above.
+
+Approval/deployment sequence for this change:
+
+1. Review the diff and isolated tests in `phase-b-validation.md`; approve the exact commit/push separately.
+   A push to the connected `main` branch may also trigger an automatic Vercel admin build.
+2. Before enabling the flag, reverify the demo service/database identity, Free plan, deployed candidate and one-worker
+   start command using read-only provider inspection. Do not modify credentials, migration state, users or business data.
+3. With deployment approval, set only `DEMO_DJANGO_ADMIN_ENABLED=True` on the existing demo service and deploy the
+   approved backend commit. No dependency installation change, migration, re-bootstrap, disk or paid service is required.
+4. Verify `/health/`, `/ready/`, `/admin/login/`, static admin CSS and secure CSRF cookies; use the existing admin
+   only after its required password change. Verify the React login remains functional without creating test business records.
+5. To close AdminSite again, set the flag False and redeploy the same build after approval. Existing sessions no
+   longer have a route to reach; React access remains. Code rollback requires no database migration or data reversal.
 
 Access and refresh tokens are bound to the current password hash. Changing/resetting a password invalidates older tokens.
 The password-change response gives the current client replacement tokens; both clients store them before continuing.

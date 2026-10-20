@@ -1,8 +1,205 @@
-# Production-readiness validation — updated 2026-10-20
+# Production-readiness validation — updated 2026-10-21
 
 No commit, push, branch switch, Render/Vercel deployment, paid resource creation, or migration-tooling modification was performed.
 The authorized Neon follow-up below includes only the dedicated demo database; earlier local-only sections are historical.
 No production deployment or provider storage persistence is claimed.
+
+## Targeted Django Admin security follow-up — 2026-10-21
+
+This section supersedes the earlier Admin implementation's security assessment. The existing nine-file patch
+matched its saved final manifest before editing. Backend remains on main at `123a61202bc91c6bfc23d3d36070c305b18f1a2b`;
+the customer repository remains clean on main at `0bff6fe798fa9d2b80404c5473896e62c1674dbc`.
+All changes are local and uncommitted. No provider API, existing/hosted database or credential file was accessed.
+Migrations, bootstrap commands, deployment settings, dependencies and customer-frontend files are unchanged.
+
+### Fixes and coverage
+
+- `backend/gasbook/environment.py`: constrain the exact direct/pooled Singapore hostname, database and port,
+  allow only reviewed non-target connection options, and reject libpq target/service environment overrides.
+  Previously `OPTIONS["dbname"]` could replace the name checked by the guard, and `hostaddr` could redirect
+  the connection. Unknown options now fail closed. Tests parse actual synthetic URLs, inspect Django's real
+  connection-parameter builder without opening connections, and exercise full production settings imports
+  with network connections forbidden. Existing standard demo TLS/`channel_binding` configuration is supported.
+- `backend/core/admin_site.py`: use Django's actual `UsernameField` normalization, with the model's username
+  length bound, then case-fold before hashing the throttle key. Previously full-width and ASCII equivalents
+  could get separate account buckets even though the login form treated them as the same username.
+  Regression tests cover sequential and concurrent variants, the HTTP login path, expiry and oversized input.
+- `backend/core/views.py`: reject new passwords matching the authenticated user's current password before
+  validation/save, with a non-secret `password_reuse` error. Previously a strong temporary password could
+  be reused and clear `must_change_password`. Existing validators remain; successful saves still update the
+  hash and flag together and issue replacement tokens. Tests cover flagged/unflagged reuse, unchanged hash/
+  flag/tokens on rejection, invalid new passwords, failed saves, successful changes, old access/refresh-token
+  revocation, existing-session invalidation and subsequent Django Admin access.
+- `backend/core/tests/test_demo_admin.py`: eleven additional test methods and stronger successful-change
+  assertions; no existing assertions or tests removed. `docs/production-deployment.md` records the policy.
+
+### Isolation and verification
+
+Evidence and pre-change snapshots: `/private/tmp/gasbook-admin-security-34neki8_/`.
+Each harness creates its own PostgreSQL 17.11 container with `--network none`, no published ports or persistent
+volumes, and tmpfs data. Its backend runner can reach only that fresh container, has no hosted credentials,
+mounts the source/dependency snapshots read-only and uses disposable media/static directories. Effective
+loopback host and unique database name are asserted before connecting. Synthetic users exist only as test
+fixtures; no existing user or business data is touched. Each test container is removed after its run.
+All 16 installed runtime package versions match `requirements.txt`; no packages were installed or upgraded.
+
+Focused launcher: `python3 -B /private/tmp/gasbook-admin-security-34neki8_/focused/run.py`.
+It invokes the following through Django `call_command` after asserting the disposable target:
+
+```text
+python manage.py collectstatic --noinput
+python manage.py check --database default
+python manage.py makemigrations --check --dry-run
+python manage.py test core.tests.test_demo_admin core.tests.test_admin_route_policy core.tests.test_production core.tests.test_login_throttle_policy core.tests.test_auth --noinput --verbosity 2
+```
+
+Focused result: **71 passed**, zero failures/errors/skips, 20.274 seconds, exit 0. System checks report zero
+issues; migration consistency reports no changes. The first run had 18 subtest errors because the new standalone
+connection-wrapper fixture omitted Django's normal `TIME_ZONE` default. Supplying that default fixed the
+fixture; every case/assertion was retained. Both attempt logs and source manifests remain in the evidence directory.
+
+Full feature-enabled launcher:
+`python3 -B /private/tmp/gasbook-admin-security-34neki8_/full/run.py core.tests`.
+It runs `python manage.py test core.tests --noinput --verbosity 2` with `ACCESSORIES_ENABLED=True` only in its
+isolated container. Result: **668 tests, 665 passed, 3 existing opt-in browser skips, zero failures/errors**,
+472.575 seconds, exit 0. System checks found no issues; migration consistency found no changes.
+The demo configuration remains accessory-disabled. The browser suites were not enabled in this phase;
+no hosted browser/login or frontend build verification is claimed.
+
+Full disabled-accessory launcher:
+`python3 -B /private/tmp/gasbook-admin-security-34neki8_/disabled/run.py core.tests`.
+The same command/settings with the default `ACCESSORIES_ENABLED=False` ran **668 tests: 632 passed,
+26 failures, 7 errors, 3 existing browser skips**, 514.886 seconds, exit 1. Every failing test identifier
+matches the previously executed unchanged-`123a612` comparison at
+`/private/tmp/gasbook-admin-baseline-hhp9e5v2/focused-suite.log`. That baseline source manifest was rechecked
+against the exact committed blobs; it matches. The baseline itself was not rerun in this follow-up.
+The failures remain accessory tests assuming enabled catalog/checkout/sales operations; disabled routes
+return unavailable responses or empty catalogs. No new failure identifiers were introduced. See
+`baseline-comparison.json`; existing tests and the live demo's disabled-accessory policy remain unchanged.
+
+An additional production-mode run of `production_checks.py` in a `--network none` container explicitly forbade
+database connections. `check --deploy` exited 0 with only the existing security.W005/W021 HSTS warnings.
+The opted-in Admin login page, WhiteNoise admin CSS and `/health/` returned 200 with a Secure CSRF cookie.
+This verifies local production settings without connecting to Neon; `production-checks.log` contains the results.
+
+### Limits and approval
+
+The exact demo opt-in, production HTTPS/CSRF/cookies, session permission guard and independent React API throttle
+remain intact. The Admin limiter remains process-local and needs one worker; counters reset on restart and
+shared proxy buckets can delay legitimate users. This is configuration validation, not live Neon attestation;
+`sslmode=require` still does not guarantee hostname-certificate verification. No hosted login or browser
+verification is claimed. Review and separately approve committing/pushing and deployment; no migrations,
+bootstrap, new resources, paid service or billing change is required.
+
+## Dedicated-demo Django Admin opt-in — 2026-10-21
+
+This section describes local changes awaiting approval; older entries below are historical.
+Starting repositories were clean: `gasbook` main at `123a61202bc91c6bfc23d3d36070c305b18f1a2b`
+and `gasbook-customer` main at `0bff6fe798fa9d2b80404c5473896e62c1674dbc`.
+No provider API, hosted database, credential file or existing database was accessed in this phase.
+
+### Implementation
+
+The original `/admin/` exclusion prevented two bypasses: Django session login does not run the DRF login
+throttles, and AdminSite permission checks do not run the JWT forced-password-change guard.
+
+- `backend/gasbook/environment.py`, `settings.py`, `urls.py`: default-off `DEMO_DJANGO_ADMIN_ENABLED`,
+  validated against the approved Render service ID, backend hostname, Neon endpoint/database, required TLS,
+  production security and demo upload/accessory restrictions. A mismatched opt-in fails startup. No connection
+  is made by this check. No production route is opened merely because a superuser exists.
+- `backend/core/admin_config.py`, `admin_site.py`: Django's supported custom default AdminSite, preserving
+  all existing registrations and permissions. A temporary-password account cannot establish an admin session;
+  the site permission hook also rejects existing sessions while that flag is set. The user must first change
+  the password in the React management app. Session password-hash invalidation remains intact.
+- Admin login has a separate thread-safe, bounded sliding-window limiter (10 username/peer, 30 peer, 60 global
+  POSTs per minute), no forwarded-header trust, no persistent account lockout, 429/Retry-After/no-store responses,
+  generic failed/throttled-login logging and sensitive form-field redaction. CSRF is retained.
+  This is for the existing one-worker/four-thread demo only: counters reset on restart and are not shared
+  between workers/instances. Shared proxy buckets can temporarily delay legitimate attempts.
+- `backend/core/tests/test_admin_route_policy.py`, `test_demo_admin.py`: route policy, configuration rejection,
+  concurrent/expiring/rotating login budgets, redaction, CSRF/HTTPS/static assets, staff/active checks, temporary
+  passwords, flagged sessions, session invalidation and the real React password-change API.
+- `docs/production-deployment.md`: exact opt-in, limitations, approval/deployment sequence and flag-off rollback.
+  No Render template, dependency, migration, bootstrap command, business logic or customer frontend was changed.
+
+### Isolation and commands
+
+Evidence and final source hashes: `/private/tmp/gasbook-demo-admin-native-vafwolg1/`.
+The runner creates a new PostgreSQL 17.11 container on `--network none`, with tmpfs data and no published ports
+or persistent volume. The backend container shares only that new container's network namespace, uses a read-only
+source snapshot and isolated `/tmp` media/static paths, and asserts the effective database name/loopback host
+before Django connects. Source copies exclude `.env` files. The test target is
+`test_gasbook_admin_review_native`; no existing database is used or restarted.
+Each run stops/removes its own disposable database container.
+
+Native runtime: Python 3.12.15; all 16 installed package versions exactly match the committed requirements,
+including Django 5.2.18 and Pillow 13.0.0. No dependencies were installed/upgraded and the full suite retains
+its ordinary password hashers. Tests specifically exercising admin request behavior use a test-class-only
+fast hasher; existing security tests are unchanged.
+
+Commands invoked by the isolated harness:
+
+```text
+python manage.py collectstatic --noinput
+python manage.py check --database default
+python manage.py makemigrations --check --dry-run
+python manage.py test core.tests.test_demo_admin core.tests.test_admin_route_policy core.tests.test_production core.tests.test_login_throttle_policy --noinput --verbosity 2
+python manage.py test core.tests --noinput --verbosity 2
+```
+
+The harness invokes these commands through Django's `call_command` after asserting the disposable target.
+Exact launchers are `python3 -B /private/tmp/gasbook-demo-admin-native-vafwolg1/run.py` and
+the same command with `core.tests`. No migrate command was run against an existing database;
+the normal test runner applies existing migrations only when building its fresh disposable test database.
+
+Final focused result: **47 passed**, zero errors/failures/skips. System checks report zero issues;
+`makemigrations --check --dry-run` reports no changes. WhiteNoise serves admin CSS with DEBUG off, and
+login issues a Secure CSRF cookie.
+
+The first full run kept the default `ACCESSORIES_ENABLED=False`: **657 tests, 621 passed, 26 failures,
+7 errors, 3 opt-in browser skips** (350.344 seconds, exit 1). All 33 failing tests expect enabled accessory
+catalog/checkout/sales operations; disabled endpoints return unavailable responses or an empty catalog.
+Running those exact 33 tests against unchanged commit `123a612` in another fresh disposable PostgreSQL
+container reproduced **the same 26 failures and 7 errors** (13.704 seconds, exit 1). The six affected legacy
+test modules are byte-identical to HEAD. These are existing test-configuration assumptions, not AdminSite
+regressions. The demo remains accessory-disabled; no tests or application gates were weakened.
+Baseline evidence: `/private/tmp/gasbook-admin-baseline-hhp9e5v2/` and `baseline-comparison.json` in the main
+evidence directory. Its initial label-generation attempt failed discovery without executing tests; the
+corrected run above is the actual baseline comparison, and both logs are preserved.
+
+The complete candidate suite was then run with `ACCESSORIES_ENABLED=True` **only inside the disposable test
+container**, using the same source and ordinary settings/password hashers:
+`python3 -B /private/tmp/gasbook-admin-accessories-w5mktjqf/run.py core.tests`.
+This invokes `python manage.py test core.tests --noinput --verbosity 2`.
+Result: **657 tests, 654 passed, 3 existing opt-in browser skips, zero failures/errors**, 376.289 seconds,
+exit 0. System checks reported zero issues and migration consistency reported no changes.
+The test database was `test_gasbook_admin_review_accessories`; its fresh isolated PostgreSQL container was
+removed after completion. See that directory's `full-suite.log` and source manifest. The passing feature-enabled
+run supplements rather than replaces the disabled-feature results above. No hosted/demo setting was changed.
+The skipped suites are checkout, inventory and staff-payment browser workflows; no browser, frontend build or
+live deployment check was run in this phase. The new React authentication regression uses the actual Django API,
+session/password code and disposable PostgreSQL through Django's test clients, not a hosted browser session.
+
+An additional `production_checks.py` run used production/demo settings in a `--network none` container and
+patched `BaseDatabaseWrapper.ensure_connection` to reject every database connection. `check --deploy`
+exited 0 with only the existing security.W005/W021 HSTS subdomain/preload warnings (none silenced).
+`/admin/login/`, admin CSS and `/health/` returned 200, with a Secure CSRF cookie and no database connection.
+See `production-checks.log`; this is local verification, not a claim about the live Render route.
+
+Earlier attempts are preserved rather than hidden: the x86 focused run passed 45 tests before the two extra
+static/session checks. Its full run was intentionally stopped (exit 137) to avoid CPU emulation, then replaced
+with the dependency-matched native run. The first native focused run had nine cascading setup errors because
+the newly added CSS test manually closed its streaming response inside a TestCase transaction. Consuming the
+stream through Django's test-client wrapper fixed the cleanup; no assertion or application control was removed.
+The pre-existing runpy URL-module warning remains non-fatal.
+
+### Remaining approval
+
+The live `/admin/` route has not been enabled or deployed in this phase. Review/approve the diff before any
+commit or push. Separately approve setting `DEMO_DJANGO_ADMIN_ENABLED=True` and deploying the approved backend
+commit on the existing Free demo service after verifying its identity and single-worker start command.
+No migration, database change, admin re-bootstrap, new credential, paid resource or billing change is needed.
+Authenticated browser verification of the hosted Django Admin remains a post-deployment step.
 
 ## Neon setup, agent tooling and read-only connection proof — 2026-10-20
 

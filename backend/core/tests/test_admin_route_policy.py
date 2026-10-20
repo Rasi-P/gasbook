@@ -1,4 +1,4 @@
-"""No production AdminSite route, independent of accounts or attacker headers."""
+"""Production AdminSite stays absent unless the dedicated demo opts in."""
 import runpy
 from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType
@@ -40,3 +40,9 @@ class AdminRoutePolicyTests(SimpleTestCase):
     def test_development_and_test_keep_admin_routes(self):
         config = self.urlconf(False)
         self.assertEqual(resolve('/admin/login/', urlconf=config).url_name, 'login')
+
+    @override_settings(DEMO_DJANGO_ADMIN_ENABLED=True)
+    def test_validated_demo_opt_in_registers_admin_routes(self):
+        config = self.urlconf(True)
+        self.assertEqual(resolve('/admin/login/', urlconf=config).url_name, 'login')
+        self.assertEqual(resolve('/admin/', urlconf=config).url_name, 'index')

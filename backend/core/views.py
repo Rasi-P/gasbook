@@ -2275,6 +2275,12 @@ def change_password(request):
     if user is None or user.id != request.user.id:
         return Response({"detail": "Current password is incorrect."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
+    if user.check_password(new_password):
+        return Response(
+            {"detail": "New password must be different from the current password.", "code": "password_reuse"},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+
     try:
         validate_password(new_password, user=request.user)
     except Exception as exc:
