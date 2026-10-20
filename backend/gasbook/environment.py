@@ -78,8 +78,9 @@ def _demo_database_target_matches(database):
         database.get("ENGINE") == "django.db.backends.postgresql"
         and database.get("NAME") == "neondb"
         and database.get("HOST") in {
-            "ep-calm-shape-b3nzc13z.ap-southeast-1.aws.neon.tech",
-            "ep-calm-shape-b3nzc13z-pooler.ap-southeast-1.aws.neon.tech",
+            # Exact direct hostname from the approved endpoint metadata.
+            # Pooled aliases require independent verification before admission.
+            "ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech",
         }
         and database.get("PORT") in {None, "", 5432, "5432"}
         and options.get("sslmode") in {"require", "verify-ca", "verify-full"}

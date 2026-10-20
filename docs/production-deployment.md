@@ -361,8 +361,9 @@ The original security gap had two parts: DRF login throttles do not wrap Django'
 
 - `GASBOOK_ENV=production`, `DEBUG=False`, HTTPS/TLS and the normal production settings.
 - Render service ID `srv-dbbk71tg1s2s7398rfag` and the sole allowed host `gasbook-demo-api.onrender.com`.
-- PostgreSQL database `neondb` on the dedicated Neon endpoint `ep-calm-shape-b3nzc13z` (direct or pooled),
-  using its exact `ap-southeast-1.aws.neon.tech` hostname and default/explicit port 5432, with TLS required.
+- PostgreSQL database `neondb` on the dedicated Neon endpoint `ep-calm-shape-b3nzc13z`, using the exact
+  direct hostname `ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech` and default/explicit port 5432,
+  with TLS required. The `.c-4` component is part of the hostname and must not be omitted.
   This endpoint belongs to the previously verified `gasbook-demo`
   project `long-rain-96731013`; the settings check does not connect to Neon or replace a pre-deployment identity audit.
 - `DEMO_DISABLE_UPLOADS=True` and `ACCESSORIES_ENABLED=False`.
@@ -374,7 +375,14 @@ and all unknown options, fail closed. Non-empty `PGHOST`, `PGHOSTADDR`, `PGPORT`
 `PGSERVICEFILE`, `PGSYSCONFDIR` or `PGOPTIONS` also prevent enabling AdminSite. They can otherwise supply
 connection targets or service-file configuration outside the apparent URL. Use the approved dedicated
 `DATABASE_URL`; additional options require review instead of silently changing the effective target.
-The ordinary direct/pooled TLS URL and `channel_binding` remain supported. Accepted TLS modes remain
+The approved direct TLS URL and `channel_binding` remain supported. No pooled hostname is currently
+allowlisted for this Admin opt-in: historical metadata establishes only the direct hostname. The earlier
+pooled entry was unverified and has been removed; do not derive or admit a pooled alias without verifying
+its exact identity. Fresh Neon metadata verification remains pending after the read-only investigation's
+HTTP 401 response. The direct hostname matches both saved endpoint metadata and the Render configuration
+inspected during that investigation; no `DATABASE_URL` or provider setting change is needed for this fix.
+Before deployment, refresh personal Neon authentication and re-verify endpoint identity through metadata
+only. Do not connect to PostgreSQL for this check. Accepted TLS modes remain
 `require`, `verify-ca` and `verify-full`: `require` requires encryption but is not hostname-certificate
 verification. No TLS/provider configuration was changed by this local patch.
 

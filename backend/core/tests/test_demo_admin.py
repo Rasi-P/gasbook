@@ -30,7 +30,7 @@ class DemoAdminConfigurationTests(SimpleTestCase):
             "production": True, "debug": False, "hosts": ["gasbook-demo-api.onrender.com"],
             "database": {
                 "ENGINE": "django.db.backends.postgresql", "NAME": "neondb",
-                "HOST": "ep-calm-shape-b3nzc13z.ap-southeast-1.aws.neon.tech",
+                "HOST": "ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech",
                 "OPTIONS": {"sslmode": "require"},
             },
             "uploads_disabled": True, "accessories_enabled": False,
@@ -60,7 +60,7 @@ class DemoAdminConfigurationTests(SimpleTestCase):
             ):
                 base = {
                     "ENGINE": "django.db.backends.postgresql", "NAME": "neondb",
-                    "HOST": "ep-calm-shape-b3nzc13z.ap-southeast-1.aws.neon.tech",
+                    "HOST": "ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech",
                     "OPTIONS": {"sslmode": "require"},
                 }
                 base.update(database)
@@ -79,12 +79,33 @@ class DemoAdminConfigurationTests(SimpleTestCase):
             with self.assertRaises(ImproperlyConfigured):
                 self.config()
 
-    def database_url(self, query=None, pooled=False):
-        endpoint = "ep-calm-shape-b3nzc13z" + ("-pooler" if pooled else "")
+    def database_url(self, query=None):
         return (
-            f"postgresql://unused@{endpoint}.ap-southeast-1.aws.neon.tech/neondb?"
+            "postgresql://unused@ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech/neondb?"
             + urlencode({"sslmode": "require", **(query or {})})
         )
+
+    def test_actual_neon_hostname_is_required_without_alias_or_suffix_matching(self):
+        with patch.dict(os.environ, {
+            "DEMO_DJANGO_ADMIN_ENABLED": "True", "RENDER_SERVICE_ID": "srv-dbbk71tg1s2s7398rfag",
+        }, clear=True), patch("socket.socket.connect", side_effect=AssertionError("No network")):
+            database = dj_database_url.parse(
+                "postgresql://unused@ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech/"
+                "neondb?sslmode=require&channel_binding=require"
+            )
+            self.assertTrue(self.config(database=database))
+            for host in (
+                "ep-calm-shape-b3nzc13z.ap-southeast-1.aws.neon.tech",
+                "ep-calm-shape-b3nzc13z-pooler.ap-southeast-1.aws.neon.tech",
+                "ep-calm-shape-b3nzc13z-pooler.c-4.ap-southeast-1.aws.neon.tech",
+                "ep-calm-shape-b3nzc13z.c-5.ap-southeast-1.aws.neon.tech",
+                "ep-another.c-4.ap-southeast-1.aws.neon.tech",
+                "ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech.attacker.example",
+                "prefix.ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech",
+            ):
+                database["HOST"] = host
+                with self.subTest(host=host), self.assertRaises(ImproperlyConfigured):
+                    self.config(database=database)
 
     def test_approved_parsed_target_matches_actual_connection_parameters_without_connecting(self):
         with patch.dict(os.environ, {
@@ -92,31 +113,30 @@ class DemoAdminConfigurationTests(SimpleTestCase):
         }, clear=True), patch("socket.socket.connect", side_effect=AssertionError("No network")), \
                 patch("django.db.backends.base.base.BaseDatabaseWrapper.ensure_connection",
                       side_effect=AssertionError("No database")):
-            for pooled in (False, True):
-                for tls in ("require", "verify-ca", "verify-full"):
-                    options = {
-                        "sslmode": tls, "channel_binding": "require", "connect_timeout": "5",
-                        "application_name": "gasbook-demo",
-                    }
-                    if tls == "verify-full":
-                        options["sslrootcert"] = "system"
-                    database = dj_database_url.parse(self.database_url(options, pooled=pooled))
-                    # Normally populated by Django's ConnectionHandler, which
-                    # this deliberately unregistered/unconnected wrapper avoids.
-                    database["TIME_ZONE"] = None
-                    for port in ("", "5432", 5432):
-                        database["PORT"] = port
-                        with self.subTest(pooled=pooled, tls=tls, port=port):
-                            self.assertTrue(self.config(database=database))
-                            wrapper = DatabaseWrapper(database, alias="unconnected_guard_probe")
-                            params = wrapper.get_connection_params()
-                            self.assertIsNone(wrapper.connection)
-                            self.assertEqual(params["dbname"], "neondb")
-                            self.assertEqual(params["host"], database["HOST"])
-                            self.assertEqual(str(params.get("port", 5432)), "5432")
-                            self.assertEqual(params["sslmode"], tls)
-                            self.assertNotIn("hostaddr", params)
-                            self.assertNotIn("service", params)
+            for tls in ("require", "verify-ca", "verify-full"):
+                options = {
+                    "sslmode": tls, "channel_binding": "require", "connect_timeout": "5",
+                    "application_name": "gasbook-demo",
+                }
+                if tls == "verify-full":
+                    options["sslrootcert"] = "system"
+                database = dj_database_url.parse(self.database_url(options))
+                # Normally populated by Django's ConnectionHandler, which
+                # this deliberately unregistered/unconnected wrapper avoids.
+                database["TIME_ZONE"] = None
+                for port in ("", "5432", 5432):
+                    database["PORT"] = port
+                    with self.subTest(tls=tls, port=port):
+                        self.assertTrue(self.config(database=database))
+                        wrapper = DatabaseWrapper(database, alias="unconnected_guard_probe")
+                        params = wrapper.get_connection_params()
+                        self.assertIsNone(wrapper.connection)
+                        self.assertEqual(params["dbname"], "neondb")
+                        self.assertEqual(params["host"], database["HOST"])
+                        self.assertEqual(str(params.get("port", 5432)), "5432")
+                        self.assertEqual(params["sslmode"], tls)
+                        self.assertNotIn("hostaddr", params)
+                        self.assertNotIn("service", params)
 
     def test_url_query_overrides_and_unknown_options_are_rejected_without_leaking_values(self):
         with patch.dict(os.environ, {
@@ -152,7 +172,7 @@ class DemoAdminConfigurationTests(SimpleTestCase):
             for change in (
                 {"PORT": 6432},
                 {"HOST": "ep-calm-shape-b3nzc13z.other-region.aws.neon.tech"},
-                {"HOST": "ep-calm-shape-b3nzc13z.ap-southeast-1.aws.neon.tech,other"},
+                {"HOST": "ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech,other"},
                 {"OPTIONS": None},
                 {"OPTIONS": {"sslmode": "require", "connect_timeout": False}},
                 {"OPTIONS": {"sslmode": "require", "channel_binding": "unknown"}},
@@ -167,7 +187,7 @@ class DemoAdminConfigurationTests(SimpleTestCase):
         env = {
             "PATH": os.environ.get("PATH", ""), "PYTHONDONTWRITEBYTECODE": "1",
             "GASBOOK_ENV": "production", "DEBUG": "False", "SECRET_KEY": secrets.token_urlsafe(64),
-            "DATABASE_URL": "postgresql://unused@ep-calm-shape-b3nzc13z.ap-southeast-1.aws.neon.tech/neondb?sslmode=require",
+            "DATABASE_URL": "postgresql://unused@ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require",
             "ALLOWED_HOSTS": "gasbook-demo-api.onrender.com", "DEMO_DISABLE_UPLOADS": "True",
             "ACCESSORIES_ENABLED": "False", "DEMO_DJANGO_ADMIN_ENABLED": "True",
             "RENDER_SERVICE_ID": "srv-dbbk71tg1s2s7398rfag",

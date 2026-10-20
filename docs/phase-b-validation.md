@@ -4,6 +4,72 @@ No commit, push, branch switch, Render/Vercel deployment, paid resource creation
 The authorized Neon follow-up below includes only the dedicated demo database; earlier local-only sections are historical.
 No production deployment or provider storage persistence is claimed.
 
+## Exact demo database hostname correction — 2026-10-21
+
+Starting state: both repositories clean on `main`; backend HEAD
+`33edb8926613ec3e8c16e576fff962d4f39c4074`, customer HEAD
+`0bff6fe798fa9d2b80404c5473896e62c1674dbc`. This local follow-up supersedes the earlier
+direct/pooled hostname acceptance claims below; historical test results remain recorded unchanged.
+
+The committed Admin guard and its positive fixtures omitted `.c-4` from the dedicated endpoint hostname.
+The preceding read-only investigation found the actual Render configuration uses
+`ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech`, matching saved Neon endpoint metadata at
+`/private/tmp/gasbook-neon-setup-ofl_voep/verified-endpoint.json` for project `long-rain-96731013`,
+endpoint `ep-calm-shape-b3nzc13z`, branch `br-calm-silence-b36z6m8z`. That metadata supplies a direct
+hostname only. The fresh Neon metadata request during the investigation returned HTTP 401; fresh
+verification remains pending. This implementation phase made no provider requests or authentication changes.
+
+Changes are limited to `backend/gasbook/environment.py`, `backend/core/tests/test_demo_admin.py`,
+`docs/production-deployment.md` and this report. The guard now admits only the exact verified historical
+direct hostname. The unverified pooled entry is removed; neither pooled spelling is admitted speculatively.
+Positive fixtures use the actual direct hostname, and a new regression rejects the old hostnames,
+unverified pooled aliases, different cluster/endpoint hosts, and prefix/suffix lookalikes. Existing TLS,
+database-option/environment override, service identity, demo restriction, authentication and password-change
+protections remain intact. The former pooled-positive cases are now explicit rejection cases; TLS/port
+and effective connection-parameter assertions remain for the approved direct host.
+
+Evidence, exact launchers and source hashes: `/private/tmp/gasbook-admin-hostname-obpywxpc/`.
+The 140-file backend snapshot excludes credentials and local environment files. All 16 pinned runtime dependency
+versions match `requirements.txt`; Python 3.12.15 and PostgreSQL 17.11 use existing local images only.
+The focused launcher creates a fresh PostgreSQL container with `--network none`, no published ports or
+persistent volumes, tmpfs data, and verified loopback database `gasbook_admin_hostname_obpywxpc`.
+Tests use its separate `test_gasbook_admin_hostname_obpywxpc` database. Source/dependencies are mounted
+read-only, and media/static output is disposable. The created container was removed after the tests.
+No hosted/existing database, production service or QA database was accessed.
+
+Commands actually executed:
+
+```text
+python3 -B /private/tmp/gasbook-admin-hostname-obpywxpc/run.py
+python3 -B /private/tmp/gasbook-admin-hostname-obpywxpc/production_run.py
+python3 -B /private/tmp/gasbook-admin-hostname-obpywxpc/baseline_run.py
+```
+
+The focused launcher invokes Django `collectstatic --noinput`, `check --database default`,
+`makemigrations --check --dry-run` and the equivalent of:
+
+```text
+python manage.py test core.tests.test_demo_admin core.tests.test_admin_route_policy core.tests.test_production core.tests.test_login_throttle_policy core.tests.test_auth --noinput --verbosity 2
+```
+
+Results: **72 tests passed**, zero failures/errors/skips, 20.391 seconds, exit 0. System checks found
+zero issues; migration consistency reported no changes. Database-target override rejection, actual
+PostgreSQL connection-parameter construction without connection, production settings import, Admin
+throttling/password-change and React authentication regressions all passed. The existing `runpy` warning
+about re-executing `gasbook.urls` remains visible; it also appears in the preceding focused-suite log.
+
+The production launcher uses a separate network-disabled container and explicitly forbids database
+connections. `check --deploy` exited 0 with the two existing security.W005/W021 HSTS warnings; no warnings
+were silenced. Admin login, WhiteNoise admin CSS and `/health/` returned 200, and the CSRF cookie was Secure.
+The baseline launcher ran only the new hostname regression against the unchanged committed guard:
+**one expected error**, the same `ImproperlyConfigured` at the actual-hostname acceptance assertion. Its
+harness exited 0 after verifying that expected failure. The corrected guard passes this test in the focused suite.
+
+The full backend/browser suites and hosted login were not rerun in this narrowly scoped correction.
+No migration files, dependencies, `DATABASE_URL`, Render settings, customer files or existing data were changed.
+No commit, push or deployment was performed. Fresh personal Neon metadata verification and separate
+commit/push/deployment approval remain required; pooled-host support requires independent identity verification.
+
 ## Targeted Django Admin security follow-up — 2026-10-21
 
 This section supersedes the earlier Admin implementation's security assessment. The existing nine-file patch
