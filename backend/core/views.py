@@ -110,7 +110,13 @@ def get_staff_image_url(request, user):
     profile = getattr(user, "staff_profile", None)
     if not profile or not profile.image:
         return None
-    return request.build_absolute_uri(profile.image.url)
+    from .media_access import may_view_staff_image
+    if not may_view_staff_image(request.user, profile):
+        return None
+    try:
+        return request.build_absolute_uri(profile.image.url)
+    except (ValueError, OSError):
+        return None
 
 
 def format_decimal_label(value):
@@ -956,7 +962,7 @@ class StaffProfileViewSet(viewsets.ModelViewSet):
     permission_classes = [IsStaffOrAdmin]
 
     def get_permissions(self):
-        if self.request.method == "DELETE":
+        if self.request.method not in permissions.SAFE_METHODS:
             return [IsAdminUserRole()]
         return super().get_permissions()
 
@@ -1935,6 +1941,7 @@ def serialize_me(request):
         "assigned_area": assigned_area,
         "vehicle_number": vehicle_number,
         "staff_image_url": staff_image_url,
+        "capabilities": {"accessories": settings.ACCESSORIES_ENABLED, "image_uploads": not settings.DEMO_DISABLE_UPLOADS},
     }
 
 
@@ -2029,15 +2036,12 @@ def user_detail(request, pk):
         if profile is None and getattr(getattr(user, "role", None), "code", "") == "staff":
             profile = StaffProfile.objects.create(user=user)
         if profile is not None:
-            old_image_name = profile.image.name
             if remove_image and profile.image:
                 profile.image = None
             if new_image:
                 profile.image = new_image
             if remove_image or new_image:
                 profile.save(update_fields=["image", "updated_at"])
-                from .serializers import delete_replaced_file
-                delete_replaced_file(old_image_name, profile.image)
             user.staff_profile = profile
 
     return Response({

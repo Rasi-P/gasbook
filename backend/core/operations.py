@@ -4,6 +4,12 @@ from io import BytesIO
 from pathlib import Path
 
 from django.conf import settings
+from django.core.files.storage import default_storage, FileSystemStorage
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.permissions import AllowAny
+from .authentication import GasBookJWTAuthentication
+from .media_access import may_view_staff_image
 from django.db import connection, DatabaseError
 from django.db.migrations.loader import MigrationLoader
 from django.db.migrations.recorder import MigrationRecorder
@@ -39,19 +45,31 @@ def readiness(request):
     return response
 
 
-@require_safe
+@api_view(["GET", "HEAD"])
+@authentication_classes([GasBookJWTAuthentication, SessionAuthentication])
+@permission_classes([AllowAny])
 def media_image(request, path):
-    """Serve validated raster images only, including uploads predating validation."""
+    """Serve bounded, validated media; staff bytes always require authentication."""
     if settings.DEMO_DISABLE_UPLOADS:
         raise Http404
-    root = Path(settings.MEDIA_ROOT).resolve()
-    target = (root / path).resolve()
-    if not target.is_relative_to(root) or path.split("/", 1)[0] not in {
-        "product-images", "staff-images", "cylinder-images"
-    }:
+    prefix = path.split("/", 1)[0]
+    if prefix not in {"product-images", "staff-images", "cylinder-images"} or any(
+            part in {"", ".", ".."} for part in path.split("/")) or "\\" in path:
         raise Http404
+    private = prefix == "staff-images"
+    if private:
+        if not request.user.is_authenticated:
+            raise Http404
+        from .models import StaffProfile
+        profile = StaffProfile.objects.filter(image=path).first()
+        if not profile or not may_view_staff_image(request.user, profile):
+            raise Http404
+    if isinstance(default_storage, FileSystemStorage):
+        root = Path(settings.MEDIA_ROOT).resolve()
+        if not (root / path).resolve().is_relative_to(root):
+            raise Http404
     try:
-        with target.open("rb") as handle:
+        with default_storage.open(path, "rb") as handle:
             data = handle.read(MAX_IMAGE_BYTES + 1)
         image_format = inspect_image(data).format
         response = FileResponse(BytesIO(data), content_type={"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp"}[image_format])
@@ -59,5 +77,7 @@ def media_image(request, path):
         raise Http404 from None
     response["X-Content-Type-Options"] = "nosniff"
     response["Content-Security-Policy"] = "default-src 'none'; sandbox"
-    response["Cache-Control"] = "public, max-age=3600"
+    response["Cache-Control"] = "private, no-store" if private else "public, max-age=300"
+    if private:
+        response["Vary"] = "Authorization, Cookie"
     return response

@@ -1,3 +1,4 @@
+import { useCapabilities } from '../hooks/useCapabilities';
 import { PaymentSummary, type PaymentFacts } from '../components/PaymentSummary';
 import { DirectSaleRates } from '../components/DirectSaleRates';
 import { formatDateTime } from '../lib/dateTime';
@@ -7,7 +8,7 @@ import {
   AlertTriangle, Banknote, Building2, CheckCircle2, CreditCard, Plus,
   Receipt, RotateCcw, Smartphone, Trash2, User,
 } from 'lucide-react';
-import { api, extractApiError, fetchAllPages, getApiErrorCode, LIMITS, newClientRef } from '../lib/api';
+import { api, extractApiError, fetchCatalogPages, fetchAllPages, getApiErrorCode, LIMITS, newClientRef } from '../lib/api';
 import { ErrorState, LoadingState } from '../components/AsyncState';
 import { Pager } from '../components/Pager';
 import { usePager } from '../hooks/usePager';
@@ -103,6 +104,7 @@ function isReusedClientRef(err: unknown): boolean {
 }
 
 export default function Sales() {
+  const accessoryCapability = useCapabilities();
   const [tab, setTab] = useState<'new' | 'history'>('new');
   const [cylinderTypes, setCylinderTypes] = useState<CylinderType[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -198,7 +200,7 @@ export default function Sales() {
 
   useEffect(() => {
     let cancelled = false;
-    fetchAllPages<AccessoryProduct>('/products/').then(rows => {
+    fetchCatalogPages<AccessoryProduct>('/products/').then(rows => {
       if (!cancelled) { setProducts(rows); setProductsError(''); }
     }).catch(err => {
       if (!cancelled) setProductsError(extractApiError(err, [], 'Could not load accessories.'));
@@ -801,7 +803,9 @@ export default function Sales() {
               </Card>
 
               <Card className="sale-card" aria-label="Accessories">
-                <CardHeader title="Accessories" meta={<Button type="button" variant="secondary" size="sm" icon={<Plus />} disabled={saving || productsLoading || !!productsError || !nextProduct} onClick={() => { if (nextProduct) setAccessories(prev => [...prev, { product: nextProduct.id, quantity: 1 }]); }}>Add accessory</Button>} />
+                <CardHeader title="Accessories" meta={<Button type="button" variant="secondary" size="sm" icon={<Plus />} disabled={accessoryCapability.value?.accessories !== true || saving || productsLoading || !!productsError || !nextProduct} onClick={() => { if (nextProduct) setAccessories(prev => [...prev, { product: nextProduct.id, quantity: 1 }]); }}>Add accessory</Button>} />
+                {accessoryCapability.value?.accessories === false && <p role="status">Accessories are disabled; cylinder sales remain available.</p>}
+                {accessoryCapability.error && <p role="alert">{accessoryCapability.error} <button type="button" onClick={accessoryCapability.retry}>Retry feature check</button></p>}
                 {productsLoading && <LoadingState label="Loading accessories…" />}
                 {productsError && <ErrorState message={productsError} onRetry={() => { setProductsLoading(true); setProductsRevision(value => value + 1); }} />}
                 {!productsLoading && !productsError && !accessories.length && <p className="muted">{availableProducts.length ? 'Add accessories to this sale, with or without cylinders.' : 'No accessories are currently available.'}</p>}

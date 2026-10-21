@@ -47,9 +47,10 @@ class DemoAdminConfigurationTests(SimpleTestCase):
             "DEMO_DJANGO_ADMIN_ENABLED": "True", "RENDER_SERVICE_ID": "srv-dbbk71tg1s2s7398rfag",
         }, clear=True):
             self.assertTrue(self.config())
+            self.assertTrue(self.config(accessories_enabled=True))
             for key, value in (
                 ("production", False), ("debug", True), ("hosts", ["real-business.example.com"]),
-                ("uploads_disabled", False), ("accessories_enabled", True),
+                ("uploads_disabled", False),
             ):
                 with self.subTest(setting=key), self.assertRaises(ImproperlyConfigured):
                     self.config(**{key: value})

@@ -4,7 +4,132 @@ No deployment is authorized by this document. The reviewed changes are local and
 Never use `gasbook_qa`, unrelated development databases, or default credentials. Synthetic data belongs only in the
 separately verified demo target; commercial production excludes demo data.
 
-## Current scope: ₹0 personal demo — 2026-10-20
+## Full-feature demo candidate — 2026-10-21 (local only)
+
+This section supersedes the older no-upload/no-accessory policy below. Historical account inventories and empty-database
+observations are retained as dated evidence, not current deployment facts. No hosted database was accessed in this phase;
+no migrations, bootstrap, provider changes, commits, pushes or deployments were performed.
+
+### Targets and activation gates
+
+The intended existing targets are the user's `gasbook-demo-api` Render Free service, `https://gasbook-demo-api.onrender.com`,
+Vercel admin `https://gasbook-beige.vercel.app`, and separate customer `https://gasbook-customer.vercel.app`.
+The guarded demo still requires service ID `srv-dbbk71tg1s2s7398rfag`, the exact API hostname, and the approved effective
+Neon PostgreSQL target: project `long-rain-96731013`, database `neondb`, direct endpoint
+`ep-calm-shape-b3nzc13z.c-4.ap-southeast-1.aws.neon.tech`. No pooled alias, connection-target override, insecure TLS,
+DEBUG mode or non-demo Admin opt-in is admitted. Read-only CLI checks in this phase confirmed personal Render identity Rasi P and Vercel identity rasikkaa.
+Render inventory confirmed the exact service above: Free, Docker, Singapore, main, autoDeploy=no/off, /ready/ probe.
+Vercel confirmed existing project `gasbook` (`prj_hvbG8ZJenm4w2emQxg3PQB46FhOc`), root `frontend`, Vite,
+`npm ci`, `npm run build`, `dist`, Node 24; and `gasbook-customer` (`prj_XZzq4tecx89UssDAeM59vWHKxe5Q`),
+repository root, Vite, `bun install --frozen-lockfile`, `bun run build`, `dist`, Node 24. CLI inspect did not expose
+production deployment SHA/Git linkage/domain metadata in its result. Those details and fresh quotas/backups remain
+release-gate checks; no environment-variable values were read or returned.
+
+Accessories and uploads are now independent feature choices. The default-off Django Admin opt-in retains its throttle,
+Unicode normalization, temporary-password enforcement, HTTPS, CSRF, secure cookies and model permissions. The container
+and demo template use one Gunicorn worker/four threads: process-local login limits do not span workers or instances and
+reset on restart. Do not scale this model without shared, atomic rate limiting.
+
+`render.demo.yaml` is now a **Docker reference for the existing service**, using `rootDir: backend`, context `.`,
+`Dockerfile`, and a one-worker start override. Never apply it to create a duplicate service. The Dockerfile pins Python,
+installs requirements and collects static assets; neither build nor start runs migrations. `render.yaml` remains the
+separate future commercial proposal. Keep the existing Render/Vercel project connections and automatic-deploy policy.
+
+### Persistent media: implemented locally, account eligibility not established
+
+Candidate integration: official `imagekitio==5.11.0`, `cryptography==50.0.2`, with a Django Storage adapter.
+Public [ImageKit pricing](https://imagekit.io/plans/) lists Forever Free at $0/month with 3 GB storage and 20 GB/month
+bandwidth. [Free limits](https://imagekit.io/docs/how-pricing-works) suspend affected functionality at exhaustion.
+This does **not** prove this personal account is on that plan, has no card/trial/billing, or has sufficient remaining quota.
+No authenticated ImageKit tool/account was available to this implementation. Do not activate storage until the user
+verifies the personal dashboard's **Complete Media Processing + DAM / Forever Free** plan, no paid trial, no card,
+no billing activation and available capacity. Do not substitute DAM-only, a paid plan or Neon usage-priced storage.
+
+The backend validates JPEG/PNG/WebP, 5 MiB, 4096-pixel limits before the SDK call, including direct model writes through
+remote storage. It uploads unique objects under `/gasbook-demo`, never overwrites objects, uses bounded HTTP timeouts,
+disables SDK upload retries, rejects delivery redirects and sanitizes errors. There is no ephemeral disk fallback.
+Static assets remain on WhiteNoise. Upload disabling still blocks reads/writes and requires no storage credentials.
+
+Catalog images have public application `/media/` URLs. Staff images require an authenticated owner or business admin,
+active account and completed password change. React fetches private bytes with its existing Authorization header and
+uses revocable blob URLs; Django Admin uses its authenticated session. Private responses are `private, no-store`.
+No tokens are placed in image URLs. Provider delivery URLs are signed for 60 seconds and remain server-side.
+
+Staff files are **Fernet-encrypted before upload**, stored as private `.bin` objects. Provider unsigned URLs or named
+transformations can expose ciphertext only; they cannot bypass Django authorization to obtain staff photos. ImageKit's
+[private-file policy](https://imagekit.io/docs/media-delivery-basic-security) alone permits named transformations and is
+not treated as sufficient staff access control. Public catalog originals are also marked private at the provider, but
+are intentionally readable through GasBook. No AI transformations, paid integrations or external storage connector is used.
+
+The image field stores category/file ID/UUID filename within its existing 100-character limit. No schema migration is
+needed. Legacy filesystem references are not presumed migrated: unavailable files yield placeholders/404 and may be
+replaced after approval. The adapter cannot recover images already lost from Render's ephemeral filesystem.
+
+Replacement/deletion runs after database commit, covers API/Admin/model and cascade deletion, and checks remaining
+references before deleting. Cleanup failures are logged by reference hash and do not turn a successful save into a 503.
+Confirmed uploads left unreferenced by a failed request are cleaned up after the request. Unknown upload outcomes,
+process crashes and failed cleanup can still leave orphan objects: reconcile provider inventory against current image
+references under separate read/write approval; never bulk-delete by age alone. ImageKit/DB operations are not a distributed
+transaction. Provider caches may retain catalog originals after deletion; staff originals remain encrypted and Django
+checks the current profile reference. No provider backup, live encrypted upload, quota behavior or restart persistence has
+been verified by mocks. Preserve both object storage and the encryption key; losing the key loses staff-photo readability.
+
+### Environment changes (names; secrets never in Vercel)
+
+| Variable | Activation policy |
+| --- | --- |
+| `ACCESSORIES_ENABLED` | `True` after the candidate backend is approved/deployed; existing transactional mixed checkout and staff sales become available. |
+| `DEMO_DISABLE_UPLOADS` | Keep `True` through code deployment; set `False` only after approved free storage setup/verification. |
+| `MEDIA_STORAGE_BACKEND` | `imagekit` for this Free demo when uploads are enabled; filesystem is explicitly rejected for the demo service. |
+| `IMAGEKIT_PRIVATE_KEY` | Backend secret from the verified personal account, minimum suitable permissions; never client bundles/logs/chat. |
+| `IMAGEKIT_URL_ENDPOINT` | Exact personal `https://ik.imagekit.io/<account>` endpoint, no query/credentials/custom proxy. |
+| `MEDIA_ENCRYPTION_KEY` | Independently generated Fernet key, transferred securely to Render; retain in a password manager/backup. Do not reuse SECRET_KEY or silently rotate. |
+| `DEMO_DJANGO_ADMIN_ENABLED` | Preserve the existing explicit `True` opt-in; wrong service/database still fails closed. |
+| `GASBOOK_ENV`, `DEBUG` | Preserve production and false. |
+| `DATABASE_URL`, `SECRET_KEY`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS` | Preserve verified backend configuration and exact frontend origins. |
+| `VITE_API_BASE_URL` | Both projects continue to use the existing backend URL ending `/api`; no storage key/DB secret in any VITE variable. |
+
+`MEDIA_ROOT` is unused for remote storage; do not add a Render disk. Merely setting an absolute local path does not make
+files persistent. The existing 37 migrations/ledger must not be replayed or reset; migration 0015's legacy-order guard is
+unchanged. All migration execution in this phase was by Django's test runner in fresh isolated disposable databases.
+
+### UI and workflow policy
+
+`/api/auth/me/` now reports non-secret `capabilities.accessories` and `capabilities.image_uploads`. Unknown capability
+state fails closed for relevant controls. Product list loading is bounded, validates pagination origins/paths/counts/IDs,
+and never forwards tokens to response-supplied origins. Catalog failure is distinct from disabled or empty state.
+Admin product forms support preview, replacement/removal, editing/deactivation and stock adjustment. Staff writes through
+`staff-profiles` are admin-only and cannot reassign profile ownership. Customer booking View links to the existing
+`/bookings?booking=<id>` detail route. Mobile/desktop catalog images expose explicit retry/fallback states.
+
+Existing cylinder/mixed checkout uses one persisted, customer-bound retry key and transaction; no new automatic write
+retry was introduced. The 65-second client request limit accommodates Free cold starts; unknown outcomes must be recovered
+before a new intent. Original cart/retry recovery survives layout changes and reloads. Customer accessory-only bookings
+remain unsupported by the existing cylinder-delivery rule. Recorded cash/GPAY/bank collections are accounting entries,
+not a live payment gateway. Financial Django Admin records remain read-only. No new business features or real payments.
+
+### Approval and rollout order
+
+1. Review source/test results and the exact Git manifest. Preserve the user's existing admin lockfile edit separately.
+2. Verify personal ImageKit Free eligibility and available quotas read-only. If missing, the user must sign in/create
+   an account and approve any resource/credential setup separately; stop if a card, trial or paid feature is required.
+3. With separate Git/deployment approval, deploy backend code to the existing Render Free service with uploads still
+   disabled. Check deployment SHA, `/health/`, `/ready/`, Admin login/password guard and current CORS. No migration step.
+4. Approve and configure backend-only storage secrets. Perform a separately approved single synthetic upload/read/delete
+   and private-access check. Verify encrypted staff-file delivery is supported by the account. Enable uploads only when
+   this succeeds; test unavailable/quota behavior without exceeding quotas intentionally.
+5. Deploy both existing Vercel projects after backend capabilities exist; preserve their current roots/API origin.
+6. Separately approve synthetic business fixtures and hosted workflow tests. Verify public/private images across a
+   restart/redeploy, product stock, cylinder/mixed checkout/recovery, delivery, returns, collection and receipt/history.
+   Local browser tests are not evidence of hosted persistence or provider configuration.
+
+Rollback: keep encryption keys and provider objects. To run the previous `3dcbbf2` backend again, first restore
+`ACCESSORIES_ENABLED=False` and `DEMO_DISABLE_UPLOADS=True` with a coordinated deployment; its Admin guard otherwise
+rejects startup. Roll back frontend artifacts compatibly (older versions do not authenticate private staff images).
+Never reverse migrations or delete saved orders to roll back. Previously saved lines remain historical facts even when
+new accessory transactions are disabled. Restore tests and independent exports/backup of media remain operational gates.
+
+## Historical preparation scope: ₹0 personal demo — 2026-10-20
 
 The current authorized preparation is a **non-commercial, fake-data demo**. Real LPG orders, real payments,
 real customer/business records, payment credentials, billing activation and paid resources are excluded.
@@ -366,7 +491,7 @@ The original security gap had two parts: DRF login throttles do not wrap Django'
   with TLS required. The `.c-4` component is part of the hostname and must not be omitted.
   This endpoint belongs to the previously verified `gasbook-demo`
   project `long-rain-96731013`; the settings check does not connect to Neon or replace a pre-deployment identity audit.
-- `DEMO_DISABLE_UPLOADS=True` and `ACCESSORIES_ENABLED=False`.
+- Historical initial policy: `DEMO_DISABLE_UPLOADS=True` and `ACCESSORIES_ENABLED=False`. The full-feature candidate above supersedes only this feature coupling, preserving all identity/security checks.
 
 The opt-in validates the parsed Django connection configuration, including possible libpq overrides.
 Only `sslmode`, `sslrootcert`, `channel_binding`, `connect_timeout` and `application_name` are accepted in

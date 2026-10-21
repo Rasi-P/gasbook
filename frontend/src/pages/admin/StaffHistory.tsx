@@ -1,3 +1,4 @@
+import { MediaImage } from '../../components/MediaImage';
 import { PaymentSummary, type PaymentFacts } from '../../components/PaymentSummary';
 import { BookingItems, type BookingItem } from '../../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
@@ -306,7 +307,7 @@ export default function StaffHistory({ staff, onBack }: { staff: HistoryStaff; o
         title={(
           <span className="sh-title">
             {info.staff_image_url ? (
-              <img className="staff-avatar" src={info.staff_image_url} alt="" />
+              <MediaImage className="staff-avatar" src={info.staff_image_url} alt="" />
             ) : (
               <span className="staff-avatar staff-avatar--initial" aria-hidden="true">{name.charAt(0).toUpperCase()}</span>
             )}

@@ -38,6 +38,10 @@ def _first_message(value):
 
 
 def api_exception_handler(exc, context):
+    from .media_storage import MediaUnavailable
+    if isinstance(exc, MediaUnavailable):
+        set_rollback()
+        return Response({"detail": str(exc), "code": "media_unavailable"}, status=503)
     response = drf_handler(exc, context)
     if response is not None:
         if isinstance(exc, ValidationError):

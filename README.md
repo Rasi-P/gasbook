@@ -177,17 +177,19 @@ Follow [the deployment runbook](docs/production-deployment.md) and its approval 
 Use fake customers, bookings and payment records only; no real orders, payments or customer data.
 Keep billing disabled and use provider-generated domains.
 
-- **Backend:** Render Free, native Python, using `render.demo.yaml`.
+- **Backend:** the existing Render Free Docker service, using `backend/Dockerfile` and `render.demo.yaml` as a configuration reference.
 - **Database:** the separately verified, dedicated Neon Free demo project.
 - **Frontends:** separate Vercel Hobby projects for admin and customer, for personal non-commercial demonstration.
-- **Images:** bundled frontend artwork/placeholders with `DEMO_DISABLE_UPLOADS=True`; no persistent disk or media service.
+- **Images:** keep uploads disabled until the personal ImageKit Free account and backend-only credentials are approved; the candidate supports durable catalog images and encrypted, authenticated staff images. No Render disk.
 
 `render.demo.yaml` is a review template, not permission to create or deploy a service.
 Keep `render.yaml` as the earlier commercial proposal; do not apply it to this ₹0 demo.
 
 ### Backend configuration
 
-Keep `GASBOOK_ENV=production`, `DEBUG=False`, `DEMO_DISABLE_UPLOADS=True` and `ACCESSORIES_ENABLED=False`.
+Keep `GASBOOK_ENV=production` and `DEBUG=False`. The full-feature candidate permits `ACCESSORIES_ENABLED=True`; keep
+`DEMO_DISABLE_UPLOADS=True` until the runbook storage gate passes. Full image testing then uses `MEDIA_STORAGE_BACKEND=imagekit`
+and `DEMO_DISABLE_UPLOADS=False`, with backend-only ImageKit and media-encryption credentials.
 Privately configure `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` and
 `CSRF_TRUSTED_ORIGINS` using the verified backend and both frontend origins. Never commit their secret values.
 Supply the approved Neon connection with TLS through Render's environment; Django does not load root `.env.local`.

@@ -11,6 +11,11 @@ import {
   type CylinderTypeRecord, type LocationRecord,
 } from '../src/lib/catalog';
 import { INVENTORY_TABS, isInventoryTab } from '../src/lib/inventoryTabs';
+import { api } from '../src/lib/api';
+import { GENERIC_CYLINDER_IMAGE, SUPPORTED_CYLINDER_WEIGHTS, defaultCylinderImage } from '../src/lib/cylinderImages';
+
+/** The SABCO default this app requests for a weight (served by the backend at /static/cylinders/). */
+const sabco = (kg: number) => defaultCylinderImage(kg, api.defaults.baseURL ?? '')!;
 
 const cylinder = (over: Partial<CylinderTypeRecord> = {}): CylinderTypeRecord => ({
   id: 1, name: '19kg', weight: '19.00', deposit_amount: '1000.00', refill_rate: '1420.00',
@@ -109,7 +114,8 @@ it('lists cylinder types with refill price, deposit and the new-connection total
   expect(html).toContain('>Active<'); expect(html).toContain('>Inactive<');
   expect(html).toContain('data-inactive="true"');
   expect(html).toContain('src="https://api.example/media/cylinder-images/5.png"');
-  expect(html).toContain('catalog-thumb--empty'); // no picture uploaded for 19kg
+  expect(html).toContain(`src="${sabco(19)}"`); // no picture uploaded for 19kg: its standard picture
+  expect(html).not.toContain(`src="${sabco(5)}"`); // 5kg has a custom one
   expect(html).toContain('aria-label="Edit 19kg"');
   expect(html).toContain('aria-label="19kg is active"'); expect(html).toContain('aria-label="5kg is inactive"');
 });
@@ -147,6 +153,37 @@ it('shows a stored picture as removable unless it is already marked for removal'
     <CylinderTypeFormFields form={emptyCylinderForm} errors={{}} preview={null} hasStoredImage removeImage onChange={noop} onPickImage={noop} onRemoveImage={noop} />,
   );
   expect(removed).not.toContain('Remove picture');
+});
+
+it('shows every existing type without a custom picture with its weight\'s standard picture', () => {
+  const rows = SUPPORTED_CYLINDER_WEIGHTS.map((kg, i) => cylinder({ id: i + 1, name: `${kg}kg`, weight: `${kg}.00`, image: null }));
+  const html = renderToStaticMarkup(<CylinderTypeTable rows={rows} busyId={null} onEdit={noop} onToggle={noop} />);
+  for (const kg of SUPPORTED_CYLINDER_WEIGHTS) expect(html).toContain(`src="${sabco(kg)}"`);
+  expect(html).not.toContain(GENERIC_CYLINDER_IMAGE);
+  const odd = renderToStaticMarkup(<CylinderTypeTable rows={[cylinder({ name: 'Big Blue', weight: '35.00' })]} busyId={null} onEdit={noop} onToggle={noop} />);
+  expect(odd).toContain(`src="${GENERIC_CYLINDER_IMAGE}"`);
+});
+
+it('previews the standard picture for the typed weight while no custom picture is set, and on removal', () => {
+  const fields = (weight: string, preview: string | null, extra: { hasStoredImage?: boolean; removeImage?: boolean } = {}) => renderToStaticMarkup(
+    <CylinderTypeFormFields form={{ ...emptyCylinderForm, name: 'Commercial', weight }} errors={{}} preview={preview} hasStoredImage={extra.hasStoredImage ?? false}
+      removeImage={extra.removeImage ?? false} onChange={noop} onPickImage={noop} onRemoveImage={noop} />,
+  );
+  expect(sabco(19)).toEndWith('/static/cylinders/sabco-19kg.png');
+  const nineteen = fields('19', null);
+  expect(nineteen).toContain(`src="${sabco(19)}"`); expect(nineteen).toContain('Showing the standard 19 kg picture.');
+  expect(nineteen).toContain('Choose picture'); expect(nineteen).not.toContain('Remove picture'); // a default can never be removed
+  // Changing the weight swaps the default straight away.
+  expect(fields('33', null)).toContain(`src="${sabco(33)}"`);
+  // A custom picture wins over the default and is removable; once marked for removal the default is back.
+  const custom = fields('33', 'https://api.example/media/cylinder-images/c.png', { hasStoredImage: true });
+  expect(custom).toContain('src="https://api.example/media/cylinder-images/c.png"'); expect(custom).not.toContain(sabco(33));
+  expect(custom).not.toContain('Showing the standard');
+  const removed = fields('33', null, { hasStoredImage: true, removeImage: true });
+  expect(removed).toContain(`src="${sabco(33)}"`); expect(removed).not.toContain('Remove picture');
+  const odd = fields('35', null);
+  expect(odd).toContain(`src="${GENERIC_CYLINDER_IMAGE}"`); expect(odd).toContain('No standard picture for 35 kg');
+  expect(fields('', null)).toContain('Enter the weight to see its standard picture.');
 });
 
 it('lists locations with type, cylinders held and status; the supplier holds none', () => {

@@ -1,6 +1,9 @@
+import { ImageUpload } from '../../components/ImageUpload';
+import { CylinderImage } from '../../components/CylinderImage';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Package, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
+import { Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
 import { api, extractApiError } from '../../lib/api';
+import { cylinderWeightKg, defaultCylinderImage, type CylinderImageSubject } from '../../lib/cylinderImages';
 import {
   STATUS_FILTER_OPTIONS, apiFieldErrors, chargePerCylinder, cylinderDeactivationWarnings, deleteBlockers, emptyCylinderForm, fetchAllCylinderTypes, formFromCylinder,
   formatRupees, matchesSearch, matchesStatus, notifyCatalogChanged, validateCylinderForm,
@@ -22,11 +25,16 @@ import { ActiveBadge, DeactivateDialog, DeleteDialog } from './shared';
 const FIELD_NAMES = ['name', 'weight', 'refill_rate', 'deposit_amount', 'low_stock_threshold', 'image'] as const;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-/** The picture, or a neutral placeholder when none was uploaded (clients then show their built-in artwork). */
-export function CylinderThumb({ src, name }: { src: string | null | undefined; name: string }) {
-  return src
-    ? <img className="catalog-thumb" src={src} alt={`${name} cylinder`} loading="lazy" />
-    : <span className="catalog-thumb catalog-thumb--empty" aria-hidden="true"><Package size={18} /></span>;
+/** What every app shows for this type: the uploaded picture, else the default for its weight, else a generic cylinder. */
+export function CylinderThumb({ cylinder, name }: { cylinder: CylinderImageSubject; name: string }) {
+  return <CylinderImage className="catalog-thumb" cylinder={cylinder} alt={`${name} cylinder`} loading="lazy" />;
+}
+
+/** Says which picture customers see while no custom one is set. */
+function defaultPictureNote(weight: string) {
+  const kg = cylinderWeightKg(weight);
+  if (kg === null) return 'Enter the weight to see its standard picture.';
+  return defaultCylinderImage(kg, api.defaults.baseURL ?? '') ? `Showing the standard ${kg} kg picture.` : `No standard picture for ${kg} kg; a generic cylinder is shown.`;
 }
 
 export function CylinderTypeTable({
@@ -56,7 +64,7 @@ export function CylinderTypeTable({
             <tr key={row.id} data-inactive={row.is_active ? undefined : 'true'}>
               <Td className="catalog-td-name">
                 <div className="catalog-name">
-                  <CylinderThumb src={row.image} name={row.name} />
+                  <CylinderThumb cylinder={row} name={row.name} />
                   <span>
                     <strong>{row.name}</strong>
                     <span className="ui-cell-sub">{Number(row.weight)} kg</span>
@@ -144,19 +152,20 @@ export function CylinderTypeFormFields({
         <Input inputMode="numeric" value={form.low_stock_threshold} invalid={Boolean(errors.low_stock_threshold)} disabled={disabled}
           onChange={(e) => onChange({ low_stock_threshold: e.target.value })} />
       </Field>
-      <Field as="div" label="Picture" error={errors.image} hint="JPG, PNG or WebP · up to 5 MB. Optional." className="catalog-span-2">
+      <Field as="div" label="Picture" error={errors.image} hint="JPG, PNG or WebP · up to 5 MB. Optional: without one, the standard picture for the weight is used." className="catalog-span-2">
         <div className="catalog-image-row">
-          <CylinderThumb src={preview} name={form.name || 'New'} />
+          <CylinderThumb cylinder={{ image: preview, weight: form.weight, name: form.name }} name={form.name || 'New'} />
           <div className="catalog-image-actions">
             <label className="ui-btn ui-btn--secondary ui-btn--sm catalog-file">
               <Upload size={14} aria-hidden="true" />
               <span>{preview ? 'Change picture' : 'Choose picture'}</span>
-              <input type="file" accept="image/png,image/jpeg,image/webp" disabled={disabled}
+              <ImageUpload type="file" accept="image/png,image/jpeg,image/webp" disabled={disabled}
                 onChange={(e) => { onPickImage(e.target.files?.[0] ?? null); e.target.value = ''; }} />
             </label>
             {(preview || (hasStoredImage && !removeImage)) && (
               <Button type="button" size="sm" variant="ghost" icon={<X size={14} />} onClick={onRemoveImage} disabled={disabled}>Remove picture</Button>
             )}
+            {!preview && <span className="ui-cell-sub catalog-image-note" role="status">{defaultPictureNote(form.weight)}</span>}
           </div>
         </div>
       </Field>

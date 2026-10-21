@@ -7,7 +7,7 @@ import dj_database_url
 from datetime import timedelta
 from django.core.exceptions import ImproperlyConfigured
 from .environment import (
-    boolean, csv, demo_django_admin_enabled, production_hosts, production_origins, production_media_root,
+    boolean, csv, demo_django_admin_enabled, media_configuration, production_hosts, production_origins, production_media_root,
 )
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -62,6 +62,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "core.media_errors.MediaErrorMiddleware",
 ]
 
 ROOT_URLCONF = "gasbook.urls"
@@ -136,15 +137,20 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = Path(os.environ.get("STATIC_ROOT", BASE_DIR / "staticfiles"))
 DEMO_DISABLE_UPLOADS = boolean("DEMO_DISABLE_UPLOADS", False)
+MEDIA_STORAGE_BACKEND = media_configuration(production=PRODUCTION, disabled=DEMO_DISABLE_UPLOADS)
+IMAGEKIT_PRIVATE_KEY = os.environ.get("IMAGEKIT_PRIVATE_KEY", "")
+IMAGEKIT_URL_ENDPOINT = os.environ.get("IMAGEKIT_URL_ENDPOINT", "")
+MEDIA_ENCRYPTION_KEY = os.environ.get("MEDIA_ENCRYPTION_KEY", "")
 STORAGES = {
-    "default": {"BACKEND": (
-        "core.demo_media.DisabledMediaStorage" if DEMO_DISABLE_UPLOADS
-        else "django.core.files.storage.FileSystemStorage"
-    )},
+    "default": {"BACKEND": {
+        "disabled": "core.demo_media.DisabledMediaStorage",
+        "filesystem": "django.core.files.storage.FileSystemStorage",
+        "imagekit": "core.media_storage.ImageKitStorage",
+    }[MEDIA_STORAGE_BACKEND]},
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
 }
 MEDIA_URL = "/media/"
-MEDIA_ROOT = "" if DEMO_DISABLE_UPLOADS else (
+MEDIA_ROOT = "" if MEDIA_STORAGE_BACKEND != "filesystem" else (
     production_media_root() if PRODUCTION else Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "media"))
 )
 # Shared across threads in the initial single-worker deployment; restart clears counters.
@@ -187,7 +193,7 @@ SIMPLE_JWT = {
 }
 
 # Enable only after the minimal inventory migration has been reviewed/applied.
-ACCESSORIES_ENABLED = os.environ.get('ACCESSORIES_ENABLED', 'False') == 'True'
+ACCESSORIES_ENABLED = boolean('ACCESSORIES_ENABLED', False)
 
 DEMO_DJANGO_ADMIN_ENABLED = demo_django_admin_enabled(
     production=PRODUCTION, debug=DEBUG, database=DATABASES["default"], hosts=ALLOWED_HOSTS,

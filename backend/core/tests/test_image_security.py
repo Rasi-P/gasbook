@@ -165,7 +165,7 @@ class ImageBoundaryTests(SimpleTestCase):
                 field.clean(upload(b"#define invalid XBM"))
             parser.assert_not_called()
 
-    def test_public_media_serves_supported_formats_in_all_image_directories(self):
+    def test_catalog_media_serves_supported_formats_but_staff_requires_authentication(self):
         with tempfile.TemporaryDirectory() as root, override_settings(MEDIA_ROOT=root, DEBUG=False):
             for directory in ("cylinder-images", "staff-images", "product-images"):
                 folder = Path(root) / directory
@@ -174,9 +174,12 @@ class ImageBoundaryTests(SimpleTestCase):
                     data = picture(fmt)
                     (folder / "photo.png").write_bytes(data)
                     response = self.client.get(f"/media/{directory}/photo.png")
-                    self.assertEqual(response.status_code, 200)
-                    self.assertEqual(b"".join(response.streaming_content), data)
-                    self.assertEqual(response["Content-Type"], Image.MIME[fmt])
+                    if directory == "staff-images":
+                        self.assertEqual(response.status_code, 404)
+                    else:
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(b"".join(response.streaming_content), data)
+                        self.assertEqual(response["Content-Type"], Image.MIME[fmt])
 
     def test_public_media_rejects_unsupported_oversized_and_malformed_content(self):
         inputs = rejected_inputs() + [b"x" * (MAX_IMAGE_BYTES + 1)]

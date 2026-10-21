@@ -1,3 +1,5 @@
+import { ImageUpload } from '../../components/ImageUpload';
+import { MediaImage } from '../../components/MediaImage';
 import AdminSalesHistory from './AdminSalesHistory';
 import { useCallback, useEffect, useState } from 'react';
 import { UserPlus, X, Check, Pencil, KeyRound, Trash2, Copy, Mail, Share2, UserX, UserCheck, Users, ChevronRight } from 'lucide-react';
@@ -360,7 +362,7 @@ export default function Staff() {
           </Field>
           {role === 'staff' && (
             <Field label="Staff Image">
-              <Input
+              <ImageUpload
                 type="file"
                 accept="image/*"
                 onChange={(e) => setStaffImage(e.target.files?.[0] || null)}
@@ -397,7 +399,7 @@ export default function Staff() {
               <div className={`ui-list-row${inactive ? ' ui-list-row--muted' : ''}`}>
                 <div className="ui-list-row__lead">
                   {u.staff_image_url ? (
-                    <img className="staff-avatar" src={u.staff_image_url} alt={fullName(u)} />
+                    <MediaImage className="staff-avatar" src={u.staff_image_url} alt={fullName(u)} />
                   ) : (
                     <span className="staff-avatar staff-avatar--initial" aria-hidden="true">
                       {fullName(u).charAt(0).toUpperCase()}
@@ -628,7 +630,7 @@ export default function Staff() {
                     <>
                       <div className="staff-image-row">
                         {editStaffImageUrl && !editRemoveStaffImage ? (
-                          <img className="staff-avatar staff-avatar--lg" src={editStaffImageUrl} alt={editName || 'Staff image'} />
+                          <MediaImage className="staff-avatar staff-avatar--lg" src={editStaffImageUrl} alt={editName || 'Staff image'} />
                         ) : (
                           <span className="staff-avatar staff-avatar--lg staff-avatar--initial" aria-hidden="true">
                             {(editName.trim().charAt(0) || 'S').toUpperCase()}
@@ -640,7 +642,7 @@ export default function Staff() {
                       </div>
                       {editIsStaff && (
                       <Field label="Staff Image">
-                        <Input
+                        <ImageUpload
                           type="file"
                           accept="image/*"
                           onChange={(e) => {

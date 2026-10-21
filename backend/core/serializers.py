@@ -207,12 +207,6 @@ def normalize_name(value):
     return " ".join(str(value).split())
 
 
-def delete_replaced_file(old_name, field_file):
-    """Remove a replaced/cleared upload from storage once the change has committed."""
-    if old_name and old_name != getattr(field_file, "name", None):
-        storage = field_file.storage
-        transaction.on_commit(lambda: storage.delete(old_name))
-
 
 def default_active_on_create(serializer, attrs):
     """A new record is active unless the request says otherwise. HTML forms drop unchecked boxes, so a
@@ -298,7 +292,6 @@ class CylinderTypeSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         remove_image = validated_data.pop("remove_image", False)
-        old_image = instance.image.name if instance.image else None
         if "name" in validated_data:
             advisory_lock("cylinder-type-name", validated_data["name"].lower())
             self._assert_name_free(validated_data["name"])
@@ -306,7 +299,6 @@ class CylinderTypeSerializer(serializers.ModelSerializer):
             validated_data["image"] = None
         was_active = instance.is_active
         instance = super().update(instance, validated_data)
-        delete_replaced_file(old_image, instance.image)
         if was_active != instance.is_active:
             self._log("cylinder_type_activated" if instance.is_active else "cylinder_type_deactivated", instance)
         return instance
@@ -1269,6 +1261,23 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
 
 
 class StaffProfileSerializer(serializers.ModelSerializer):
+    image = SafeImageField(required=False, allow_null=True)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        from .media_access import may_view_staff_image
+        request = self.context.get("request")
+        if not request or not may_view_staff_image(request.user, instance):
+            data["image"] = None
+        return data
+
+    def validate_user(self, user):
+        if self.instance and user.pk != self.instance.user_id:
+            raise serializers.ValidationError("A staff profile cannot be reassigned.")
+        if getattr(getattr(user, "role", None), "code", "") != "staff":
+            raise serializers.ValidationError("Choose a staff account.")
+        return user
+
     first_name = serializers.CharField(source="user.first_name", read_only=True)
     last_name = serializers.CharField(source="user.last_name", read_only=True)
     phone = serializers.CharField(source="user.phone", read_only=True)
@@ -1582,6 +1591,9 @@ class DeliverySerializer(serializers.ModelSerializer):
     customer_address = serializers.CharField(source="booking.customer.user.address", read_only=True)
     customer_area = serializers.CharField(source="booking.customer.area", read_only=True)
     cylinder_type_name = serializers.CharField(source="booking.cylinder_type.name", read_only=True)
+    # Read-only display data: clients show the custom picture, else the SABCO default for this weight (core/static/cylinders/).
+    cylinder_type_weight = serializers.DecimalField(source="booking.cylinder_type.weight", max_digits=5, decimal_places=2, read_only=True)
+    cylinder_type_image = SafeImageField(source="booking.cylinder_type.image", read_only=True)
     quantity = serializers.IntegerField(source="booking.quantity", read_only=True)
     booking_status = serializers.CharField(source="booking.status", read_only=True)
     order_id = serializers.CharField(source="booking.order_id", read_only=True)

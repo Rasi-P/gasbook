@@ -135,21 +135,21 @@ class OperationalEndpointTests(TestCase):
 class ProductionMediaTests(SimpleTestCase):
     def test_media_serving_works_with_debug_off_and_rejects_unsafe_files(self):
         with tempfile.TemporaryDirectory() as root, override_settings(MEDIA_ROOT=root, DEBUG=False):
-            folder = Path(root) / 'staff-images'
+            folder = Path(root) / 'cylinder-images'
             folder.mkdir()
             (folder / 'valid.png').write_bytes(png())
             (folder / 'bad.png').write_text('<script>unsafe()</script>')
             (folder / 'bad.svg').write_text('<svg/>')
             (Path(root) / 'private.txt').write_text('private')
-            response = self.client.get('/media/staff-images/valid.png')
+            response = self.client.get('/media/cylinder-images/valid.png')
             self.assertEqual(response.status_code, 200)
             self.assertEqual(b''.join(response.streaming_content), png())
             self.assertEqual(response['Content-Type'], 'image/png')
             self.assertEqual(response['X-Content-Type-Options'], 'nosniff')
-            for path in ['staff-images/bad.png', 'staff-images/bad.svg', 'private.txt', 'staff-images/../../private.txt', 'staff-images/missing.png']:
+            for path in ['cylinder-images/bad.png', 'cylinder-images/bad.svg', 'private.txt', 'cylinder-images/../../private.txt', 'cylinder-images/missing.png']:
                 self.assertEqual(self.client.get('/media/' + path).status_code, 404)
             (folder / 'outside.png').symlink_to(Path(root).parent / 'outside-phaseb.png')
-            self.assertEqual(self.client.get('/media/staff-images/outside.png').status_code, 404)
+            self.assertEqual(self.client.get('/media/cylinder-images/outside.png').status_code, 404)
 
 
 class StaffUploadSecurityTests(GasBookTestCase):

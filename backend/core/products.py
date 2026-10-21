@@ -37,6 +37,7 @@ class ProductInput(StrictSerializer):
     category = serializers.CharField(max_length=80)
     selling_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal('0'))
     image = SafeImageField(required=False, allow_null=True)
+    remove_image = serializers.BooleanField(required=False, default=False)
     is_active = serializers.BooleanField(required=False)
     initial_stock = serializers.IntegerField(min_value=0, max_value=100000, required=False)
 
@@ -103,6 +104,7 @@ class ProductViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
         require_enabled(); require_admin(request.user)
         data = ProductInput(data=request.data); data.is_valid(raise_exception=True)
         values = dict(data.validated_data)
+        values.pop('remove_image', None)
         initial = values.pop('initial_stock', 0)
         category, _ = ProductCategory.objects.get_or_create(name=values.pop('category'))
         product = Product.objects.create(category=category, sku=uuid.uuid4().hex, **values)
@@ -117,6 +119,9 @@ class ProductViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
         values = dict(data.validated_data)
         if 'initial_stock' in values:
             raise ApiError('Use the stock adjustment control.', code='read_only_fields')
+        remove_image = values.pop('remove_image', False)
+        if remove_image and 'image' not in values:
+            values['image'] = None
         if 'category' in values:
             values['category'], _ = ProductCategory.objects.get_or_create(name=values['category'])
         for key, value in values.items():

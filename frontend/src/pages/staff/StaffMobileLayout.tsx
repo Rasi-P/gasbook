@@ -1,3 +1,4 @@
+import { MediaImage } from '../../components/MediaImage';
 import { useSearchParams } from 'react-router-dom';
 import StaffDirectSale from './StaffDirectSale';
 import { TodayCollections } from '../../components/TodayCollections';
@@ -36,7 +37,7 @@ import {
   X
 } from 'lucide-react';
 import { api, logout, extractApiError, fetchAllPages, getApiErrorCode, LIMITS } from '../../lib/api';
-import cylinderImg from '../../assets/splash_cylinder.png';
+import { CylinderImage } from '../../components/CylinderImage';
 import { LoadingState } from '../../components/AsyncState';
 import { Alert } from '../../components/ui/Alert';
 import { Badge, type BadgeTone } from '../../components/ui/Badge';
@@ -62,6 +63,8 @@ type Delivery = PricingSnapshot & {
   customer_address: string;
   customer_area: string;
   cylinder_type_name: string;
+  cylinder_type_weight?: string | null;
+  cylinder_type_image?: string | null;
   order_items?: BookingItem[];
   quantity: number;
   rate: string;
@@ -692,7 +695,7 @@ export default function StaffMobileLayout() {
       <>
         <DeliveryTimes delivery={order} />
         <div className="sa-cylinder">
-          <img src={cylinderImg} className="sa-cylinder__img" alt="Cylinder" />
+          <CylinderImage cylinder={{ image: order.cylinder_type_image, weight: order.cylinder_type_weight, name: order.cylinder_type_name }} className="sa-cylinder__img" alt="Cylinder" />
           <div className="sa-cylinder__text">
             <div className="sa-cylinder__type">{order.cylinder_type_name}</div>
             <div className="sa-cylinder__qty">Qty: {order.quantity}</div>
@@ -1079,7 +1082,7 @@ export default function StaffMobileLayout() {
           <div className="sa-stack">
             <Card className="sa-profile">
               {staffProfile?.staff_image_url ? (
-                <img src={staffProfile.staff_image_url} alt={staffProfile.name || userName} className="sa-profile__avatar" />
+                <MediaImage src={staffProfile.staff_image_url} alt={staffProfile.name || userName} className="sa-profile__avatar" />
               ) : (
                 <div className="sa-profile__avatar sa-profile__avatar--initials">{profileInitials}</div>
               )}

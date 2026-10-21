@@ -1,5 +1,6 @@
 """Validate deployment configuration without opening database connections."""
 import os
+import base64
 import re
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -49,6 +50,31 @@ def production_media_root():
     if not value or not Path(value).is_absolute():
         raise ImproperlyConfigured("An absolute MEDIA_ROOT on persistent storage is required in production.")
     return Path(value)
+
+
+def media_configuration(*, production, disabled):
+    """Validate locally; never probe a provider or silently fall back to disk."""
+    if disabled:
+        return "disabled"
+    backend = os.environ.get("MEDIA_STORAGE_BACKEND", "filesystem")
+    if backend not in {"filesystem", "imagekit"}:
+        raise ImproperlyConfigured("Unsupported MEDIA_STORAGE_BACKEND.")
+    if backend == "filesystem":
+        if production and os.environ.get("RENDER_SERVICE_ID") == "srv-dbbk71tg1s2s7398rfag":
+            raise ImproperlyConfigured("The Free demo requires external media storage when uploads are enabled.")
+        return backend
+    endpoint = os.environ.get("IMAGEKIT_URL_ENDPOINT", "")
+    if not re.fullmatch(r"https://ik\.imagekit\.io/[A-Za-z0-9_-]+", endpoint):
+        raise ImproperlyConfigured("IMAGEKIT_URL_ENDPOINT must be an explicit ImageKit HTTPS endpoint.")
+    if not os.environ.get("IMAGEKIT_PRIVATE_KEY", "").strip():
+        raise ImproperlyConfigured("IMAGEKIT_PRIVATE_KEY is required.")
+    try:
+        key = os.environ.get("MEDIA_ENCRYPTION_KEY", "").encode("ascii")
+        if len(key) != 44 or len(base64.b64decode(key, altchars=b"-_", validate=True)) != 32:
+            raise ValueError
+    except (ValueError, UnicodeError):
+        raise ImproperlyConfigured("MEDIA_ENCRYPTION_KEY must be a generated Fernet key.") from None
+    return backend
 
 
 def _demo_database_target_matches(database):
@@ -102,10 +128,12 @@ def demo_django_admin_enabled(*, production, debug, database, hosts, uploads_dis
         and os.environ.get("RENDER_SERVICE_ID") == "srv-dbbk71tg1s2s7398rfag"
         and hosts == ["gasbook-demo-api.onrender.com"]
         and _demo_database_target_matches(database)
-        and uploads_disabled and not accessories_enabled
+        # Feature availability is independent of identity. Enabled uploads must
+        # use the validated remote backend, never the Free container filesystem.
+        and (uploads_disabled or media_configuration(production=production, disabled=False) == "imagekit")
     ):
         raise ImproperlyConfigured(
             "DEMO_DJANGO_ADMIN_ENABLED is restricted to the approved GasBook demo "
-            "service/database with production security and demo restrictions."
+            "service/database with production security and durable media restrictions."
         )
     return True

@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom';
 import { pendingTransaction, transactionRequest } from '../lib/transactionRequest';
 import { BookingItems, type BookingItem } from '../components/BookingItems';
 import { PricingBreakdown, type PricingSnapshot } from '../components/PricingBreakdown';
@@ -212,6 +213,7 @@ function getBookingFinalAmount(booking: Booking) {
 }
 
 export default function Customers() {
+  const navigate = useNavigate();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Ledger | null>(null);
@@ -1379,7 +1381,7 @@ export default function Customers() {
                     <span>
                       <BookingTimes booking={booking} />
                     </span>
-                    <Button type="button" variant="secondary" size="sm" className="cd-booking__view" onClick={() => alert('View booking detail component not implemented in existing codebase')}>View</Button>
+                    <Button type="button" variant="secondary" size="sm" className="cd-booking__view" onClick={() => navigate(`/bookings?booking=${booking.id}`)}>View</Button>
                   </div>
                 </div>
               ))}

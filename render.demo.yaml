@@ -5,20 +5,19 @@
 services:
   - type: web
     name: gasbook-demo-api
-    runtime: python
+    runtime: docker
     plan: free
     region: singapore
     rootDir: backend
     branch: main
     autoDeployTrigger: "off"
-    buildCommand: python -m pip install --upgrade pip==26.2.0 && python -m pip install -r requirements.txt && python manage.py collectstatic --noinput
-    startCommand: gunicorn gasbook.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --access-logfile - --error-logfile -
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: gunicorn gasbook.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --access-logfile - --error-logfile -
     healthCheckPath: /ready/
     envVars:
       - key: GASBOOK_ENV
         value: production
-      - key: PYTHON_VERSION
-        value: 3.12.15
       - key: DEBUG
         value: "False"
       - key: DEMO_DISABLE_UPLOADS
@@ -34,8 +33,19 @@ services:
       - key: CSRF_TRUSTED_ORIGINS
         sync: false
       - key: ACCESSORIES_ENABLED
-        value: "False"
+        value: "True"
+      - key: MEDIA_STORAGE_BACKEND
+        value: imagekit
+      - key: IMAGEKIT_PRIVATE_KEY
+        sync: false
+      - key: IMAGEKIT_URL_ENDPOINT
+        sync: false
+      - key: MEDIA_ENCRYPTION_KEY
+        sync: false
     # No Render database, disk, Redis, paid preview or pre-deploy command.
-    # Images use the existing frontend artwork/placeholders; uploads are rejected.
-    # No MEDIA_ROOT is required while DEMO_DISABLE_UPLOADS=True. Do not enable
-    # uploads on Render Free's ephemeral filesystem. No media service is needed.
+    # Uploads stay disabled until personal ImageKit Free eligibility and credentials
+    # are verified and activation is separately approved. Then set
+    # DEMO_DISABLE_UPLOADS=False. No MEDIA_ROOT or local storage fallback.
+    # Preserve the existing DEMO_DJANGO_ADMIN_ENABLED opt-in on the verified service.
+    # This reference must not be applied to create a duplicate service: the Admin
+    # guard permits only the existing approved service ID and Neon endpoint.

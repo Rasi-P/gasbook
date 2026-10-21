@@ -96,7 +96,10 @@ class SafeImageField(serializers.ImageField):
     def to_representation(self, value):
         if settings.DEMO_DISABLE_UPLOADS:
             return None
-        return super().to_representation(value)
+        try:
+            return super().to_representation(value)
+        except (ValueError, OSError):
+            return None
 
     def to_internal_value(self, data):
         data = serializers.FileField.to_internal_value(self, data)

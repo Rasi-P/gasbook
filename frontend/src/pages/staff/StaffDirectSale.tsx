@@ -1,6 +1,7 @@
+import { useCapabilities } from '../../hooks/useCapabilities';
 import { pendingTransaction, transactionRequest } from '../../lib/transactionRequest';
 import { useEffect, useState } from 'react';
-import { api, extractApiError, fetchAllPages } from '../../lib/api';
+import { api, extractApiError, fetchCatalogPages, fetchAllPages } from '../../lib/api';
 import { ArrowLeft, ArrowRight, CheckCircle2, Minus, Plus, Search, ShoppingBag, Trash2, UserRound } from 'lucide-react';
 import { IconButton } from '../../components/ui/IconButton';
 import { Card, CardHeader } from '../../components/ui/Card';
@@ -80,6 +81,7 @@ export default function StaffDirectSale({ onBack, onDone, onBusyChange }: {
     onDone: () => void;
     onBusyChange?: (busy: boolean) => void;
 }) {
+    const accessoryCapability = useCapabilities();
     const [step, setStep] = useState(0);
     function goStep(next: number) { setStep(next); window.scrollTo({ top: 0, behavior: 'smooth' }); }
     const [customers, setCustomers] = useState<Customer[]>([]);
@@ -137,7 +139,7 @@ export default function StaffDirectSale({ onBack, onDone, onBusyChange }: {
     }
     const current = quote?.key === key ? quote.data : null;
     const availableCylinders = cylinders.filter(c => stock.some(s => s.location === Number(location) && s.cylinder_type === c.id && s.quantity > 0));
-    useEffect(() => { let cancelled = false; Promise.all([fetchActiveCylinderTypes() as unknown as Promise<Cylinder[]>, fetchAllPages<Product>('/products/'), fetchActiveLocations('stock') as unknown as Promise<Location[]>, fetchAllPages<{
+    useEffect(() => { let cancelled = false; Promise.all([fetchActiveCylinderTypes() as unknown as Promise<Cylinder[]>, fetchCatalogPages<Product>('/products/'), fetchActiveLocations('stock') as unknown as Promise<Location[]>, fetchAllPages<{
             location: number;
             cylinder_type: number;
             quantity: number;
@@ -245,7 +247,9 @@ export default function StaffDirectSale({ onBack, onDone, onBusyChange }: {
                 </div>)}
             </section>
             <section className="sa-sale__group" aria-label="Accessories">
-                <div className="sa-sale__group-heading"><h3>Accessories</h3><Button size="sm" variant="secondary" icon={<Plus size={15} />} disabled={locked || !products.length} onClick={() => setAccessories([...accessories, { product: products[0].id, quantity: 1 }])}>Add accessory</Button></div>
+                {accessoryCapability.value?.accessories === false && <p role="status">Accessories are disabled; cylinder sales remain available.</p>}
+                {accessoryCapability.error && <p role="alert">{accessoryCapability.error} <button type="button" onClick={accessoryCapability.retry}>Retry feature check</button></p>}
+                <div className="sa-sale__group-heading"><h3>Accessories</h3><Button size="sm" variant="secondary" icon={<Plus size={15} />} disabled={accessoryCapability.value?.accessories !== true || locked || !products.length} onClick={() => setAccessories([...accessories, { product: products[0].id, quantity: 1 }])}>Add accessory</Button></div>
                 {!accessories.length && <p className="sa-muted">{!catalogLoading && !products.length ? 'No accessories available.' : 'Add accessories if needed.'}</p>}
                 {accessories.map((line, index) => <div key={index} className="sa-sale__item">
                     <div className="sa-sale__picker"><Field label="Accessory"><Select disabled={locked} value={line.product} onChange={e => setAccessories(accessories.map((l, i) => i === index ? { ...l, product: Number(e.target.value) } : l))}>{products.map(p => <option key={p.id} value={p.id}>{p.name} · {money(p.selling_price)}</option>)}</Select></Field><IconButton label="Remove accessory" tone="danger" disabled={locked} onClick={() => setAccessories(accessories.filter((_, i) => i !== index))}><Trash2 size={17} /></IconButton></div>

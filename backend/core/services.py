@@ -1227,9 +1227,6 @@ def delete_user(user, actor):
             default_staff_customers=default_staff_customers(user),
             is_active=user.is_active,
         )
-    staff_profile = getattr(user, "staff_profile", None)
-    if staff_profile is not None and staff_profile.image:
-        staff_profile.image.delete(save=False)
     ActivityLog.objects.create(
         action="user_deleted",
         user=actor,

@@ -1,3 +1,148 @@
+# Full-feature demo validation — 2026-10-21
+
+## Scope and preservation
+
+Local candidate based on gasbook main `3dcbbf2290e3e51026d0be2c25c8dad3345756db` and customer main
+`0bff6fe798fa9d2b80404c5473896e62c1674dbc`. The pre-existing 30-line admin package-lock deletion is byte-for-byte
+preserved; no frontend manifest/lockfile was modified by this phase. Customer began clean. No staging, commits, pushes,
+provider mutation, hosted DB connection, shared demo fixture creation, migrations or bootstrap occurred. Database writes
+below were confined to newly created disposable test PostgreSQL instances. No existing database was used.
+
+## Fixes and policy changes
+
+- Demo Admin's identity/TLS/connection-target guard remains exact, default off, with existing throttling/password policy.
+  Accessories and validated remote uploads can now be enabled independently. Free demo filesystem uploads fail closed.
+- Official ImageKit Storage adapter, bounded validation/HTTP, unique files, encrypted staff originals, authenticated
+  owner/admin retrieval, stable application URLs, redacted failures and no local fallback. Legacy names remain URL-safe
+  but missing remote bytes are not invented. Provider account eligibility/live persistence remains unverified.
+- Staff-profile image serializer now uses shared validation; profile writes require admin and cannot reassign user.
+- Image replacement/cascade deletion occurs after commit, checks references and isolates cleanup failures. Failed requests
+  clean confirmed orphan uploads; crash/unknown-result orphans still require approved reconciliation.
+- `/auth/me/` reports capabilities. Product image removal, upload previews/errors, private blob rendering, bounded catalog
+  pagination, cold-start handling, and the customer booking View link are implemented across existing UI flows.
+- No checkout/accounting schema or transaction logic was changed. Accessory-only customer ordering/live gateway processing
+  remain outside implemented business scope. Financial model Admin protections remain intact.
+- Docker default now matches one-worker/four-thread throttle assumptions; demo template uses the actual Docker runtime.
+
+## Executed commands and results
+
+Evidence root: `/private/tmp/gasbook-full-demo-validation/`; real-API browsers: `/private/tmp/gasbook-full-demo-browser/`.
+The temporary launchers are **not release or migration tooling**. They copy source without `.env` files; create a fresh
+PostgreSQL 17.11 container with `--network none`, no published ports, tmpfs database, no persistent volumes; verify
+`current_database()` against their newly created name; and destroy only that container after tests. Python 3.12.15 and
+isolated media/static paths are used. Source hashes are recorded in `final-backend-manifest.json`.
+
+| Check | Exact command inside isolated environment | Verified result |
+| --- | --- | --- |
+| Clean Python installation | `python -m pip --isolated install --no-cache-dir --target /deps -r /requirements.txt imagekitio==5.11.0 cryptography==50.0.2` | Success; 32 resolved packages, subsequently pinned in requirements. |
+| System checks | `python manage.py check --database default` | No issues. |
+| Migration consistency | `python manage.py makemigrations --check --dry-run` | No changes detected. No migration files changed. |
+| Expanded security | `python manage.py test core.tests.test_full_demo_media core.tests.test_image_security core.tests.test_demo_admin core.tests.test_admin_route_policy core.tests.test_production core.tests.test_demo_media core.tests.test_staff_image core.tests.test_login_throttle_policy core.tests.test_auth --noinput --verbosity 2` | 123 passed; zero failures/errors/skips. |
+| Final full suite, accessories enabled | `python manage.py test core.tests --noinput --verbosity 2` | 686 total: 683 passed, 3 browser opt-in skips; zero failures/errors, 377.658 seconds. Final backend source hashes match the tested copy. |
+| Historical disabled-accessory failures | Same 33 historical test identifiers, `ACCESSORIES_ENABLED=False`, unchanged HEAD and candidate separately | Both: 26 failures + 7 errors; exact identifiers/classifications match. These tests assume enabled accessory behavior. Full disabled suite was not rerun. |
+| Real API browser workflows | `RUN_INVENTORY_BROWSER=1 RUN_PAYMENT_BROWSER=1 python manage.py test core.tests.test_product_browser core.tests.test_staff_payment_browser core.tests.test_checkout_browser --noinput --verbosity 2` | All 3 passed, 47.909 seconds; real disposable Django/PostgreSQL API, external network disabled. Both frontend app-source copies match current source. |
+| Admin clean install | `npm ci --ignore-scripts --no-audit --no-fund` | Success, disposable copy; original lockfile preserved. |
+| Admin unit/component tests | `bun test` | 93 passed, 0 failed. |
+| Admin lint/build | `npm run lint`; `VITE_API_BASE_URL=https://api.invalid/api npm run build` | Both exit 0; build has existing >500 kB chunk warning. |
+| Customer clean install | `bun install --frozen-lockfile --ignore-scripts` | Success in disposable copy; Bun lockfile preserved. |
+| Customer unit/component tests | `bun test tests` | 140 passed, 0 failed. |
+| Customer lint/build | `bun run lint`; `VITE_API_BASE_URL=https://api.invalid/api bun run build` | Both exit 0; unchanged OutstandingBalance fast-refresh warning, zero errors; large-chunk warning. |
+| Customer mocked browser tests | `VITE_API_BASE_URL=https://api.invalid/api node node_modules/@playwright/test/cli.js test` | 13 passed in 45.2 seconds, including receipts/PDF and responsive layouts. These mock API responses. |
+| Python advisory audit | `python -m pip_audit --disable-pip --no-deps --progress-spinner off -r /work/resolved-python.txt -f json` | 32 packages, zero known vulnerability findings; no hosted credentials supplied. |
+| Working trees | `git diff --check` in both repositories | Pass; no staged changes. |
+
+Real-API browser coverage includes product create/edit/image/stock, mixed booking, assignment, delivery, receipts/PDF,
+partial/split collections, bank settlement, staff sale and lost-response retry, catalog pagination/inactive filtering,
+cylinder checkout concurrent clicks/reload/layout switching, and history at widths 320–1280. The image service itself was
+mocked; browser uploads used isolated local test media. Remote-upload tests also use the real SDK with MockTransport,
+validating its multipart/signing contract without external calls. No hosted image, billing or persistence claim is made.
+
+### Initial failures resolved without weakening tests
+
+The first focused run had 3 subprocess dependency-path failures; the isolated Python harness was corrected. The first full
+suite had one assertion expecting publicly accessible staff images. That assertion now requires anonymous 404 while
+retaining all public catalog format checks; new authenticated tests cover all 3 staff-image formats. The initial admin
+run exposed a loading-layout regression and 2 lint errors, all corrected. A new private-image test was made independent
+of the build API origin. The first disabled comparison used duplicated test-method suffixes; the harness was corrected
+and all 33 real baseline tests rerun. No existing financial/idempotency assertions were removed or skipped.
+
+## Remaining gates
+
+- Personal ImageKit account Forever Free/no card/no trial/billing-off status and remaining quota are not authenticated.
+  User must verify the dashboard; credentials belong only in Render after separate approval.
+- A real synthetic encrypted upload, retrieval/access check and persistence through restart/redeploy remain mandatory
+  before calling hosted images ready. Do not exceed a free quota to test exhaustion; mock it locally.
+- Encryption-key backup, storage inventory/reconciliation and separate media backup/restore verification remain needed.
+- Git, Render/Vercel configuration/deployments and shared synthetic data all require separate explicit approval.
+- No new migrations are required; preserve the existing ledger and migration 0015 guard. No release-tool changes.
+
+## Exact pending file manifest
+
+The following lists include this report and the preserved user lockfile edit. All entries are unstaged.
+
+### gasbook — 41 files
+
+- `README.md`
+- `backend/Dockerfile`
+- `backend/core/apps.py`
+- `backend/core/exceptions.py`
+- `backend/core/media_access.py`
+- `backend/core/media_errors.py`
+- `backend/core/media_lifecycle.py`
+- `backend/core/media_storage.py`
+- `backend/core/operations.py`
+- `backend/core/products.py`
+- `backend/core/serializers.py`
+- `backend/core/services.py`
+- `backend/core/tests/test_demo_admin.py`
+- `backend/core/tests/test_full_demo_media.py`
+- `backend/core/tests/test_image_security.py`
+- `backend/core/tests/test_production.py`
+- `backend/core/uploads.py`
+- `backend/core/views.py`
+- `backend/gasbook/environment.py`
+- `backend/gasbook/settings.py`
+- `backend/requirements.txt`
+- `docs/phase-b-validation.md`
+- `docs/production-deployment.md`
+- `frontend/package-lock.json` — preserved pre-existing user change; untouched.
+- `frontend/src/components/ImageUpload.tsx`
+- `frontend/src/components/MediaImage.tsx`
+- `frontend/src/components/catalog/CylinderTypesPanel.tsx`
+- `frontend/src/hooks/useCapabilities.ts`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/mediaUrl.ts`
+- `frontend/src/lib/pagination.ts`
+- `frontend/src/pages/Customers.tsx`
+- `frontend/src/pages/Sales.tsx`
+- `frontend/src/pages/admin/ProductsPanel.tsx`
+- `frontend/src/pages/admin/Staff.tsx`
+- `frontend/src/pages/admin/StaffHistory.tsx`
+- `frontend/src/pages/staff/StaffDirectSale.tsx`
+- `frontend/src/pages/staff/StaffMobileLayout.tsx`
+- `frontend/tests/fullDemo.test.tsx`
+- `frontend/tests/pagination.test.ts`
+- `render.demo.yaml`
+
+### gasbook-customer — 12 files
+
+- `DEPLOYMENT.md`
+- `src/components/common/CatalogProductCard.tsx`
+- `src/components/common/ReliableImage.tsx`
+- `src/components/desktop/DesktopExploreView.tsx`
+- `src/components/desktop/DesktopHomeView.tsx`
+- `src/components/views/ExploreView.tsx`
+- `src/components/views/HomeView.tsx`
+- `src/hooks/useAccessories.ts`
+- `src/lib/auth.ts`
+- `src/lib/pagination.ts`
+- `src/lib/products.ts`
+- `tests/pagination.test.ts`
+
+---
+
+## Historical validation reports
+
 # Production-readiness validation — updated 2026-10-21
 
 No commit, push, branch switch, Render/Vercel deployment, paid resource creation, or migration-tooling modification was performed.

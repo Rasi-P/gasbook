@@ -1,10 +1,11 @@
 import axios from 'axios';
+import { collectPages } from './pagination';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8001/api';
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 8000,
+  timeout: 65000,
 });
 
 /** Input limits mirroring the backend columns (User.first/last_name 150, username 150, phone 20, email 254,
@@ -30,6 +31,8 @@ export function goLogin() {
 }
 
 api.interceptors.request.use((config) => {
+  const target = new URL(config.url || '', API_BASE_URL + '/');
+  if (target.origin !== new URL(API_BASE_URL).origin || target.username || target.password) throw new Error('Untrusted API destination');
   const token = localStorage.getItem('gasbook_access');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
@@ -173,7 +176,7 @@ export function extractApiError(err: unknown, fields: string[] = [], fallback = 
   const e = err as ErrorLike | undefined;
   const response = e?.response;
   if (!response) {
-    if (e?.code === 'ECONNABORTED') return 'Server took too long to respond. Please try again.';
+    if (e?.code === 'ECONNABORTED') return 'The demo server may be waking up. Reload to check the result before retrying a change.';
     if (e?.message === 'Network Error' || e?.code === 'ERR_NETWORK') {
       return 'Cannot reach the server. Check your connection and try again.';
     }
@@ -273,4 +276,12 @@ export async function fetchAllPages<T>(url: string, params: Record<string, unkno
     if (!data?.next) break;
   }
   return out;
+}
+
+/** Strict catalog pagination, with bounded complete results and no credential forwarding. */
+export function fetchCatalogPages<T extends { id: number }>(path: string): Promise<T[]> {
+  if (!['/products/', '/cylinder-types/'].includes(path)) throw new Error('Unsupported catalog endpoint');
+  const endpoint = new URL(API_BASE_URL.replace(/\/$/, '') + path);
+  endpoint.searchParams.set('page_size', '200');
+  return collectPages<T>(endpoint, async query => (await api.get(`${path}?${query}`)).data);
 }
