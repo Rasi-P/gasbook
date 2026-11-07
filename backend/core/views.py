@@ -1,26 +1,81 @@
+import hashlib
+import json
+import re
+import uuid
+from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import authenticate
+from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.utils.crypto import get_random_string
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, DecimalField, ExpressionWrapper, Exists, F, OuterRef, Q, Sum
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
-from rest_framework import permissions, viewsets, filters
+from django.shortcuts import get_object_or_404
+from rest_framework import permissions, viewsets, filters, mixins, serializers
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.fields import DateTimeField
 from rest_framework.response import Response
 from rest_framework import status as drf_status
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import (
-    ActivityLog, Booking, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
-    CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem,
+    ActivityLog, Booking, BookingItem, CustomerCylinderDiscount, CustomerCylinderRate, CustomerProfile,
+    CylinderType, Delivery, Expense, Notification, Payment, Sale, SaleItem, SaleRefund, SaleVoid,
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
+from .exceptions import ApiError
+from .pagination import StandardPagination
+from .services import (
+    OPEN_DELIVERY_STATUSES,
+    BUSINESS_DISPLAY_NAME,
+    RECEIPT_MODES,
+    admin_users,
+    advisory_lock,
+    assignment_logging_started_at,
+    can_hand_over,
+    clean_reason,
+    confirm_refund,
+    create_customer,
+    cylinder_type_delete_blockers,
+    cylinder_type_usage,
+    deactivate_customer,
+    deactivate_user,
+    default_delivery_location,
+    default_staff_customers,
+    delete_customer,
+    delete_user,
+    display_name,
+    ensure_customer_phone_free,
+    get_stock_row,
+    is_admin_user,
+    location_delete_blockers,
+    location_usage,
+    lock_active_stock_location,
+    lock_booking_and_delivery,
+    lock_customer,
+    not_voided,
+    notify,
+    parse_money,
+    parse_non_negative_int,
+    reactivate_customer,
+    reactivate_user,
+    require_sellable_location,
+    sale_void,
+    staff_assignment_details,
+    staff_handovers,
+    stock_locations,
+    user_search_q,
+    void_preview,
+    void_sale,
+)
+from .pricing import snapshot, SNAPSHOT_FIELDS
 from .serializers import (
+    SaleItemWriteSerializer, SaleItemSerializer, price_sale_lines,
     ActivityLogSerializer,
     BookingSerializer,
     CustomerCylinderDiscountSerializer,
@@ -30,26 +85,38 @@ from .serializers import (
     DeliverySerializer,
     ExpenseSerializer,
     NotificationSerializer,
-    PaymentSerializer,
+    PaymentSerializer, BalanceCollectionSerializer,
     SaleSerializer,
     StockLocationSerializer,
     StockMovementSerializer,
     StockSerializer,
+    StaffDeliveryHistorySerializer,
+    StaffDirectSaleHistorySerializer,
+    StaffHandoverBookingSerializer,
     StaffProfileSerializer,
     UserSerializer,
     get_booking_pricing_snapshot,
     get_customer_pricing_snapshot,
     get_sale_pricing_snapshot,
-    get_stock_row,
     serialize_decimal,
+    split_full_name,
+    validate_user_contact,
 )
 
 
 def get_staff_image_url(request, user):
+    if settings.DEMO_DISABLE_UPLOADS:
+        return None
     profile = getattr(user, "staff_profile", None)
     if not profile or not profile.image:
         return None
-    return request.build_absolute_uri(profile.image.url)
+    from .media_access import may_view_staff_image
+    if not may_view_staff_image(request.user, profile):
+        return None
+    try:
+        return request.build_absolute_uri(profile.image.url)
+    except (ValueError, OSError):
+        return None
 
 
 def format_decimal_label(value):
@@ -93,15 +160,44 @@ def build_sale_history_display(sale):
     }
 
 
+def direct_sale_history_status(sale):
+    """Status a direct sale shows in the customer's history: cancelled once voided. Booking
+    entries never come through here."""
+    return Booking.Status.CANCELLED if sale_void(sale) else Booking.Status.DELIVERED
+
+
+def direct_sale_cancellation_message(void):
+    """What the customer is told about a cancelled direct sale, matching what was committed."""
+    head = f"Direct sale by {BUSINESS_DISPLAY_NAME} was cancelled."
+    if void.outcome == SaleVoid.Outcome.REFUND:
+        try:
+            void.refund
+        except SaleRefund.DoesNotExist:
+            return f"{head} A refund of Rs. {serialize_decimal(void.refund_due)} is owed to you."
+        return f"{head} Rs. {serialize_decimal(void.refund_due)} has been refunded."
+    if void.outcome == SaleVoid.Outcome.CREDIT:
+        return f"{head} Rs. {serialize_decimal(void.paid_amount)} is kept as credit on your account."
+    return f"{head} Nothing is due."
+
+
 def build_direct_sale_history_entry(sale):
+    """A direct sale as the customer sees it. Customers see the business name, never which
+    user recorded or handed over the sale; booking entries keep their delivery partner."""
     billed_items = [item for item in sale.items.all() if item.quantity > 0 or item.total_amount > 0]
-    if not billed_items:
+    from .sale_accessories import item_data
+    from .collections import payment_data
+    accessories = item_data(sale)
+    if not billed_items and not accessories:
         return None
 
     pricing = get_sale_pricing_snapshot(sale)
     display = build_sale_history_display(sale)
-    sold_by_name = sale.sold_by.get_full_name() or sale.sold_by.username
-    payment_status = "PAID" if sale.balance_due <= 0 else "PENDING"
+    payment_status = "PAID" if sale.balance_due <= 0 else "PARTIAL" if sale.paid_amount > 0 else "PENDING"
+    status = direct_sale_history_status(sale)
+    void = sale_void(sale) if status == Booking.Status.CANCELLED else None
+    if void is not None:
+        payment_status = "CANCELLED"
+    refund = getattr(void, "refund", None) if void is not None else None
 
     return {
         "id": sale.id,
@@ -109,17 +205,22 @@ def build_direct_sale_history_entry(sale):
         "source_id": sale.id,
         "order_id": f"SALE-{sale.id}",
         "display_reference": f"Direct Sale #{sale.id}",
-        "status": Booking.Status.DELIVERED,
+        "items": SaleItemSerializer(billed_items, many=True).data,
+        "order_items": ([dict(id=i.pk, name=i.cylinder_type.name, type='cylinder', quantity=i.quantity, rate=str(i.rate), total_amount=str(i.total_amount), **snapshot(i)) for i in billed_items] + accessories) if accessories else [],
+        "payment_summary": payment_data(sale),
+        "status": status,
         "created_at": sale.created_at.isoformat(),
+        "cancelled_at": void.created_at.isoformat() if void is not None else None,
+        "refunded_at": refund.created_at.isoformat() if refund is not None else None,
         "updated_at": sale.updated_at.isoformat(),
         "approved_at": None,
-        "delivered_at": sale.created_at.isoformat(),
+        "delivered_at": sale.created_at.isoformat() if status == Booking.Status.DELIVERED else None,
         "cylinder_type_id": display["cylinder_type_id"],
         "cylinder_type_name": display["cylinder_type_name"],
         "cylinder_type_weight": display["cylinder_type_weight"],
-        "display_name": display["display_name"],
-        "display_badge": display["display_badge"],
-        "quantity": display["quantity"],
+        "display_name": "Cylinders & accessories" if accessories and billed_items else "Accessories" if accessories else display["display_name"],
+        "display_badge": "Mixed items" if accessories and billed_items else "Accessories" if accessories else display["display_badge"],
+        "quantity": display["quantity"] + sum(i["quantity"] for i in accessories),
         "rate": display["rate"],
         "original_amount": serialize_decimal(pricing["original_amount"]),
         "discount_amount": serialize_decimal(pricing["discount_amount"]),
@@ -128,7 +229,7 @@ def build_direct_sale_history_entry(sale):
         "has_discount": pricing["has_discount"],
         "applied_discount_type": pricing["applied_discount_type"],
         "applied_discount_value": serialize_decimal(pricing["applied_discount_value"]),
-        "assigned_staff_name": sale.delivery_staff or sold_by_name,
+        "assigned_staff_name": BUSINESS_DISPLAY_NAME,
         "assigned_staff_phone": None,
         "payment_method": sale.payment_mode.upper(),
         "payment_status": payment_status,
@@ -136,24 +237,44 @@ def build_direct_sale_history_entry(sale):
         "rejected_at": None,
         "can_track": False,
         "can_order_again": bool(display["cylinder_type_id"]),
-        "item_count": display["item_count"],
+        "item_count": display["item_count"] + len(accessories),
         "note": sale.note,
-        "detail_message": (
-            f"Direct sale recorded by {sold_by_name}."
+        "detail_message": direct_sale_cancellation_message(void) if void is not None else (
+            f"Direct sale by {BUSINESS_DISPLAY_NAME}."
             + (f" Balance due: Rs. {serialize_decimal(sale.balance_due)}." if sale.balance_due > 0 else "")
         ),
     }
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
+    from .authentication import LoginAccountThrottle, LoginIPThrottle
+    throttle_classes = [LoginAccountThrottle, LoginIPThrottle]
+
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
         username = (request.data.get("username") or "").strip()
-        user = User.objects.filter(username=username).first()
+        user = User.objects.filter(username=username).select_related("role").first()
         if not user:
             return response
+        role = getattr(user.role, "code", "") or ""
+        client = str(request.data.get("client") or "").strip().lower()
+        if client == "customer" and role != "customer":
+            return Response(
+                {"detail": "This account cannot sign in to the customer app.", "code": "role_not_allowed", "role": role},
+                status=drf_status.HTTP_403_FORBIDDEN,
+            )
+        if client == "management" and role == "customer":
+            return Response(
+                {
+                    "detail": "This account is for the customer app, not the management portal.",
+                    "code": "role_not_allowed",
+                    "role": "customer",
+                },
+                status=drf_status.HTTP_403_FORBIDDEN,
+            )
         response.data["must_change_password"] = bool(getattr(user, "must_change_password", False))
         response.data["user_id"] = user.id
+        response.data["role"] = role
         return response
 
 
@@ -174,20 +295,120 @@ class IsStaffOrAdmin(permissions.BasePermission):
         return getattr(getattr(request.user, "role", None), "code", "") in ["admin", "staff"] or request.user.is_superuser
 
 
+def refuse_delete_while_holding_stock(stock_rows, name, kind):
+    """Deleting a location or cylinder type cascades to its Stock rows, erasing any cylinders
+    they hold without a movement or log. Refuse (409) while any row holds cylinders; rows at
+    zero do not block."""
+    held = {status: 0 for status in Stock.Status.values}
+    for status, quantity in stock_rows.filter(quantity__gt=0).values_list("status", "quantity"):
+        held[status] += quantity
+    total = sum(held.values())
+    if total:
+        raise ApiError(
+            f"{name} still has {total} cylinder(s) in stock ({held['filled']} filled, {held['empty']} empty). "
+            f"Deleting it would erase that stock without a record; deactivate the {kind} instead.",
+            code="has_stock",
+            status=409,
+            filled=held["filled"],
+            empty=held["empty"],
+        )
+
+
+def refuse_delete_with_blockers(blockers, kind):
+    """409 for the first reason a record cannot be deleted. History keeps the code ``protected`` (what the foreign
+    keys raised before), with a readable message; every reason is returned in ``blockers`` for the screen."""
+    if blockers:
+        first = blockers[0]
+        raise ApiError(
+            f"{first['detail']} Deactivate the {kind} instead.",
+            code="protected" if first["code"] == "has_history" else first["code"],
+            status=409,
+            blockers=blockers,
+        )
+
+
+def filter_active_param(queryset, request):
+    """?active=1 keeps active rows, ?active=0 inactive ones; anything else returns all (history screens need all)."""
+    active = request.query_params.get("active")
+    if active in ("1", "true"):
+        return queryset.filter(is_active=True)
+    if active in ("0", "false"):
+        return queryset.filter(is_active=False)
+    return queryset
+
+
 class CylinderTypeViewSet(viewsets.ModelViewSet):
-    queryset = CylinderType.objects.all()
+    """Everyone signed in may read the catalog; only admins change it. Inactive types stay in
+    the list (history and reports need them): use ?active=1 for the types that can be sold."""
+
+    queryset = CylinderType.objects.order_by("weight", "name", "pk")
     serializer_class = CylinderTypeSerializer
     permission_classes = [IsAdminOrReadOnly]
     search_fields = ["name"]
 
+    def get_queryset(self):
+        queryset = filter_active_param(super().get_queryset(), self.request)
+        term = (self.request.query_params.get("search") or "").strip()
+        return queryset.filter(name__icontains=term) if term else queryset
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAdminUserRole])
+    def usage(self, request, pk=None):
+        """What depends on this type, so the admin can confirm before deactivating or deleting it."""
+        cylinder = self.get_object()
+        return Response({**cylinder_type_usage(cylinder), "delete_blockers": cylinder_type_delete_blockers(cylinder)})
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        # Lock the row so stock cannot be added between the check and the delete.
+        cylinder = CylinderType.objects.select_for_update().get(pk=self.get_object().pk)
+        refuse_delete_while_holding_stock(cylinder.stocks.all(), cylinder.name, "cylinder type")
+        refuse_delete_with_blockers(cylinder_type_delete_blockers(cylinder), "cylinder type")
+        name, pk = cylinder.name, cylinder.pk
+        response = super().destroy(request, *args, **kwargs)
+        ActivityLog.objects.create(action="cylinder_type_deleted", description=f"{name}: deleted", user=request.user, metadata={"cylinder_type_id": pk})
+        return response
+
 
 class StockLocationViewSet(viewsets.ModelViewSet):
+    """Staff may read locations; only admins change them, because a location's settings
+    decide where stock can be sold from. ?active=1 lists the locations new operations may
+    use; ?kind=stock|supplier narrows by type."""
+
     queryset = StockLocation.objects.all()
     serializer_class = StockLocationSerializer
-    permission_classes = [IsStaffOrAdmin]
+    permission_classes = [IsStaffOrAdmin, IsAdminOrReadOnly]
+
+    def get_queryset(self):
+        queryset = filter_active_param(super().get_queryset(), self.request)
+        kind = self.request.query_params.get("kind")
+        if kind == "stock":
+            queryset = queryset.exclude(is_main_supplier=True).exclude(code="supplier")
+        elif kind == "supplier":
+            queryset = queryset.filter(Q(is_main_supplier=True) | Q(code="supplier"))
+        return queryset
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAdminUserRole])
+    def usage(self, request, pk=None):
+        """What depends on this location, so the admin can confirm before deactivating or deleting it."""
+        location = self.get_object()
+        return Response({**location_usage(location), "delete_blockers": location_delete_blockers(location)})
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        # Lock the row so stock cannot be added between the check and the delete.
+        location = StockLocation.objects.select_for_update().get(pk=self.get_object().pk)
+        refuse_delete_while_holding_stock(location.stocks.all(), location.name, "location")
+        refuse_delete_with_blockers(location_delete_blockers(location), "location")
+        name, pk, code = location.name, location.pk, location.code
+        response = super().destroy(request, *args, **kwargs)
+        ActivityLog.objects.create(action="location_deleted", description=f"{name}: deleted", user=request.user, metadata={"location_id": pk, "code": code})
+        return response
 
 
-class StockViewSet(viewsets.ModelViewSet):
+class StockViewSet(viewsets.ReadOnlyModelViewSet):
+    """Quantities change only through stock movements, sales and deliveries, which log them;
+    there are no create/update/delete routes."""
+
     queryset = Stock.objects.select_related("cylinder_type", "location")
     serializer_class = StockSerializer
     permission_classes = [IsStaffOrAdmin]
@@ -198,15 +419,30 @@ class StockViewSet(viewsets.ModelViewSet):
         status = self.request.query_params.get("status")
         if location:
             queryset = queryset.filter(location__code=location)
+        location_id = self.request.query_params.get("location_id")
+        if location_id and location_id.isdigit():
+            queryset = queryset.filter(location_id=int(location_id))
         if status:
             queryset = queryset.filter(status=status)
         return queryset
 
 
-class StockMovementViewSet(viewsets.ModelViewSet):
+class StockMovementViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """A movement is recorded once, moving stock as it is created. Editing or deleting one
+    would change the record without moving the stock back, so those routes do not exist.
+
+    Admin-only by deliberate security decision, for reads, creates and supplier_pending alike:
+    a movement from the supplier adds filled stock with nothing owed, so staff could inflate
+    stock at will, and no staff screen uses movements. Admins use them from the Stock page."""
+
     queryset = StockMovement.objects.select_related("cylinder_type", "from_location", "to_location", "moved_by")
     serializer_class = StockMovementSerializer
-    permission_classes = [IsStaffOrAdmin]
+    permission_classes = [IsAdminUserRole]
 
     def create(self, request, *args, **kwargs):
         note = request.data.get("note", "")
@@ -254,7 +490,7 @@ class StockMovementViewSet(viewsets.ModelViewSet):
         ).order_by("created_at")
         
         pending_balances = []
-        for cylinder in CylinderType.objects.filter(is_active=True):
+        for cylinder in CylinderType.objects.all():
             movements = supplier_movements.filter(cylinder_type=cylinder)
             pending = 0
             for m in movements:
@@ -273,6 +509,11 @@ class StockMovementViewSet(viewsets.ModelViewSet):
         return Response(pending_balances)
 
 
+# Customer fields staff may change. Balances, credit limit, discounts, default staff,
+# deposits and the linked user are admin-only.
+STAFF_EDITABLE_CUSTOMER_FIELDS = frozenset({"name", "phone", "email", "address", "area"})
+
+
 class CustomerProfileViewSet(viewsets.ModelViewSet):
     queryset = CustomerProfile.objects.select_related("user", "default_staff").prefetch_related(
         "custom_rates",
@@ -283,8 +524,13 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
     serializer_class = CustomerProfileSerializer
 
     def get_permissions(self):
+        if getattr(self, "action", None) == "me":
+            return [permissions.IsAuthenticated()]
+        # Action-level permission_classes are not consulted here, so admin-only actions are listed.
+        if self.request.method == "DELETE" or getattr(self, "action", None) in ("deactivate", "reactivate", "ledger"):
+            return [IsAdminUserRole()]
         if getattr(getattr(self.request.user, "role", None), "code", "") == "customer":
-            if self.request.method in ["POST", "DELETE"]:
+            if self.request.method == "POST":
                 return [IsAdminUserRole()]
             return [permissions.IsAuthenticated()]
         return [IsStaffOrAdmin()]
@@ -305,163 +551,397 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(area__icontains=area)
         if active in ["0", "1"]:
             queryset = queryset.filter(is_active=active == "1")
-        if term:
-            queryset = queryset.filter(Q(user__first_name__icontains=term) | Q(user__last_name__icontains=term) | Q(user__phone__icontains=term))
+        if term and term.split():
+            queryset = queryset.filter(user_search_q(term, prefix="user__"))
         return queryset
 
     @transaction.atomic
     def create(self, request, *args, **kwargs):
-        name = request.data.get("name", "").strip()
-        phone = request.data.get("phone", "").strip()
-        email = request.data.get("email", "").strip()
-        address = request.data.get("address", "").strip()
-        parts = name.split(" ", 1)
-        
-        if phone and not phone.isdigit():
-            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
-
-        if phone:
-            existing_user = User.objects.filter(phone=phone, role__code="customer").first()
-            if existing_user:
-                full_name = existing_user.get_full_name() or existing_user.username
-                return Response(
-                    {"detail": f"This mobile number is already in the system. The user is: {full_name} ({existing_user.username})."}, 
-                    status=drf_status.HTTP_400_BAD_REQUEST
-                )
-
-        base_name = "_".join(parts).lower() if parts else "customer"
-        username_str = f"{base_name}_{phone[-4:]}" if phone else f"{base_name}_{get_random_string(8)}"
-        
-        if User.objects.filter(username=username_str).exists():
-            username_str = f"{username_str}_{get_random_string(4)}"
-
-        customer_role = Role.objects.filter(code="customer").first()
-        user = User.objects.create_user(
-            username=username_str,
-            first_name=parts[0] if parts else "",
-            last_name=parts[1] if len(parts) > 1 else "",
-            email=email,
-            phone=phone,
-            address=address,
-            role=customer_role,
-            must_change_password=True,
-            is_active=True
-        )
-        profile = CustomerProfile.objects.create(user=user)
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        contact = validate_user_contact(request.data, name_key="name")
+        # Phone is required and checked for duplicates under a lock on the number.
+        profile = create_customer(contact, request.user, via="customers")
         return Response(self.get_serializer(profile).data, status=drf_status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=["get"], permission_classes=[IsStaffOrAdmin])
+    @action(detail=False, methods=["get"], url_path="me", permission_classes=[permissions.IsAuthenticated])
+    def me(self, request):
+        if getattr(getattr(request.user, "role", None), "code", "") != "customer":
+            raise ApiError("Customer account required.", code="role_not_allowed", status=403)
+        profile = getattr(request.user, "customer_profile", None)
+        if profile is None:
+            raise ApiError("Customer profile not found.", code="customer_profile_missing", status=404)
+        profile = self.get_queryset().filter(pk=profile.pk).first() or profile
+        return Response(self.get_serializer(profile).data)
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        profile = self.get_object()
+        return Response(delete_customer(profile, request.user))
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        profile = deactivate_customer(self.get_object(), request.user)
+        profile = self.get_queryset().filter(pk=profile.pk).first() or profile
+        data = self.get_serializer(profile).data
+        return Response(
+            {
+                "detail": "Customer deactivated. Ledger and order history are preserved.",
+                "mode": "deactivated",
+                "pending_amount": data.get("pending_amount"),
+                "customer": data,
+            }
+        )
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
+    def reactivate(self, request, pk=None):
+        profile = reactivate_customer(self.get_object(), request.user)
+        profile = self.get_queryset().filter(pk=profile.pk).first() or profile
+        return Response(
+            {"detail": "Customer reactivated.", "mode": "reactivated", "customer": self.get_serializer(profile).data}
+        )
+
+    @action(detail=True, methods=["get"], permission_classes=[IsAdminUserRole])
     def ledger(self, request, pk=None):
         customer_profile = self.get_object()
-        sales = SaleSerializer(customer_profile.sales.prefetch_related("items__cylinder_type").all(), many=True).data
-        payments = PaymentSerializer(customer_profile.payments.all(), many=True).data
+        sales = SaleSerializer(
+            customer_profile.sales.select_related(
+                "location", "sold_by__role", "handover_staff", "booking", "void__voided_by", "void__refund__confirmed_by"
+            ).prefetch_related("items__cylinder_type"),
+            many=True,
+        ).data
+        payments = PaymentSerializer(
+            customer_profile.payments.select_related("reverses_link", "credit_link"), many=True
+        ).data
         bookings = BookingSerializer(customer_profile.bookings.select_related("assigned_staff", "cylinder_type").order_by("-created_at"), many=True, context={'request': request}).data
         return Response({"customer": CustomerProfileSerializer(customer_profile).data, "sales": sales, "payments": payments, "bookings": bookings})
 
+    def update(self, request, *args, **kwargs):
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object of fields to change.", code="invalid")
+        role = getattr(getattr(request.user, "role", None), "code", "")
+        if role == "customer":
+            # Customers may only change their own contact details (name/phone/email/address);
+            # every profile field (balances, discounts, default_staff, is_active...) is ignored.
+            instance = self.get_object()
+            serializer = self.get_serializer(instance, data={}, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(self.get_serializer(instance).data)
+        if role == "staff":
+            # is_active is left to the admin-only account-status rule in perform_update.
+            forbidden = sorted(set(request.data) - STAFF_EDITABLE_CUSTOMER_FIELDS - {"is_active"})
+            if forbidden:
+                raise ApiError(
+                    "Staff can only change a customer's name, phone, email, address and area. "
+                    f"Not allowed: {', '.join(forbidden)}.",
+                    code="forbidden_fields",
+                    status=403,
+                    fields=forbidden,
+                )
+        return super().update(request, *args, **kwargs)
+
+    @transaction.atomic
     def perform_update(self, serializer):
+        user = serializer.instance.user
+        contact = validate_user_contact(
+            self.request.data, name_key="name", exclude_user=user, check_duplicate_phone=True
+        )
+        if "is_active" in serializer.validated_data:
+            # Account status is admin-only and must go through the deactivate/reactivate
+            # policy (open-order guard + ActivityLog), never through a plain field write.
+            wants_active = bool(serializer.validated_data.pop("is_active"))
+            if getattr(getattr(self.request.user, "role", None), "code", "") != "admin":
+                raise ApiError("Only admins can change account status.", code="forbidden", status=403)
+            currently_active = bool(serializer.instance.is_active and user.is_active)
+            if wants_active != currently_active:
+                if wants_active:
+                    reactivate_customer(serializer.instance, self.request.user)
+                else:
+                    deactivate_customer(serializer.instance, self.request.user)
         profile = serializer.save()
         user = profile.user
-        name = self.request.data.get("name")
-        phone = self.request.data.get("phone")
-        address = self.request.data.get("address")
-        email = self.request.data.get("email")
+        update_fields = ["first_name", "last_name", "phone", "address", "email"]
 
-        if name is not None:
-            parts = name.strip().split(" ", 1)
-            user.first_name = parts[0] if parts else ""
-            user.last_name = parts[1] if len(parts) > 1 else ""
-        if phone is not None:
-            user.phone = phone.strip()
-        if address is not None:
-            user.address = address.strip()
-        if email is not None:
-            user.email = email.strip()
-            
-        user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
+        if "full_name" in contact:
+            user.first_name, user.last_name = split_full_name(contact["full_name"])
+        if "phone" in contact:
+            user.phone = contact["phone"]
+        if "address" in contact:
+            user.address = contact["address"]
+        if "email" in contact:
+            user.email = contact["email"]
+
+        user.save(update_fields=update_fields)
 
 
-class SaleViewSet(viewsets.ModelViewSet):
-    queryset = Sale.objects.select_related("customer__user", "location", "sold_by").prefetch_related("items__cylinder_type")
+def parse_id_param(raw, field):
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        raise ApiError(f"{field} must be a number.", code="invalid", field=field)
+
+
+def parse_date_range(start_raw, end_raw):
+    """Optional YYYY-MM-DD bounds; 400 if malformed or start is after end."""
+    try:
+        start = date.fromisoformat(start_raw) if start_raw else None
+        end = date.fromisoformat(end_raw) if end_raw else None
+    except ValueError:
+        raise ApiError("Invalid date. Use YYYY-MM-DD.", code="invalid_date")
+    if start and end and start > end:
+        raise ApiError("Start date must be on or before end date.", code="invalid_range")
+    return start, end
+
+
+def parse_client_ref(raw):
+    if raw in (None, ""):
+        raise ApiError(
+            "client_ref is required: a new UUID for each sale, reused only to retry that same request.",
+            code="required",
+            field="client_ref",
+        )
+    try:
+        return uuid.UUID(str(raw))
+    except ValueError:
+        raise ApiError("client_ref must be a UUID.", code="invalid", field="client_ref")
+
+
+def sale_request_hash(data):
+    """Fingerprint of a sale request without its client_ref, to tell a retry from a reuse."""
+    body = {key: value for key, value in data.items() if key != "client_ref"}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+class SaleViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Admin-only. A sale is never edited or deleted through the API: that moved debt between
+    customers, left stock unrestored and (via Booking.sale) deleted bookings, all unlogged.
+    Staff create sales only by completing a delivery."""
+
+    queryset = Sale.objects.select_related(
+        "customer__user", "location", "sold_by__role", "handover_staff", "booking", "void__voided_by",
+        "void__refund__confirmed_by",
+    ).prefetch_related("items__cylinder_type")
     serializer_class = SaleSerializer
-    permission_classes = [IsStaffOrAdmin]
+    permission_classes = [IsAdminUserRole]
+
+    @action(detail=False, methods=["get"], url_path="handover-options")
+    def handover_options(self, request):
+        # Keep inactive people available for historical filters, but never offer them
+        # for a new handover. Do not require admins to have a StaffProfile.
+        users = User.objects.filter(role__code__in=["admin", "staff"]).select_related("role", "staff_profile").order_by("first_name", "username", "id")
+        page = self.paginate_queryset(users)
+        rows = [{"id": u.id, "user": u.id, "username": u.username,
+                 "first_name": u.first_name, "last_name": u.last_name,
+                 "role": u.role.code, "can_hand_over": can_hand_over(u)} for u in page]
+        return self.get_paginated_response(rows)
+
+    def list(self, request, *args, **kwargs):
+        if not request.query_params.get("involved_user"):
+            return super().list(request, *args, **kwargs)
+        queryset = self.filter_queryset(self.get_queryset())
+        summary = queryset.aggregate(
+            total=Count("id"), completed=Count("id", filter=Q(void__isnull=True)),
+            cancelled=Count("id", filter=Q(void__isnull=False)),
+            sales_amount=Sum("total_amount", filter=Q(void__isnull=True)),
+        )
+        summary["sales_amount"] = str(summary["sales_amount"] or Decimal("0.00"))
+        page = self.paginate_queryset(queryset)
+        response = self.get_paginated_response(self.get_serializer(page, many=True).data)
+        response.data["summary"] = summary
+        return response
+
+    @action(detail=True, methods=["get"], url_path="void-preview", permission_classes=[IsAdminUserRole])
+    def void_preview(self, request, pk=None):
+        """What cancelling this sale would do, and whether it is allowed now. The void itself
+        repeats every check under lock."""
+        return Response(void_preview(self.get_object()))
+
+    @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    def void(self, request, pk=None):
+        """Cancel a direct sale: {"reason": text, "outcome": "refund" | "credit"} (outcome only
+        when something was paid). See services.void_sale."""
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        void_sale(self.get_object(), request.user, request.data.get("reason"), request.data.get("outcome"))
+        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+
+    @action(detail=True, methods=["post"], url_path="confirm-refund", permission_classes=[IsAdminUserRole])
+    def confirm_refund(self, request, pk=None):
+        """Record that a cancelled sale's refund was paid back, in full:
+        {"references": {"gpay": "...", "bank": "...", "cash": "..."}, "amount": optional check}."""
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        confirm_refund(self.get_object(), request.user, request.data.get("references"), request.data.get("amount"))
+        return Response(self.get_serializer(self.get_queryset().get(pk=pk)).data)
+
+    @action(detail=False, methods=["post"], permission_classes=[IsAdminUserRole])
+    def preview(self, request):
+        """Read-only quote using exactly the same line pricing as sale creation."""
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be an object.", code="invalid")
+        customer_id = request.data.get("customer")
+        customer = None
+        if customer_id is not None:
+            customer = get_object_or_404(CustomerProfile, pk=parse_id_param(customer_id, "customer"), is_active=True, user__is_active=True)
+        if getattr(getattr(request.user, 'role', None), 'code', '') == 'staff':
+            if customer is None:
+                raise ApiError('Select an existing customer.', code='required', field='customer')
+        from . import sale_accessories
+        accessory_input = sale_accessories.AccessoryInput(data=request.data.get('accessory_lines', []), many=True)
+        accessory_input.is_valid(raise_exception=True)
+        accessories = sale_accessories.quote(accessory_input.validated_data)
+        accessory_total = sum((i['total_amount'] for i in accessories), Decimal('0'))
+        serializer = SaleItemWriteSerializer(data=request.data.get("sale_items", []), many=True)
+        serializer.is_valid(raise_exception=True)
+        if not serializer.validated_data and not accessories:
+            raise ApiError('Add at least one cylinder or accessory.', code='no_lines')
+        lines = price_sale_lines(serializer.validated_data, customer) if serializer.validated_data else []
+        return Response({
+            "items": [{**{key: value for key, value in line.items() if key != "cylinder_type"},
+                       "cylinder_type": line["cylinder_type"].pk,
+                       "cylinder_type_name": line["cylinder_type"].name} for line in lines],
+            "accessory_items": [{k: v for k, v in i.items() if k != "product"} for i in accessories],
+            "original_amount": sum((line["original_amount"] for line in lines), accessory_total),
+            "discount_amount": sum(line["discount_amount"] for line in lines),
+            "total_amount": sum((line["final_amount"] for line in lines), accessory_total),
+        })
+
+    def create(self, request, *args, **kwargs):
+        """Record a sale exactly once per client_ref.
+
+        The key is locked before anything else. If a sale already has it, the same user
+        repeating the same request gets that sale back (200) and nothing is written; any other
+        use of the key is a conflict (409). A key whose earlier attempt failed left nothing
+        behind and is free to use.
+        """
+        if not isinstance(request.data, Mapping):
+            raise ApiError("Request body must be a JSON object.", code="invalid")
+        client_ref = parse_client_ref(request.data.get("client_ref"))
+        request_hash = sale_request_hash(request.data)
+        with transaction.atomic():
+            advisory_lock("sale-client-ref", client_ref)
+            existing = Sale.objects.filter(client_ref=client_ref).first()
+            if existing is not None:
+                return self.replay(existing, request, request_hash)
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            sale = serializer.save(client_ref=client_ref, request_hash=request_hash)
+        return Response(self.get_serializer(sale).data, status=drf_status.HTTP_201_CREATED)
+
+    def replay(self, sale, request, request_hash):
+        log = ActivityLog.objects.filter(action="sale_created", metadata__sale_id=sale.pk).first()
+        if log is None or log.metadata.get("request_hash") != request_hash or sale.sold_by_id != request.user.pk:
+            raise ApiError(
+                "This client_ref was already used for a different sale request. Start a new sale to get a new reference.",
+                code="client_ref_reused",
+                status=409,
+                field="client_ref",
+            )
+        return Response(self.get_serializer(sale).data, status=drf_status.HTTP_200_OK, headers={"Idempotent-Replay": "true"})
 
     def get_queryset(self):
         queryset = super().get_queryset()
-        term = self.request.query_params.get("search")
-        payment_mode = self.request.query_params.get("payment_mode")
-        pending = self.request.query_params.get("pending")
-        if term:
-            queryset = queryset.filter(Q(customer__user__first_name__icontains=term) | Q(customer__user__last_name__icontains=term) | Q(customer__user__phone__icontains=term))
+        user = self.request.user
+        if not is_admin_user(user):
+            # Both admin Sales and the staff endpoint share this ownership scope.
+            queryset = queryset.filter(Q(sold_by=user) | Q(handover_staff=user))
+        params = self.request.query_params
+        term = params.get("search")
+        payment_mode = params.get("payment_mode")
+        pending = params.get("pending")
+        involved_user = params.get("involved_user")
+        if involved_user:
+            person = get_object_or_404(User, pk=parse_id_param(involved_user, "involved_user"), role__code__in=["admin", "staff"])
+            # OR on single-valued relations: a recorder who also handed over appears once.
+            queryset = queryset.filter(Q(sold_by=person) | Q(handover_staff=person))
+        if term and term.split():
+            search_q = user_search_q(term, prefix="customer__user__")
+            if involved_user and re.fullmatch(r"#?\d{1,18}", term.strip()):
+                search_q |= Q(pk=int(term.strip().lstrip("#")))
+            queryset = queryset.filter(search_q)
         if payment_mode:
             queryset = queryset.filter(payment_mode=payment_mode)
         if pending == "1":
-            queryset = queryset.filter(balance_due__gt=0)
-        return queryset
+            queryset = not_voided(queryset.filter(balance_due__gt=0))
+        void_status = params.get("void_status")
+        if void_status == "active":
+            queryset = not_voided(queryset)
+        elif void_status == "cancelled":
+            queryset = queryset.filter(void__isnull=False)
+        elif void_status == "refund_pending":
+            queryset = queryset.filter(void__outcome=SaleVoid.Outcome.REFUND, void__refund__isnull=True)
+        elif void_status:
+            raise ApiError("void_status must be active, cancelled or refund_pending.", code="invalid", field="void_status")
+        if params.get("sold_by"):
+            queryset = queryset.filter(sold_by_id=parse_id_param(params["sold_by"], "sold_by"))
+        handover = params.get("handover_staff")
+        if handover == "none":
+            queryset = queryset.filter(handover_staff__isnull=True)
+        elif handover:
+            queryset = queryset.filter(handover_staff_id=parse_id_param(handover, "handover_staff"))
+        if params.get("location"):
+            queryset = queryset.filter(location_id=parse_id_param(params["location"], "location"))
+        source = params.get("source")
+        if source in ("direct", "booking"):
+            queryset = queryset.filter(booking__isnull=source == "direct")
+        elif source:
+            raise ApiError("source must be direct or booking.", code="invalid", field="source")
+        start, end = parse_date_range(params.get("start"), params.get("end"))
+        if start:
+            queryset = queryset.filter(created_at__date__gte=start)
+        if end:
+            queryset = queryset.filter(created_at__date__lte=end)
+        return queryset.order_by("-created_at", "-id") if involved_user else queryset
 
 
-class PaymentViewSet(viewsets.ModelViewSet):
+class PaymentViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Admin-only. A payment is never edited or deleted through the API: that left the
+    sale's paid amount and balance out of step with its payments. Staff use the scoped
+    staff-sales collection endpoint or complete a delivery."""
+
     queryset = Payment.objects.select_related("customer__user", "sale", "received_by")
     serializer_class = PaymentSerializer
-    permission_classes = [IsStaffOrAdmin]
+    permission_classes = [IsAdminUserRole]
 
-    @transaction.atomic
-    def perform_create(self, serializer):
-        payment = serializer.save()
-        if payment.sale:
-            sale = payment.sale
-            sale.paid_amount += payment.amount
-            sale.balance_due = max(Decimal(0), sale.total_amount - sale.paid_amount)
-            sale.save(update_fields=["paid_amount", "balance_due"])
-        else:
-            pending_sales = Sale.objects.filter(customer=payment.customer, balance_due__gt=0).order_by("created_at")
-            remaining_payment = payment.amount
-            first_allocation = True
-            for sale in pending_sales:
-                if remaining_payment <= 0:
-                    break
-                
-                allocated = sale.balance_due if remaining_payment >= sale.balance_due else remaining_payment
-                
-                sale.paid_amount += allocated
-                sale.balance_due -= allocated
-                sale.save(update_fields=["paid_amount", "balance_due"])
-                
-                if first_allocation:
-                    payment.sale = sale
-                    payment.amount = allocated
-                    payment.save(update_fields=["sale", "amount"])
-                    first_allocation = False
-                else:
-                    new_p = Payment.objects.create(
-                        customer=payment.customer,
-                        sale=sale,
-                        amount=allocated,
-                        payment_mode=payment.payment_mode,
-                        received_by=payment.received_by,
-                        note=payment.note,
-                        empty_collected=0,
-                    )
-                    # Sync created_at for grouping
-                    new_p.created_at = payment.created_at
-                    new_p.save(update_fields=["created_at"])
-                    
-                remaining_payment -= allocated
+    def create(self, request, *args, **kwargs):
+        if not isinstance(request.data, Mapping):
+            return super().create(request, *args, **kwargs)
+        if not request.data.get('client_ref'):
+            return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = serializer.validated_data
+        from .collections import collect
+        rows, replay = collect(values['customer'], values.get('sale'),
+            [dict(mode=values['payment_mode'], amount=values['amount'])], request.user,
+            parse_client_ref(request.data['client_ref']), note=values.get('note', ''), empty_collected=values.get('empty_collected', 0))
+        return Response(self.get_serializer(rows[0]).data, status=200 if replay else 201)
 
-            if remaining_payment > 0:
-                if first_allocation:
-                    pass # Left as generic
-                else:
-                    new_p = Payment.objects.create(
-                        customer=payment.customer,
-                        sale=None,
-                        amount=remaining_payment,
-                        payment_mode=payment.payment_mode,
-                        received_by=payment.received_by,
-                        note=payment.note,
-                        empty_collected=0,
-                    )
-                    new_p.created_at = payment.created_at
-                    new_p.save(update_fields=["created_at"])
+    @action(detail=False, methods=['post'])
+    def collect(self, request):
+        if not isinstance(request.data, dict) or set(request.data) - {'customer', 'sale', 'payments', 'client_ref', 'note'}:
+            raise ApiError('Send customer, optional sale, payments, client_ref and optional note.', code='invalid')
+        serializer = BalanceCollectionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        from .collections import collect
+        data = serializer.validated_data
+        rows, replay = collect(data['customer'], data.get('sale'), data['payments'], request.user,
+                               data['client_ref'], note=data['note'])
+        return Response({'payments': self.get_serializer(rows, many=True).data}, status=200 if replay else 201)
+
 
 
 class ExpenseViewSet(viewsets.ModelViewSet):
@@ -477,9 +957,20 @@ class ActivityLogViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class StaffProfileViewSet(viewsets.ModelViewSet):
-    queryset = StaffProfile.objects.select_related("user", "vehicle_location")
+    queryset = StaffProfile.objects.select_related("user__role", "vehicle_location")
     serializer_class = StaffProfileSerializer
     permission_classes = [IsStaffOrAdmin]
+
+    def get_permissions(self):
+        if self.request.method not in permissions.SAFE_METHODS:
+            return [IsAdminUserRole()]
+        return super().get_permissions()
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        # Routed through the same deletion policy as DELETE /api/auth/users/{pk}/.
+        profile = self.get_object()
+        return Response(delete_user(profile.user, request.user))
 
 
 class CustomerCylinderRateViewSet(viewsets.ModelViewSet):
@@ -522,8 +1013,21 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(NotificationSerializer(notification).data)
 
 
-class BookingViewSet(viewsets.ModelViewSet):
-    queryset = Booking.objects.select_related("customer__user", "cylinder_type", "assigned_staff", "sale").prefetch_related(
+from . import booking_items
+
+
+class BookingViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Bookings change only through customer ``create`` and the approve/reject actions;
+    there are no generic update/delete routes (they bypassed the workflow and its log)."""
+
+    queryset = Booking.objects.select_related(
+        "customer__user", "cylinder_type", "assigned_staff", "sale", "delivery", "delivery__staff"
+    ).prefetch_related(
         "customer__custom_rates",
         "customer__cylinder_discounts__cylinder_type",
     )
@@ -547,6 +1051,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(status=statuses[0])
         return queryset
 
+    @transaction.atomic
     def perform_create(self, serializer):
         if getattr(getattr(self.request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can create booking requests.")
@@ -581,22 +1086,21 @@ class BookingViewSet(viewsets.ModelViewSet):
                 "cylinder_type_id": row.get("cylinder_type"),
                 "can_track": True,
                 "can_order_again": True,
-                "item_count": 1,
+                "item_count": len(row.get("order_items", [])) or 1,
                 "detail_message": None,
             })
 
-        include_direct_sales = not statuses or Booking.Status.DELIVERED in statuses
-        if include_direct_sales:
-            direct_sales = (
-                Sale.objects.filter(customer=profile, booking__isnull=True)
-                .select_related("customer__user", "location", "sold_by")
-                .prefetch_related("items__cylinder_type")
-                .order_by("-created_at")
-            )
-            for sale in direct_sales:
-                entry = build_direct_sale_history_entry(sale)
-                if entry is not None:
-                    history_entries.append(entry)
+        direct_sales = (
+            Sale.objects.filter(customer=profile, booking__isnull=True)
+            .select_related("customer__user", "location", "sold_by", "void__refund")
+            .prefetch_related("items__cylinder_type")
+            .order_by("-created_at")
+        )
+        for sale in direct_sales:
+            entry = build_direct_sale_history_entry(sale)
+            # Filtered by each entry's own status, as booking entries are.
+            if entry is not None and (not statuses or entry["status"] in statuses):
+                history_entries.append(entry)
 
         if search_term:
             def matches_search(entry):
@@ -611,7 +1115,13 @@ class BookingViewSet(viewsets.ModelViewSet):
 
             history_entries = [entry for entry in history_entries if matches_search(entry)]
 
-        history_entries.sort(key=lambda entry: str(entry.get("created_at") or ""), reverse=True)
+        # BookingSerializer emits local offsets; direct sales emit UTC. Sort actual
+        # instants, not ISO strings, before paginating the combined history.
+        timestamp_field = DateTimeField()
+        history_entries.sort(key=lambda entry: (
+            timestamp_field.to_internal_value(entry["created_at"]),
+            entry["history_source"], entry["source_id"],
+        ), reverse=True)
 
         page = self.paginate_queryset(history_entries)
         if page is not None:
@@ -620,7 +1130,27 @@ class BookingViewSet(viewsets.ModelViewSet):
         return Response(history_entries)
 
     @action(detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated])
+    def checkout(self, request):
+        booking, created = booking_items.checkout(request)
+        return Response(BookingSerializer(booking, context={"request": request}).data, status=201 if created else 200)
+
+    @action(detail=False, methods=["get"], url_path="checkout-status", permission_classes=[permissions.IsAuthenticated])
+    def checkout_status(self, request):
+        """Recover a lost checkout response without creating or changing anything."""
+        profile = booking_items.customer(request)
+        field = serializers.UUIDField()
+        client_ref = field.run_validation(request.query_params.get("client_ref"))
+        line = BookingItem.objects.select_related("booking").filter(
+            client_ref=client_ref, booking__customer=profile).first()
+        # Absence is not proof that another in-flight request will not commit.
+        return Response({"booking": BookingSerializer(line.booking, context={"request": request}).data if line else None})
+
+    @action(detail=False, methods=["post"], permission_classes=[permissions.IsAuthenticated])
     def preview(self, request):
+        # Both cart kinds use the same signed pricing snapshot. Preserve the
+        # historical empty preview response below for clients clearing a cart.
+        if isinstance(request.data.get('items'), list) and request.data['items']:
+            return Response(booking_items.preview(request))
         if getattr(getattr(request.user, "role", None), "code", "") != "customer":
             raise PermissionDenied("Only customers can preview booking totals.")
 
@@ -634,6 +1164,8 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         cylinder_ids = []
         for item in items:
+            if not isinstance(item, Mapping):
+                raise ApiError("Each item must be an object.", code="invalid", field="items")
             try:
                 cylinder_ids.append(int(item.get("cylinder_type")))
             except (TypeError, ValueError):
@@ -647,7 +1179,7 @@ class BookingViewSet(viewsets.ModelViewSet):
 
         for item in items:
             cylinder_id = int(item.get("cylinder_type"))
-            quantity = int(item.get("quantity") or 0)
+            quantity = parse_non_negative_int(item.get("quantity"), "quantity", "Quantity")
             if quantity <= 0:
                 return Response({"detail": "Quantity must be greater than zero."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
@@ -655,12 +1187,13 @@ class BookingViewSet(viewsets.ModelViewSet):
             if cylinder is None:
                 return Response({"detail": f"Cylinder type {cylinder_id} is invalid or inactive."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
-            pricing = get_customer_pricing_snapshot(profile, cylinder, quantity)
+            pricing = get_customer_pricing_snapshot(profile, cylinder, quantity, item.get("rate_type", "refill"))
             original_total += pricing["original_amount"]
             discount_total += pricing["discount_amount"]
             final_total += pricing["final_amount"]
             response_items.append({
                 "client_item_id": item.get("client_item_id"),
+                **{field: pricing[field] for field in SNAPSHOT_FIELDS},
                 "cylinder_type": cylinder.id,
                 "cylinder_type_name": cylinder.name,
                 "cylinder_type_weight": str(cylinder.weight),
@@ -685,70 +1218,180 @@ class BookingViewSet(viewsets.ModelViewSet):
         })
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
     def approve(self, request, pk=None):
         booking = self.get_object()
+        booking, delivery = lock_booking_and_delivery(booking.pk)
+
+        if booking.status not in (Booking.Status.PENDING, Booking.Status.APPROVED, Booking.Status.ACCEPTED):
+            raise ApiError(
+                f"Cannot approve booking in {booking.status} status.",
+                code="invalid_state",
+                status_value=booking.status,
+            )
+
         staff_id = request.data.get("assigned_staff") or booking.customer.default_staff_id
         if not staff_id:
-            return Response({"detail": "Assign delivery staff before approval."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            raise ApiError("Assign delivery staff before approval.", code="required", field="assigned_staff")
+        try:
+            staff_id = int(str(staff_id).strip())
+        except (TypeError, ValueError):
+            raise ApiError("Valid active staff user is required.", code="invalid", field="assigned_staff")
         staff = User.objects.filter(id=staff_id, role__code="staff", is_active=True).first()
         if not staff:
-            return Response({"detail": "Valid active staff user is required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            raise ApiError("Valid active staff user is required.", code="invalid", field="assigned_staff")
+
+        # Same staff, delivery still live: nothing to do (keeps an `accepted` booking accepted).
+        if (
+            delivery
+            and delivery.staff_id == staff.id
+            and delivery.status in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED)
+        ):
+            return Response(BookingSerializer(booking, context={"request": request}).data)
+
+        if delivery and delivery.status in (
+            Delivery.Status.OUT_FOR_DELIVERY, Delivery.Status.DELIVERED, Delivery.Status.CANCELLED
+        ):
+            raise ApiError("Delivery state is inconsistent with the booking.", code="conflict", status=409)
+
         booking.status = Booking.Status.APPROVED
         booking.assigned_staff = staff
         booking.approved_by = request.user
         booking.approved_at = timezone.now()
-        booking.save(update_fields=["status", "assigned_staff", "approved_by", "approved_at", "updated_at"])
-        
-        delivery, created = Delivery.objects.get_or_create(booking=booking, defaults={"staff": staff, "status": Delivery.Status.ASSIGNED})
-        if not created and (delivery.staff_id != staff.id or delivery.status == Delivery.Status.REJECTED):
+        booking.rejection_reason = None
+        booking.rejected_by = None
+        booking.rejected_by_role = None
+        booking.rejected_at = None
+        booking.save(update_fields=[
+            "status", "assigned_staff", "approved_by", "approved_at",
+            "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at",
+        ])
+
+        previous_staff = None
+        previous_status = None
+        if delivery is None:
+            delivery = Delivery.objects.create(booking=booking, staff=staff, status=Delivery.Status.ASSIGNED)
+            created = True
+        else:
+            created = False
+            previous_staff = delivery.staff
+            previous_status = delivery.status
             delivery.staff = staff
             delivery.status = Delivery.Status.ASSIGNED
             delivery.rejection_reason = ""
-            delivery.save(update_fields=["staff", "status", "rejection_reason", "updated_at"])
+            delivery.started_at = None
+            delivery.completed_at = None
+            delivery.note = ""
+            delivery.empty_collected = 0
+            delivery.payment_collected = 0
+            delivery.save(update_fields=[
+                "staff", "status", "rejection_reason", "started_at", "completed_at",
+                "note", "empty_collected", "payment_collected", "updated_at",
+            ])
 
-        # Staff notification
-        if not Notification.objects.filter(recipient=staff, booking=booking, notification_type="STAFF_ASSIGNED").exists():
-            Notification.objects.create(
-                recipient=staff,
-                booking=booking,
-                notification_type="STAFF_ASSIGNED",
-                title="New Delivery Assigned",
-                body=f"New delivery assigned — Order #{booking.order_id}.",
+        ActivityLog.objects.create(
+            action="booking_approved",
+            user=request.user,
+            description=f"Assigned order #{booking.order_id} to {display_name(staff)}"[:255],
+            metadata={
+                "booking_id": booking.id,
+                "delivery_id": delivery.id,
+                "staff_id": staff.id,
+                "previous_staff_id": previous_staff.id if previous_staff else None,
+                "previous_delivery_status": previous_status,
+                "reassignment": not created,
+            },
+        )
+
+        notify(
+            staff,
+            booking,
+            "STAFF_ASSIGNED",
+            "New Delivery Assigned",
+            f"New delivery assigned — Order #{booking.order_id}.",
+            dedupe=created,
+        )
+        if (
+            not created
+            and previous_staff is not None
+            and previous_staff.id != staff.id
+            and previous_status in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED)
+        ):
+            notify(
+                previous_staff,
+                booking,
+                "DELIVERY_REASSIGNED",
+                "Delivery Reassigned",
+                f"Order #{booking.order_id} has been reassigned to another staff member.",
+                dedupe=False,
             )
 
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], permission_classes=[IsAdminUserRole])
+    @transaction.atomic
     def reject(self, request, pk=None):
         booking = self.get_object()
-        
-        # Don't allow rejecting if already rejected or delivered/out for delivery
-        if booking.status in [Booking.Status.REJECTED, Booking.Status.OUT_FOR_DELIVERY, Booking.Status.DELIVERED]:
-            return Response({"detail": f"Cannot reject booking in {booking.status} status."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        booking, delivery = lock_booking_and_delivery(booking.pk)
 
-        reason = request.data.get("reason", "").strip()
-        if not reason:
-            return Response({"detail": "Rejection reason is required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        if booking.status in (
+            Booking.Status.REJECTED, Booking.Status.OUT_FOR_DELIVERY,
+            Booking.Status.DELIVERED, Booking.Status.CANCELLED,
+        ):
+            raise ApiError(
+                f"Cannot reject booking in {booking.status} status.",
+                code="invalid_state",
+                status_value=booking.status,
+            )
 
+        reason = clean_reason(request.data.get("reason"), Booking._meta.get_field("rejection_reason").max_length)
+
+        booking_items.release(booking, request.user)
         booking.status = Booking.Status.REJECTED
         booking.rejection_reason = reason
         booking.rejected_by = request.user
         booking.rejected_by_role = "admin"
         booking.rejected_at = timezone.now()
         booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
-        
-        if not Notification.objects.filter(recipient=booking.customer.user, booking=booking, notification_type="ORDER_REJECTED").exists():
-            Notification.objects.create(
-                recipient=booking.customer.user,
-                booking=booking,
-                notification_type="ORDER_REJECTED",
-                title="Booking Rejected",
-                body=f"Your GasBook order #{booking.order_id} was rejected by Admin. Reason: {reason}",
-            )
+
+        if delivery and delivery.status in (
+            Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED, Delivery.Status.REJECTED
+        ):
+            previous_status = delivery.status
+            delivery.status = Delivery.Status.CANCELLED
+            delivery.save(update_fields=["status", "updated_at"])
+            if previous_status in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED):
+                notify(
+                    delivery.staff,
+                    booking,
+                    "DELIVERY_CANCELLED",
+                    "Delivery Cancelled",
+                    f"Order #{booking.order_id} was rejected by Admin and removed from your deliveries.",
+                    dedupe=False,
+                )
+
+        ActivityLog.objects.create(
+            action="booking_rejected",
+            user=request.user,
+            description=f"Rejected order #{booking.order_id}: {reason}"[:255],
+            metadata={"booking_id": booking.id, "delivery_id": delivery.id if delivery else None, "reason": reason},
+        )
+
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_REJECTED",
+            "Booking Rejected",
+            f"Your GasBook order #{booking.order_id} was rejected by Admin. Reason: {reason}",
+            dedupe=True,
+        )
         return Response(BookingSerializer(booking, context={"request": request}).data)
 
 
-class DeliveryViewSet(viewsets.ModelViewSet):
+class DeliveryViewSet(viewsets.ReadOnlyModelViewSet):
+    """Deliveries change only through the accept/reject/start/complete actions; there are
+    no generic create/update/delete routes (they bypassed the workflow and its log)."""
+
     queryset = Delivery.objects.select_related("booking__customer__user", "booking__cylinder_type", "staff").prefetch_related(
         "booking__customer__custom_rates",
         "booking__customer__cylinder_discounts__cylinder_type",
@@ -765,169 +1408,332 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(status=status_param)
         return queryset
 
+    @action(detail=False, methods=["get"])
+    def history(self, request):
+        """The signed-in staff member's completed deliveries and eligible direct sales.
+
+        Payment.received_by is collection attribution, not sale visibility. Keep the
+        sold_by OR handover_staff rule used by SaleViewSet, without opening /sales/.
+        """
+        if getattr(getattr(request.user, "role", None), "code", "") != "staff":
+            raise PermissionDenied("Only staff can view their sales and delivery history.")
+
+        deliveries = self.queryset.filter(staff=request.user, status=Delivery.Status.DELIVERED)
+        billed_items = SaleItem.objects.filter(sale_id=OuterRef("pk")).filter(Q(quantity__gt=0) | Q(total_amount__gt=0))
+        sales = Sale.objects.filter(
+            Q(sold_by=request.user) | Q(handover_staff=request.user), booking__isnull=True,
+        ).filter(Exists(billed_items) | Q(accessories__isnull=False)).distinct().select_related("customer__user", "void").prefetch_related("items__cylinder_type", "accessories")
+
+        # Merge model records before pagination. A delivery's event is its completion;
+        # a direct sale's is its recording, even if later cancelled. Unknown legacy
+        # completion times sort last and stay null rather than being fabricated.
+        entries = [("delivery", row, row.completed_at) for row in deliveries]
+        entries.extend(("sale", row, row.created_at) for row in sales)
+        entries.sort(key=lambda entry: (entry[2] is not None, entry[2], entry[0], entry[1].pk), reverse=True)
+        page = self.paginate_queryset(entries)
+        timestamp_field = DateTimeField()
+        data = []
+        for source, record, occurred_at in page if page is not None else entries:
+            serializer = DeliverySerializer if source == "delivery" else StaffDirectSaleHistorySerializer
+            data.append({
+                "history_source": source,
+                "source_id": record.pk,
+                "occurred_at": timestamp_field.to_representation(occurred_at) if occurred_at else None,
+                source: serializer(record, context={"request": request}).data,
+            })
+        return self.get_paginated_response(data) if page is not None else Response(data)
+
+    def _check_ownership(self, request, delivery):
+        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
+            raise ApiError("This delivery is not assigned to you.", code="forbidden", status=403)
+
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def accept(self, request, pk=None):
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        
-        if delivery.status not in [Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED]:
-            return Response({"detail": f"Cannot accept delivery from current status ({delivery.status})."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
+
+        if delivery.status not in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED):
+            raise ApiError(
+                f"Cannot accept delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
+        if delivery.status == Delivery.Status.ACCEPTED:
+            return Response(DeliverySerializer(delivery).data)
 
         delivery.status = Delivery.Status.ACCEPTED
         delivery.save(update_fields=["status", "updated_at"])
-        delivery.booking.status = Booking.Status.OUT_FOR_DELIVERY
-        delivery.booking.save(update_fields=["status", "updated_at"])
+        booking.status = Booking.Status.ACCEPTED
+        booking.save(update_fields=["status", "updated_at"])
 
-        staff_name = delivery.staff.get_full_name() or delivery.staff.username
-
-        if not Notification.objects.filter(recipient=delivery.booking.customer.user, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
-            Notification.objects.create(
-                recipient=delivery.booking.customer.user,
-                booking=delivery.booking,
-                notification_type="ORDER_OUT_FOR_DELIVERY",
-                title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
+        staff_name = display_name(delivery.staff)
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_ACCEPTED",
+            "Order Accepted",
+            f"Your GasBook order #{booking.order_id} has been accepted by {staff_name} and will be delivered soon.",
+            dedupe=True,
+        )
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "STAFF_ACCEPTED",
+                "Delivery Accepted by Staff",
+                f"Staff {staff_name} accepted order #{booking.order_id}.",
+                dedupe=True,
             )
-
-        for admin in User.objects.filter(role__code="admin"):
-            if not Notification.objects.filter(recipient=admin, booking=delivery.booking, notification_type="STAFF_ACCEPTED").exists():
-                Notification.objects.create(
-                    recipient=admin,
-                    booking=delivery.booking,
-                    notification_type="STAFF_ACCEPTED",
-                    title="Delivery Accepted by Staff",
-                    body=f"Staff {staff_name} accepted order #{delivery.booking.order_id}.",
-                )
 
         return Response(DeliverySerializer(delivery).data)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def reject(self, request, pk=None):
+        """Staff *decline*: the Delivery is rejected and the Booking returns to the
+        pending queue for re-assignment. The Booking's rejected_* fields are never
+        written here (they mean "order rejected by admin")."""
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        
-        reason = request.data.get("reason", "").strip() or "Other"
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
+
+        if delivery.status not in (Delivery.Status.ASSIGNED, Delivery.Status.ACCEPTED):
+            raise ApiError(
+                f"Cannot decline delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
+
+        reason = clean_reason(request.data.get("reason"), Delivery._meta.get_field("rejection_reason").max_length)
+        previous_status = delivery.status
+
         delivery.status = Delivery.Status.REJECTED
         delivery.rejection_reason = reason
         delivery.save(update_fields=["status", "rejection_reason", "updated_at"])
 
-        # Reject the booking completely
-        booking = delivery.booking
-        booking.status = Booking.Status.REJECTED
-        booking.rejection_reason = reason
-        booking.rejected_by = request.user
-        booking.rejected_by_role = "staff"
-        booking.rejected_at = timezone.now()
-        booking.save(update_fields=["status", "rejection_reason", "rejected_by", "rejected_by_role", "rejected_at", "updated_at"])
+        booking.status = Booking.Status.PENDING
+        booking.assigned_staff = None
+        booking.approved_by = None
+        booking.approved_at = None
+        booking.save(update_fields=["status", "assigned_staff", "approved_by", "approved_at", "updated_at"])
 
-        staff_name = delivery.staff.get_full_name() or delivery.staff.username
+        staff_name = display_name(delivery.staff)
+        ActivityLog.objects.create(
+            action="delivery_declined",
+            user=request.user,
+            description=f"{staff_name} declined order #{booking.order_id}: {reason}"[:255],
+            metadata={
+                "booking_id": booking.id,
+                "delivery_id": delivery.id,
+                "staff_id": delivery.staff_id,
+                "reason": reason,
+                "previous_delivery_status": previous_status,
+            },
+        )
 
-        # Admin notification
-        for admin in User.objects.filter(role__code="admin"):
-            Notification.objects.create(
-                recipient=admin,
-                booking=booking,
-                notification_type="STAFF_REJECTED",
-                title="Staff Delivery Rejected",
-                body=f"Staff {staff_name} rejected order #{booking.order_id}. Reason: {reason}",
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "STAFF_REJECTED",
+                "Staff Declined Delivery",
+                f"Staff {staff_name} declined order #{booking.order_id}. Reason: {reason}. Please assign another staff.",
+                dedupe=False,
             )
-
-        # Customer notification
-        Notification.objects.create(
-            recipient=booking.customer.user,
-            booking=booking,
-            notification_type="ORDER_REJECTED",
-            title="Order Status Update",
-            body=f"Your order #{booking.order_id} was rejected by the delivery staff. Reason: {reason}",
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_REASSIGNMENT",
+            "Order Update",
+            f"Your GasBook order #{booking.order_id} is being reassigned to another delivery partner. "
+            "We will notify you once a new partner is assigned.",
+            dedupe=False,
         )
 
         return Response(DeliverySerializer(delivery).data)
 
     @action(detail=True, methods=["post"])
+    @transaction.atomic
     def start(self, request, pk=None):
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        
-        if delivery.status in [Delivery.Status.DELIVERED, Delivery.Status.CANCELLED, Delivery.Status.REJECTED]:
-            return Response({"detail": f"Cannot start delivery from current status ({delivery.status})."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
+
+        if delivery.status in (Delivery.Status.DELIVERED, Delivery.Status.CANCELLED, Delivery.Status.REJECTED):
+            raise ApiError(
+                f"Cannot start delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
 
         delivery.status = Delivery.Status.OUT_FOR_DELIVERY
         delivery.started_at = timezone.now()
-        delivery.booking.status = Booking.Status.OUT_FOR_DELIVERY
-        delivery.booking.save(update_fields=["status", "updated_at"])
+        booking.status = Booking.Status.OUT_FOR_DELIVERY
+        booking.save(update_fields=["status", "updated_at"])
         delivery.save(update_fields=["status", "started_at", "updated_at"])
 
-        if not Notification.objects.filter(recipient=delivery.booking.customer.user, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
-            Notification.objects.create(
-                recipient=delivery.booking.customer.user,
-                booking=delivery.booking,
-                notification_type="ORDER_OUT_FOR_DELIVERY",
-                title="Out for Delivery",
-                body=f"Your GasBook order #{delivery.booking.order_id} is out for delivery.",
+        notify(
+            booking.customer.user,
+            booking,
+            "ORDER_OUT_FOR_DELIVERY",
+            "Out for Delivery",
+            f"Your GasBook order #{booking.order_id} is out for delivery.",
+            dedupe=True,
+        )
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "ORDER_OUT_FOR_DELIVERY",
+                "Order Out for Delivery",
+                f"Order #{booking.order_id} is out for delivery by {delivery.staff.username}.",
+                dedupe=True,
             )
-
-        for admin in User.objects.filter(role__code="admin"):
-            if not Notification.objects.filter(recipient=admin, booking=delivery.booking, notification_type="ORDER_OUT_FOR_DELIVERY").exists():
-                Notification.objects.create(
-                    recipient=admin,
-                    booking=delivery.booking,
-                    notification_type="ORDER_OUT_FOR_DELIVERY",
-                    title="Order Out for Delivery",
-                    body=f"Order #{delivery.booking.order_id} is out for delivery by {delivery.staff.username}.",
-                )
         return Response(DeliverySerializer(delivery).data)
 
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def complete(self, request, pk=None):
         delivery = self.get_object()
-        if (getattr(request.user.role, "code", "") == "staff") and delivery.staff_id != request.user.id:
-            return Response({"detail": "This delivery is not assigned to you."}, status=drf_status.HTTP_403_FORBIDDEN)
-        if delivery.status == Delivery.Status.DELIVERED:
-            return Response({"detail": "Delivery already completed."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        self._check_ownership(request, delivery)
+        booking, delivery = lock_booking_and_delivery(delivery.booking_id)
+        # Re-check on the locked row: a concurrent re-assignment may have changed the staff.
+        self._check_ownership(request, delivery)
 
-        booking = delivery.booking
-        profile = booking.customer
+        # --- guards (no writes yet) ---
+        if (
+            delivery.status == Delivery.Status.DELIVERED
+            or booking.sale_id is not None
+            or booking.status == Booking.Status.DELIVERED
+        ):
+            raise ApiError("Delivery already completed.", code="already_completed", sale_id=booking.sale_id)
+        if delivery.status in (Delivery.Status.REJECTED, Delivery.Status.CANCELLED):
+            raise ApiError(
+                f"Cannot complete delivery from current status ({delivery.status}).",
+                code="invalid_state",
+                status_value=delivery.status,
+            )
+
+        # The customer next (before stock, as every money write does), so a sale void cannot
+        # check this customer's later sales while this one is being created.
+        profile = lock_customer(booking.customer_id)
         pricing = get_booking_pricing_snapshot(booking)
         total = pricing["final_amount"]
 
-        payment_collected = Decimal(str(request.data.get("payment_collected", "0") or "0"))
-        split_payments = request.data.get("split_payments", [])
-        if split_payments:
-            payment_collected = sum(Decimal(str(p.get("amount", 0))) for p in split_payments)
-            
+        # --- input validation ---
+        data = request.data
+        empty_collected = parse_non_negative_int(data.get("empty_collected"), "empty_collected", "Empty cylinders collected")
+        payment_collected = parse_money(data.get("payment_collected", "0"), "payment_collected", "Collected amount")
+        split_payments = data.get("split_payments") or []
+        if not isinstance(split_payments, list):
+            raise ApiError("Split payments must be a list.", code="invalid", field="split_payments")
+        parsed_splits = []
+        for item in split_payments:
+            if not isinstance(item, dict):
+                raise ApiError("Split payments must be a list.", code="invalid", field="split_payments")
+            amount = parse_money(item.get("amount"), "split_payments", "Split amount")
+            if amount < 0:
+                raise ApiError("Split amount must be a valid amount.", code="invalid", field="split_payments")
+            mode = item.get("mode")
+            if mode not in RECEIPT_MODES:
+                raise ApiError("Split payment mode must be cash, gpay or bank.", code="invalid", field="split_payments")
+            parsed_splits.append((amount, mode))
+        if parsed_splits:
+            payment_collected = sum((amount for amount, _mode in parsed_splits), Decimal("0"))
+
         if payment_collected < 0 or payment_collected > total:
-            return Response({"detail": "Collected amount must be between 0 and sale total."}, status=drf_status.HTTP_400_BAD_REQUEST)
+            raise ApiError("Collected amount must be between 0 and sale total.", code="invalid", field="payment_collected")
 
-        payment_method = request.data.get("payment_method") or booking.payment_method or "COD"
-        paid_payment_mode = request.data.get("paid_payment_mode", "cash")
-        empty_collected = int(request.data.get("empty_collected", 0) or 0)
-        staff_profile = getattr(delivery.staff, "staff_profile", None)
-        location = staff_profile.vehicle_location if staff_profile else None
-        if location is None:
-            location = StockLocation.objects.filter(code="shop").first() or StockLocation.objects.first()
-        if location is None:
-            return Response({"detail": "No stock location configured."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        # Temporary: staff delivery completion should not be blocked by stock/load sync
-        # until the warehouse/vehicle stock workflow is finalized.
-        # stock = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
-        # if stock.quantity < booking.quantity:
-        #     return Response({"detail": f"Not enough filled stock at {location.name}."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        # stock.quantity -= booking.quantity
-        # stock.save(update_fields=["quantity", "updated_at"])
+        # Collected money must say how it was paid (cash, gpay or bank); there is no default.
+        # paid_payment_mode is the mode of a partial collection; split parts carry their own.
+        payment_method = data.get("payment_method") or None
+        paid_payment_mode = data.get("paid_payment_mode") or None
+        if paid_payment_mode is not None and paid_payment_mode not in RECEIPT_MODES:
+            raise ApiError("Payment mode is invalid.", code="invalid", field="paid_payment_mode")
+        if payment_method is not None and payment_method not in RECEIPT_MODES:
+            raise ApiError("Payment method must be cash, gpay or bank.", code="invalid", field="payment_method")
+        if parsed_splits:
+            payment_method = Sale.PaymentMode.SPLIT
+        elif payment_collected > 0:
+            if not (payment_method or paid_payment_mode):
+                raise ApiError(
+                    "Payment method is required when money is collected: cash, gpay or bank.",
+                    code="required",
+                    field="payment_method",
+                )
+            payment_method = payment_method or paid_payment_mode
+            paid_payment_mode = paid_payment_mode or payment_method
+        else:
+            payment_method = payment_method or (Sale.PaymentMode.CREDIT if total > 0 else Sale.PaymentMode.CASH)
+        note = str(data.get("note", "") or "")[:300]
 
-        # if empty_collected > 0:
-        #     empty_stock = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
-        #     empty_stock.quantity += empty_collected
-        #     empty_stock.save(update_fields=["quantity", "updated_at"])
-        if split_payments:
+        # --- location: the one named in the request, else the staff member's own, else the shop ---
+        requested_location = data.get("location")
+        if requested_location not in (None, ""):
+            try:
+                location = StockLocation.objects.get(pk=int(requested_location))
+            except (ValueError, TypeError, StockLocation.DoesNotExist):
+                raise ApiError("Choose a valid stock location.", code="invalid", field="location")
+        else:
+            location = default_delivery_location(delivery.staff)
+            if location is None:
+                raise ApiError(
+                    "Choose the stock location this delivery takes cylinders from.",
+                    code="location_required",
+                    field="location",
+                    locations=list(stock_locations().values("id", "name")),
+                )
+        require_sellable_location(location)
+        lock_active_stock_location(location.pk)
+
+        mixed_lines = booking_items.cylinder_lines(booking)
+        empties = {booking.cylinder_type_id: empty_collected}
+        if mixed_lines and len({i.cylinder_type_id for i in mixed_lines}) > 1:
+            raw = data.get('empty_collected_by_type')
+            if not isinstance(raw, dict):
+                raise ApiError('Enter empty returns separately for each cylinder type.', code='invalid', field='empty_collected_by_type')
+            allowed = {str(i.cylinder_type_id) for i in mixed_lines}
+            if set(raw) != allowed:
+                raise ApiError('Specify empty returns for every ordered cylinder type.', code='invalid')
+            empties = {int(k): parse_non_negative_int(v, 'empty_collected_by_type', 'Empty returns') for k,v in raw.items()}
+            empty_collected = sum(empties.values())
+        if mixed_lines:
+            filled, empty = booking_items.deduct_cylinders(booking, location, empties)
+            booking_items.consume(booking, request.user)
+        else:
+            # --- stock: lock FILLED then EMPTY, refuse before any write if short ---
+            filled = get_stock_row(booking.cylinder_type, location, Stock.Status.FILLED)
+            if filled.quantity < booking.quantity:
+                raise ApiError(
+                    f"Not enough filled {booking.cylinder_type.name} stock at {location.name} "
+                    f"({filled.quantity} available, {booking.quantity} needed). Load stock before completing.",
+                    code="insufficient_stock",
+                    location=location.code,
+                    location_name=location.name,
+                    available=filled.quantity,
+                    required=booking.quantity,
+                )
+            filled.quantity -= booking.quantity
+            filled.save(update_fields=["quantity", "updated_at"])
+            empty = None
+            if empty_collected > 0:
+                empty = get_stock_row(booking.cylinder_type, location, Stock.Status.EMPTY)
+                empty.quantity += empty_collected
+                empty.save(update_fields=["quantity", "updated_at"])
+
+        if parsed_splits:
             sale_payment_mode = Sale.PaymentMode.SPLIT
         else:
             sale_payment_mode = Sale.PaymentMode.CREDIT if payment_collected < total else payment_method
-        
+
         sale = Sale.objects.create(
             customer=profile,
             location=location,
@@ -940,28 +1746,31 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             balance_due=total - payment_collected,
             payment_mode=sale_payment_mode,
             delivery_type=Sale.DeliveryType.DELIVERY,
-            delivery_staff=delivery.staff.get_full_name() or delivery.staff.username,
+            delivery_staff=display_name(delivery.staff),
+            handover_staff=delivery.staff,
             sold_by=request.user,
             note=f"Booking #{booking.order_id}",
         )
-        SaleItem.objects.create(
-            sale=sale,
-            cylinder_type=booking.cylinder_type,
-            quantity=booking.quantity,
-            rate=pricing["effective_rate"],
-            total_amount=total,
-            empty_returned=empty_collected,
-        )
+        if mixed_lines:
+            booking_items.sale_cylinders(booking, sale, dict(empties))
+        else:
+            SaleItem.objects.create(
+                sale=sale,
+                cylinder_type=booking.cylinder_type,
+                quantity=booking.quantity,
+                rate=pricing["effective_rate"],
+                total_amount=total,
+                empty_returned=empty_collected,
+                **snapshot(booking),
+            )
         if payment_collected > 0:
-            if split_payments:
-                for sp in split_payments:
-                    amt = Decimal(str(sp.get("amount", 0)))
-                    mode = sp.get("mode", Sale.PaymentMode.CASH)
+            if parsed_splits:
+                for index, (amt, mode) in enumerate(parsed_splits):
                     if amt > 0:
                         Payment.objects.create(
                             customer=profile, sale=sale, amount=amt,
                             payment_mode=mode, received_by=request.user,
-                            note="Delivery collection (split)", empty_collected=empty_collected if sp == split_payments[0] else 0,
+                            note="Delivery collection (split)", empty_collected=empty_collected if index == 0 else 0,
                         )
             else:
                 actual_payment_mode = paid_payment_mode if sale_payment_mode == Sale.PaymentMode.CREDIT and paid_payment_mode else payment_method
@@ -980,11 +1789,11 @@ class DeliveryViewSet(viewsets.ModelViewSet):
         delivery.payment_method = payment_method
         delivery.empty_collected = empty_collected
         delivery.completed_at = timezone.now()
-        delivery.note = request.data.get("note", "")
+        delivery.note = note
         delivery.save()
 
         booking.status = Booking.Status.DELIVERED
-        booking.payment_status = "PAID" if payment_collected >= total or booking.payment_method.upper() == "ONLINE" else "COLLECTED"
+        booking.payment_status = "PAID" if payment_collected >= total else "PARTIAL" if payment_collected > 0 else "PENDING"
         booking.delivered_at = delivery.completed_at
         booking.sale = sale
         booking.save(update_fields=["status", "payment_status", "delivered_at", "sale", "updated_at"])
@@ -993,35 +1802,33 @@ class DeliveryViewSet(viewsets.ModelViewSet):
             action="delivery_completed",
             description=f"Delivered booking #{booking.order_id} for Rs. {total}",
             user=request.user,
-            metadata={"booking_id": booking.id, "sale_id": sale.id, "delivery_id": delivery.id},
+            metadata={
+                "booking_id": booking.id,
+                "sale_id": sale.id,
+                "delivery_id": delivery.id,
+                "location": location.code,
+                "filled_after": filled.quantity,
+                "empty_after": empty.quantity if empty is not None else None,
+                "empty_collected": empty_collected,
+            },
         )
 
-        staff_name = delivery.staff.get_full_name() or delivery.staff.username
+        staff_name = display_name(delivery.staff)
 
-        # Customer Notification
         customer_msg = f"Your GasBook order #{booking.order_id} has been delivered successfully."
         if booking.payment_method.upper() == "COD" and payment_collected > 0:
             customer_msg += f" Payment of ₹{payment_collected} was collected successfully."
 
-        if not Notification.objects.filter(recipient=profile.user, booking=booking, notification_type="ORDER_DELIVERED").exists():
-            Notification.objects.create(
-                recipient=profile.user,
-                booking=booking,
-                notification_type="ORDER_DELIVERED",
-                title="Order Delivered",
-                body=customer_msg,
+        notify(profile.user, booking, "ORDER_DELIVERED", "Order Delivered", customer_msg, dedupe=True)
+        for admin in admin_users():
+            notify(
+                admin,
+                booking,
+                "ORDER_DELIVERED",
+                "Order Delivered",
+                f"Order #{booking.order_id} was delivered by {staff_name}.",
+                dedupe=True,
             )
-
-        # Admin Notification
-        for admin in User.objects.filter(role__code="admin"):
-            if not Notification.objects.filter(recipient=admin, booking=booking, notification_type="ORDER_DELIVERED").exists():
-                Notification.objects.create(
-                    recipient=admin,
-                    booking=booking,
-                    notification_type="ORDER_DELIVERED",
-                    title="Order Delivered",
-                    body=f"Order #{booking.order_id} was delivered by {staff_name}.",
-                )
 
         return Response(DeliverySerializer(delivery).data)
 
@@ -1045,20 +1852,60 @@ def customer_credentials(request, pk):
             "is_active": user.is_active,
         })
     if request.method == "DELETE":
-        user.delete()
-        return Response({"detail": "Customer deleted completely."})
-    
+        with transaction.atomic():
+            return Response(delete_customer(profile, request.user))
+
+    # A password reset must not silently reactivate a deactivated account.
     new_password = request.data.get("password", "").strip() or get_random_string(length=12)
     user.set_password(new_password)
     user.plain_password = ""
     user.must_change_password = True
-    user.is_active = True
-    user.save(update_fields=["password", "plain_password", "must_change_password", "is_active"])
+    user.save(update_fields=["password", "plain_password", "must_change_password"])
     return Response({"detail": "Temporary password generated.", "username": user.username, "temporary_password": new_password})
 
 
 def money_sum(queryset, field):
     return queryset.aggregate(total=Sum(field))["total"] or 0
+
+
+def deposits_in_sales(sales):
+    """New-cylinder deposits inside the billed totals of ``sales``: what new-connection lines charged on top
+    of the refill rate, from the amounts saved on each line (never from today's rates). A deposit is part of a
+    sale's total and of the money collected, as it has always been; this shows how much of that total it is."""
+    lines = SaleItem.objects.filter(sale__in=sales, rate_type="new", deposit_unit_amount__isnull=False)
+    amount = ExpressionWrapper(F("deposit_unit_amount") * F("quantity"), output_field=DecimalField(max_digits=14, decimal_places=2))
+    return lines.aggregate(total=Sum(amount))["total"] or 0
+
+
+def cancelled_sales_total(voids):
+    """Gross total of the sales cancelled by ``voids``, dated by the void, not the sale.
+
+    Net sales for a period = gross sales dated in it − sales cancelled in it. A voided sale
+    stays in its own day's gross sales and is taken off once, on the day it was voided.
+    """
+    return money_sum(Sale.objects.filter(pk__in=voids.values("sale_id")), "total_amount")
+
+
+def totals_by_user(queryset, user_field, amount_field, unassigned=None):
+    """Count and amount per user in ``user_field`` (a row named ``unassigned`` for blanks).
+
+    Grouped over the rows of one table with no join to a many-side, so no sale or payment
+    can be counted twice; the rows add up to the queryset's own total.
+    """
+    grouped = list(queryset.order_by().values(user_field).annotate(count=Count("id"), amount=Sum(amount_field)))
+    users = User.objects.select_related("role").in_bulk([row[user_field] for row in grouped if row[user_field]])
+    rows = []
+    for row in grouped:
+        user = users.get(row[user_field])
+        rows.append({
+            "user_id": row[user_field],
+            "name": display_name(user) if user else unassigned,
+            "username": user.username if user else None,
+            "role": getattr(user.role, "code", None) if user else None,
+            "count": row["count"],
+            "amount": row["amount"] or 0,
+        })
+    return sorted(rows, key=lambda r: (-r["amount"], r["name"] or ""))
 
 
 def serialize_me(request):
@@ -1077,8 +1924,7 @@ def serialize_me(request):
             location_name = loc.name
         assigned_area = request.user.staff_profile.assigned_area or None
         vehicle_number = request.user.staff_profile.vehicle_number or None
-        if request.user.staff_profile.image:
-            staff_image_url = request.build_absolute_uri(request.user.staff_profile.image.url)
+        staff_image_url = get_staff_image_url(request, request.user)
             
     return {
         "id": request.user.id,
@@ -1095,6 +1941,7 @@ def serialize_me(request):
         "assigned_area": assigned_area,
         "vehicle_number": vehicle_number,
         "staff_image_url": staff_image_url,
+        "capabilities": {"accessories": settings.ACCESSORIES_ENABLED, "image_uploads": not settings.DEMO_DISABLE_UPLOADS},
     }
 
 
@@ -1102,23 +1949,16 @@ def serialize_me(request):
 @permission_classes([permissions.IsAuthenticated])
 def me(request):
     if request.method == "PATCH":
-        full_name = request.data.get("full_name")
-        phone = request.data.get("phone")
-        email = request.data.get("email")
-        address = request.data.get("address")
+        contact = validate_user_contact(request.data)
 
-        if full_name is not None:
-            parts = full_name.strip().split(" ", 1)
-            request.user.first_name = parts[0] if parts else ""
-            request.user.last_name = parts[1] if len(parts) > 1 else ""
-        if phone is not None:
-            request.user.phone = phone.strip()
-            if request.user.phone and not request.user.phone.isdigit():
-                return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        if email is not None:
-            request.user.email = email.strip()
-        if address is not None:
-            request.user.address = address.strip()
+        if "full_name" in contact:
+            request.user.first_name, request.user.last_name = split_full_name(contact["full_name"])
+        if "phone" in contact:
+            request.user.phone = contact["phone"]
+        if "email" in contact:
+            request.user.email = contact["email"]
+        if "address" in contact:
+            request.user.address = contact["address"]
 
         request.user.save(update_fields=["first_name", "last_name", "phone", "email", "address"])
 
@@ -1139,6 +1979,7 @@ def users_list(request):
             "first_name": u.first_name,
             "last_name": u.last_name,
             "role": getattr(u.role, "code", ""),
+            "is_active": u.is_active,
             "phone": u.phone,
             "email": u.email,
             "address": u.address,
@@ -1165,49 +2006,236 @@ def user_detail(request, pk):
     except ObjectDoesNotExist:
         return Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
-        user.delete()
-        return Response({"detail": "User completely deleted."})
+        with transaction.atomic():
+            return Response(delete_user(user, request.user))
 
-    full_name = request.data.get("full_name")
-    phone = request.data.get("phone")
-    address = request.data.get("address")
-    email = request.data.get("email")
+    contact = validate_user_contact(request.data)
+    if "phone" in contact and not contact["phone"]:
+        raise ApiError("Phone required.", code="required", field="phone")
 
-    if full_name is not None:
-        parts = full_name.strip().split(" ", 1)
-        user.first_name = parts[0] if parts else ""
-        user.last_name = parts[1] if len(parts) > 1 else ""
-    if phone is not None:
-        user.phone = phone.strip()
-        if not user.phone:
-            return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
-        if not user.phone.isdigit():
-            return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if address is not None:
-        user.address = address.strip()
-    if email is not None:
-        user.email = email.strip()
+    with transaction.atomic():
+        if "full_name" in contact:
+            user.first_name, user.last_name = split_full_name(contact["full_name"])
+        if "phone" in contact:
+            user.phone = contact["phone"]
+        if "address" in contact:
+            user.address = contact["address"]
+        if "email" in contact:
+            user.email = contact["email"]
 
-    user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
+        user.save(update_fields=["first_name", "last_name", "phone", "address", "email"])
 
-    if getattr(getattr(user, "role", None), "code", "") == "staff":
-        profile, _ = StaffProfile.objects.get_or_create(user=user)
         new_image = request.FILES.get("image")
-        remove_image = str(request.data.get("remove_staff_image", "")).lower() in {"1", "true", "yes", "on"}
-
-        if remove_image and profile.image:
-            profile.image.delete(save=False)
-            profile.image = None
         if new_image:
-            if profile.image:
-                profile.image.delete(save=False)
-            profile.image = new_image
-        if remove_image or new_image:
-            profile.save(update_fields=["image", "updated_at"])
+            from .uploads import validated_image
+            new_image = validated_image(new_image)
+        remove_image = str(request.data.get("remove_staff_image", "")).strip().lower() in {"1", "true", "yes", "on"}
+        # Work on the instance cached by select_related so the response reflects the
+        # saved state (a second StaffProfile instance would leave the cache stale).
+        profile = getattr(user, "staff_profile", None)
+        if profile is None and getattr(getattr(user, "role", None), "code", "") == "staff":
+            profile = StaffProfile.objects.create(user=user)
+        if profile is not None:
+            if remove_image and profile.image:
+                profile.image = None
+            if new_image:
+                profile.image = new_image
+            if remove_image or new_image:
+                profile.save(update_fields=["image", "updated_at"])
+            user.staff_profile = profile
 
     return Response({
         **UserSerializer(user).data,
         "staff_image_url": get_staff_image_url(request, user),
+    })
+
+
+def _admin_user_or_response(request, pk):
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
+        return None, Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
+    try:
+        user = User.objects.exclude(role__code="customer").select_related("role", "staff_profile").get(pk=pk)
+    except ObjectDoesNotExist:
+        return None, Response({"detail": "Not found."}, status=drf_status.HTTP_404_NOT_FOUND)
+    return user, None
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def user_deactivate(request, pk):
+    user, error = _admin_user_or_response(request, pk)
+    if error is not None:
+        return error
+    with transaction.atomic():
+        user = deactivate_user(user, request.user)
+    return Response({
+        "detail": "User deactivated. History is preserved.",
+        "mode": "deactivated",
+        "default_staff_customers": default_staff_customers(user),
+        "user": {**UserSerializer(user).data, "staff_image_url": get_staff_image_url(request, user)},
+    })
+
+
+@api_view(["POST"])
+@permission_classes([permissions.IsAuthenticated])
+def user_reactivate(request, pk):
+    user, error = _admin_user_or_response(request, pk)
+    if error is not None:
+        return error
+    with transaction.atomic():
+        user = reactivate_user(user, request.user)
+    return Response({
+        "detail": "User reactivated.",
+        "mode": "reactivated",
+        "user": {**UserSerializer(user).data, "staff_image_url": get_staff_image_url(request, user)},
+    })
+
+
+# Row status (and ``status`` filter value) of a booking the staff member handed over.
+HANDED_OVER_STATUS = "reassigned"
+
+
+def build_staff_history_row(booking, staff, detail, names):
+    """One row of a staff history: the booking's Delivery when it is ``staff``'s
+    (``involvement: current``), else the handover read from the ActivityLog
+    (``involvement: previous``) with booking-level data only."""
+    to_datetime = DateTimeField().to_representation
+    try:
+        delivery = booking.delivery
+    except Delivery.DoesNotExist:
+        delivery = None
+
+    if delivery is not None and delivery.staff_id == staff.id:
+        from_id = detail.get("reassigned_from_id")
+        decline = detail.get("previous_decline")
+        return {
+            **StaffDeliveryHistorySerializer(delivery).data,
+            "involvement": "current",
+            "handover": None,
+            "reassigned_from": {"staff_id": from_id, "staff_name": names.get(from_id)} if from_id else None,
+            "previous_decline": (
+                {"reason": decline["reason"], "declined_at": to_datetime(decline["declined_at"])} if decline else None
+            ),
+        }
+
+    handover = detail["handover"]
+    return {
+        **{field: None for field in StaffDeliveryHistorySerializer.Meta.fields},
+        **StaffHandoverBookingSerializer(booking).data,
+        "status": HANDED_OVER_STATUS,
+        "involvement": "previous",
+        "handover": {
+            **handover,
+            "handed_over_at": to_datetime(handover["handed_over_at"]),
+            "to_staff_name": names.get(handover["to_staff_id"]),
+        },
+        "reassigned_from": None,
+        "previous_decline": None,
+    }
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def user_deliveries(request, pk):
+    """Delivery history of one staff member: one row per booking.
+
+    ``involvement: current`` rows are the bookings whose Delivery is theirs now
+    (``Delivery.staff``). ``involvement: previous`` rows are bookings they handed over —
+    declined, or re-assigned by an admin — read from the ActivityLog, which only exists
+    from ``history_since``; earlier handovers are not recoverable and not listed.
+
+    Query params: ``status`` (comma-separated delivery statuses, plus ``reassigned`` for
+    handed-over rows), ``start`` / ``end`` (booking date, YYYY-MM-DD), ``search`` (order id
+    or customer name/phone), ``page``, ``page_size``. ``summary`` covers the date range
+    only, not ``status`` / ``search``; its delivery counts are current rows only.
+    """
+    user, error = _admin_user_or_response(request, pk)
+    if error is not None:
+        return error
+
+    start_str = (request.query_params.get("start") or "").strip()
+    end_str = (request.query_params.get("end") or "").strip()
+    try:
+        start = date.fromisoformat(start_str) if start_str else None
+        end = date.fromisoformat(end_str) if end_str else None
+    except ValueError:
+        return Response(
+            {"detail": "Invalid date. Use YYYY-MM-DD.", "code": "invalid_date"},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+    if start and end and start > end:
+        return Response(
+            {"detail": "Start date must be on or before end date.", "code": "invalid_range", "start": start_str, "end": end_str},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+
+    deliveries = Delivery.objects.filter(staff=user)
+    if start:
+        deliveries = deliveries.filter(booking__created_at__date__gte=start)
+    if end:
+        deliveries = deliveries.filter(booking__created_at__date__lte=end)
+
+    summary = deliveries.aggregate(
+        total=Count("id"),
+        delivered=Count("id", filter=Q(status=Delivery.Status.DELIVERED)),
+        active=Count("id", filter=Q(status__in=OPEN_DELIVERY_STATUSES)),
+        cancelled=Count("id", filter=Q(status=Delivery.Status.CANCELLED)),
+        declined=Count("id", filter=Q(status=Delivery.Status.REJECTED)),
+        collected=Sum("payment_collected", filter=Q(status=Delivery.Status.DELIVERED)),
+    )
+    summary["collected"] = serialize_decimal(summary["collected"] or 0)
+
+    handovers = staff_handovers(user)
+    bookings = Booking.objects.all()
+    if start:
+        bookings = bookings.filter(created_at__date__gte=start)
+    if end:
+        bookings = bookings.filter(created_at__date__lte=end)
+    summary["reassigned"] = bookings.filter(pk__in=list(handovers)).count()
+
+    statuses = [s.strip() for s in (request.query_params.get("status") or "").split(",") if s.strip()]
+    scope = Q(delivery__staff=user)
+    if statuses:
+        scope &= Q(delivery__status__in=[s for s in statuses if s != HANDED_OVER_STATUS])
+    if handovers and (not statuses or HANDED_OVER_STATUS in statuses):
+        scope |= Q(pk__in=list(handovers))
+    bookings = bookings.filter(scope)
+    term = (request.query_params.get("search") or "").strip()
+    if term:
+        query = user_search_q(term, prefix="customer__user__")
+        order_match = re.fullmatch(r"#?(?:GB)?(\d+)", term, re.IGNORECASE)
+        if order_match:
+            query |= Q(pk=int(order_match.group(1)))
+        bookings = bookings.filter(query)
+
+    bookings = bookings.select_related(
+        "customer__user", "cylinder_type", "sale", "delivery"
+    ).prefetch_related(
+        "customer__custom_rates",
+        "customer__cylinder_discounts__cylinder_type",
+    ).order_by("-created_at", "-id")
+
+    paginator = StandardPagination()
+    page = paginator.paginate_queryset(bookings, request)
+    details = staff_assignment_details(user, [booking.pk for booking in page], handovers)
+    staff_ids = {d["handover"]["to_staff_id"] for d in details.values() if "handover" in d}
+    staff_ids |= {d["reassigned_from_id"] for d in details.values() if d.get("reassigned_from_id")}
+    names = {u.id: display_name(u) for u in User.objects.filter(pk__in=[i for i in staff_ids if i is not None])}
+    data = [build_staff_history_row(booking, user, details.get(booking.pk, {}), names) for booking in page]
+    logging_since = assignment_logging_started_at()
+    staff_profile = getattr(user, "staff_profile", None)
+    vehicle_location = staff_profile.vehicle_location if staff_profile else None
+    return Response({
+        **paginator.get_paginated_response(data).data,
+        "summary": summary,
+        "history_since": DateTimeField().to_representation(logging_since) if logging_since else None,
+        "staff": {
+            **UserSerializer(user).data,
+            "staff_image_url": get_staff_image_url(request, user),
+            "assigned_area": staff_profile.assigned_area if staff_profile else "",
+            "vehicle_number": staff_profile.vehicle_number if staff_profile else "",
+            "vehicle_location_name": vehicle_location.name if vehicle_location else None,
+        },
     })
 
 
@@ -1226,12 +2254,12 @@ def user_credentials(request, pk):
             "full_name": user.get_full_name() or user.username,
             "is_active": user.is_active,
         })
+    # A password reset must not silently reactivate a deactivated account.
     new_password = request.data.get("password", "").strip() or get_random_string(length=12)
     user.set_password(new_password)
     user.plain_password = ""
     user.must_change_password = True
-    user.is_active = True
-    user.save(update_fields=["password", "plain_password", "must_change_password", "is_active"])
+    user.save(update_fields=["password", "plain_password", "must_change_password"])
     return Response({"detail": "Temporary password generated.", "username": user.username, "temporary_password": new_password})
 
 
@@ -1251,6 +2279,12 @@ def change_password(request):
     if user is None or user.id != request.user.id:
         return Response({"detail": "Current password is incorrect."}, status=drf_status.HTTP_400_BAD_REQUEST)
 
+    if user.check_password(new_password):
+        return Response(
+            {"detail": "New password must be different from the current password.", "code": "password_reuse"},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+
     try:
         validate_password(new_password, user=request.user)
     except Exception as exc:
@@ -1260,39 +2294,47 @@ def change_password(request):
     request.user.must_change_password = False
     request.user.plain_password = ""
     request.user.save(update_fields=["password", "must_change_password", "plain_password"])
-    return Response({"detail": "Password updated successfully."})
+    from rest_framework_simplejwt.tokens import RefreshToken
+    replacement = RefreshToken.for_user(request.user)
+    return Response({"detail": "Password updated successfully.", "access": str(replacement.access_token), "refresh": str(replacement)})
 
 
 @api_view(["POST"])
 @permission_classes([permissions.IsAuthenticated])
+@transaction.atomic
 def register(request):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
-    username = request.data.get("username", "").strip()
-    password = request.data.get("password", "").strip() or get_random_string(length=12)
-    full_name = request.data.get("full_name", "").strip()
+    contact = validate_user_contact(request.data)
+    username = contact.get("username", "")
+    password = str(request.data.get("password", "") or "").strip() or get_random_string(length=12)
+    full_name = contact.get("full_name", "")
     role = request.data.get("role", "staff")
-    phone = request.data.get("phone", "").strip()
-    email = request.data.get("email", "").strip()
-    address = request.data.get("address", "").strip()
-    area = request.data.get("area", "").strip()
+    phone = contact.get("phone", "")
+    email = contact.get("email", "")
+    address = contact.get("address", "")
+    area = contact.get("area", "")
+    vehicle_number = contact.get("vehicle_number", "")
     staff_image = request.FILES.get("image")
+    if staff_image:
+        from .uploads import validated_image
+        staff_image = validated_image(staff_image)
     if not username:
-        return Response({"detail": "Username required."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Username required.", "code": "required", "field": "username"}, status=drf_status.HTTP_400_BAD_REQUEST)
     if not phone:
-        return Response({"detail": "Phone required."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if phone and not phone.isdigit():
-        return Response({"detail": "Phone number must contain only digits."}, status=drf_status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Phone required.", "code": "required", "field": "phone"}, status=drf_status.HTTP_400_BAD_REQUEST)
     if User.objects.filter(username=username).exists():
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
     if role not in [r.code for r in Role.objects.all()]:
         return Response({"detail": "Invalid role."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    parts = full_name.split(" ", 1)
+    if role == "customer":
+        ensure_customer_phone_free(phone)
+    first_name, last_name = split_full_name(full_name)
     user = User.objects.create_user(
         username=username,
         password=password,
-        first_name=parts[0],
-        last_name=parts[1] if len(parts) > 1 else "",
+        first_name=first_name,
+        last_name=last_name,
         email=email,
         role=Role.objects.get(code=role),
         plain_password="",
@@ -1313,32 +2355,94 @@ def register(request):
         StaffProfile.objects.create(
             user=user,
             assigned_area=area,
-            vehicle_number=request.data.get("vehicle_number", "").strip(),
+            vehicle_number=vehicle_number,
             vehicle_location_id=request.data.get("vehicle_location") or None,
             image=staff_image,
         )
     response_data = UserSerializer(user).data
-    if request.data.get("password", "").strip() == "":
+    if str(request.data.get("password", "") or "").strip() == "":
         response_data["temporary_password"] = password
     return Response(response_data, status=drf_status.HTTP_201_CREATED)
+
+
+def stock_matrix():
+    """{(cylinder type id, location id, status): quantity} in one query, for the stock screens."""
+    return {
+        (row["cylinder_type_id"], row["location_id"], row["status"]): row["quantity"] or 0
+        for row in Stock.objects.values("cylinder_type_id", "location_id", "status").annotate(quantity=Sum("quantity"))
+    }
+
+
+def visible_stock_locations(matrix):
+    """Stock locations to show in stock tables: every active one, plus any inactive one that
+    still holds cylinders, so deactivating a location never hides stock from the totals."""
+    held = {location_id for (_type, location_id, _status), quantity in matrix.items() if quantity}
+    return [
+        location
+        for location in stock_locations(active_only=False).order_by("id")
+        if location.is_active or location.pk in held
+    ]
+
+
+def location_columns(matrix, cylinder_id, locations):
+    return [
+        {
+            "id": location.pk,
+            "code": location.code,
+            "name": location.name,
+            "is_active": location.is_active,
+            "filled": matrix.get((cylinder_id, location.pk, Stock.Status.FILLED), 0),
+            "empty": matrix.get((cylinder_id, location.pk, Stock.Status.EMPTY), 0),
+        }
+        for location in locations
+    ]
+
+
+def legacy_location_keys(columns):
+    """shop_* / kandam_* keys older clients read; any other location appears only in ``locations``."""
+    keys = {}
+    for prefix in ("shop", "kandam"):
+        column = next((c for c in columns if c["code"] == prefix), None)
+        keys[f"{prefix}_filled"] = column["filled"] if column else 0
+        keys[f"{prefix}_empty"] = column["empty"] if column else 0
+    return keys
+
+
+def location_summary(matrix, locations):
+    return [
+        {
+            "id": location.pk,
+            "code": location.code,
+            "name": location.name,
+            "is_active": location.is_active,
+            "stock": sum(q for (_t, loc, _s), q in matrix.items() if loc == location.pk),
+        }
+        for location in locations
+    ]
 
 
 @api_view(["GET"])
 @permission_classes([permissions.IsAuthenticated])
 def dashboard(request):
-    user_role_code = getattr(getattr(request.user, "role", None), "code", "")
-    if user_role_code not in ["admin", "staff"] and not request.user.is_superuser:
-        return Response({"detail": "Admin or staff only."}, status=drf_status.HTTP_403_FORBIDDEN)
+    # Admin-only: its totals and activity feed cover every sale, and staff see only their own work.
+    if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
+        return Response({"detail": "Admin only."}, status=drf_status.HTTP_403_FORBIDDEN)
     today = timezone.localdate()
     stocks = Stock.objects.select_related("cylinder_type", "location")
     filled = stocks.filter(status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0
     empty = stocks.filter(status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0
     shop_stock = stocks.filter(location__code="shop").aggregate(total=Sum("quantity"))["total"] or 0
     kandam_stock = stocks.filter(location__code="kandam").aggregate(total=Sum("quantity"))["total"] or 0
+    matrix = stock_matrix()
+    locations = visible_stock_locations(matrix)
     today_sales = Sale.objects.filter(created_at__date=today)
     today_payments = Payment.objects.filter(created_at__date=today)
-    pending = Sale.objects.aggregate(total=Sum("balance_due"))["total"] or 0
-    pending_deliveries = Booking.objects.filter(status__in=[Booking.Status.APPROVED, Booking.Status.OUT_FOR_DELIVERY]).count()
+    # Cancelled sales are dated by their void; see cancelled_sales_total.
+    today_cancelled = cancelled_sales_total(SaleVoid.objects.filter(created_at__date=today))
+    pending = not_voided(Sale.objects.all()).aggregate(total=Sum("balance_due"))["total"] or 0
+    pending_deliveries = Booking.objects.filter(
+        status__in=[Booking.Status.APPROVED, Booking.Status.ACCEPTED, Booking.Status.OUT_FOR_DELIVERY]
+    ).count()
     today_bookings = Booking.objects.filter(created_at__date=today).count()
     staff_live_status = [
         {
@@ -1346,7 +2450,9 @@ def dashboard(request):
             "name": staff.get_full_name() or staff.username,
             "area": staff.staff_profile.assigned_area if hasattr(staff, "staff_profile") else "",
             "active": staff.staff_profile.is_active if hasattr(staff, "staff_profile") else staff.is_active,
-            "assigned_deliveries": staff.deliveries.exclude(status=Delivery.Status.DELIVERED).count(),
+            "assigned_deliveries": staff.deliveries.exclude(
+                status__in=[Delivery.Status.DELIVERED, Delivery.Status.REJECTED, Delivery.Status.CANCELLED]
+            ).count(),
         }
         for staff in User.objects.filter(role__code="staff").prefetch_related("deliveries")
     ]
@@ -1369,11 +2475,13 @@ def dashboard(request):
     # Using a chronological running balance where returned empties pay off existing debt first,
     # and excess returns (banked credits) do NOT artificially lower the debt below 0.
     customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type")
-    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
+    # Every type, active or not: cylinders discontinued types left with customers still count.
+    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.all()}
     
     for customer in customers:
-        # We must process sales chronologically to maintain the correct running balance
-        sales = customer.sales.order_by("created_at")
+        # We must process sales chronologically to maintain the correct running balance.
+        # Voided sales are left out: their cylinders came back.
+        sales = not_voided(customer.sales.all()).order_by("created_at")
         balances = {} # tid -> debt
         
         for sale in sales:
@@ -1397,19 +2505,24 @@ def dashboard(request):
                 with_customers_by_type[tid] += debt
 
     stock_rows = []
-    for cylinder in CylinderType.objects.filter(is_active=True):
+    for cylinder in CylinderType.objects.all():
         cylinder_stocks = stocks.filter(cylinder_type=cylinder)
         with_customers = with_customers_by_type.get(cylinder.id, 0)
+        columns = location_columns(matrix, cylinder.id, locations)
+        type_filled = cylinder_stocks.filter(status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0
+        type_empty = cylinder_stocks.filter(status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0
+        # An inactive type stays listed while any of it is in stock or with customers.
+        if not cylinder.is_active and not (type_filled or type_empty or with_customers):
+            continue
         stock_rows.append(
             {
                 "id": cylinder.id,
                 "type": cylinder.name,
-                "filled": cylinder_stocks.filter(status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0,
-                "empty": cylinder_stocks.filter(status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0,
-                "shop_filled": cylinder_stocks.filter(location__code="shop", status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0,
-                "shop_empty": cylinder_stocks.filter(location__code="shop", status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0,
-                "kandam_filled": cylinder_stocks.filter(location__code="kandam", status=Stock.Status.FILLED).aggregate(total=Sum("quantity"))["total"] or 0,
-                "kandam_empty": cylinder_stocks.filter(location__code="kandam", status=Stock.Status.EMPTY).aggregate(total=Sum("quantity"))["total"] or 0,
+                "is_active": cylinder.is_active,
+                "filled": type_filled,
+                "empty": type_empty,
+                "locations": columns,
+                **legacy_location_keys(columns),
                 "total": (cylinder_stocks.aggregate(total=Sum("quantity"))["total"] or 0) + with_customers,
                 "with_customers": with_customers,
             }
@@ -1425,7 +2538,10 @@ def dashboard(request):
             "empty_cylinders": empty,
             "shop_stock": shop_stock,
             "kandam_stock": kandam_stock,
+            "locations": location_summary(matrix, locations),
             "today_sales": money_sum(today_sales, "total_amount"),
+            "today_cancelled": today_cancelled,
+            "today_net_sales": money_sum(today_sales, "total_amount") - today_cancelled,
             "today_collection": money_sum(today_payments, "amount"),
             "pending_payments": pending,
             "staff_live_status": staff_live_status,
@@ -1447,23 +2563,45 @@ def reports(request):
     try:
         start = date.fromisoformat(start_str)
         end = date.fromisoformat(end_str)
-    except ValueError:
-        start = end = today
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "Invalid date. Use YYYY-MM-DD.", "code": "invalid_date"},
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
+    if start > end:
+        return Response(
+            {
+                "detail": "Start date must be on or before end date.",
+                "code": "invalid_range",
+                "start": start_str,
+                "end": end_str,
+            },
+            status=drf_status.HTTP_400_BAD_REQUEST,
+        )
     month_start = today.replace(day=1)
+    location_id = parse_id_param(request.query_params["location"], "location") if request.query_params.get("location") else None
 
     range_sales = Sale.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
+    if location_id:
+        # Sales sections only; payments have no location, so collections are not filtered.
+        range_sales = range_sales.filter(location_id=location_id)
     range_payments = Payment.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
+    # Sales cancelled in the range, dated by the void (their gross stays on the sale's own day).
+    range_voids = SaleVoid.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
+    if location_id:
+        range_voids = range_voids.filter(sale__location_id=location_id)
+    range_cancelled = cancelled_sales_total(range_voids)
     range_expenses = Expense.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
     range_movements = StockMovement.objects.filter(created_at__date__gte=start, created_at__date__lte=end)
     cylinder_sales = (
-        SaleItem.objects.filter(sale__created_at__date__gte=start, sale__created_at__date__lte=end)
-        .values("cylinder_type__name", "sale__location__name", "sale__sold_by__role")
+        SaleItem.objects.filter(sale__in=range_sales)
+        .values("cylinder_type__name", "sale__location__name")
         .annotate(total_qty=Sum("quantity"), total_amount=Sum("total_amount"))
-        .order_by("cylinder_type__name")
+        .order_by("cylinder_type__name", "sale__location__name")
     )
 
     pending_sales = (
-        Sale.objects.filter(balance_due__gt=0)
+        not_voided(Sale.objects.filter(balance_due__gt=0))
         .select_related("customer__user")
         .values("customer__user__first_name", "customer__user__last_name", "customer__user__phone")
         .annotate(total_due=Sum("balance_due"), sale_count=Count("id"))
@@ -1471,7 +2609,8 @@ def reports(request):
     )
 
     range_sales_list = SaleSerializer(
-        range_sales.select_related("customer__user", "location", "sold_by").prefetch_related("items__cylinder_type"),
+        range_sales.select_related("customer__user", "location", "sold_by__role", "handover_staff", "booking")
+        .prefetch_related("items__cylinder_type"),
         many=True,
     ).data
 
@@ -1486,11 +2625,16 @@ def reports(request):
     # Calculate with_customers correctly by summing physical possession per customer per cylinder type
     # Using a chronological running balance
     customers = CustomerProfile.objects.prefetch_related("sales__items__cylinder_type", "custom_rates")
-    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
-    customer_credits_by_type = {c.id: 0 for c in CylinderType.objects.filter(is_active=True)}
+    with_customers_by_type = {c.id: 0 for c in CylinderType.objects.all()}
+    customer_credits_by_type = {c.id: 0 for c in CylinderType.objects.all()}
     
     for customer in customers:
-        sales = customer.sales.filter(created_at__date__lte=end).order_by("created_at")
+        # As of the end date: sales voided by then no longer leave cylinders with the customer.
+        sales = (
+            customer.sales.filter(created_at__date__lte=end)
+            .exclude(pk__in=SaleVoid.objects.filter(created_at__date__lte=end).values("sale_id"))
+            .order_by("created_at")
+        )
         custom_rates = {cr.cylinder_type_id: cr.custom_price for cr in customer.custom_rates.all()}
         balances = {} # tid -> {owed, credits}
         
@@ -1512,7 +2656,7 @@ def reports(request):
                 refill_rate = custom_rates.get(tid, item.cylinder_type.refill_rate)
                 threshold = (item.cylinder_type.selling_price + refill_rate) / 2
                 
-                if item.rate <= threshold and taken_qty > 0:
+                if (item.rate_type == "refill" or (item.rate_type is None and item.rate <= threshold)) and taken_qty > 0:
                     credits_needed = max(0, taken_qty - returned_qty)
                     balances[tid]["credits"] -= credits_needed
                     if balances[tid]["credits"] < 0:
@@ -1524,26 +2668,26 @@ def reports(request):
             if tid in customer_credits_by_type and data["credits"] > 0:
                 customer_credits_by_type[tid] += data["credits"]
                     
-    for cylinder in CylinderType.objects.filter(is_active=True):
-        cstocks = stocks.filter(cylinder_type=cylinder)
+    matrix = stock_matrix()
+    report_locations = visible_stock_locations(matrix)
+    for cylinder in CylinderType.objects.all():
         with_customers = with_customers_by_type.get(cylinder.id, 0)
         customer_credits = customer_credits_by_type.get(cylinder.id, 0)
-        
-        shop_filled = cstocks.filter(location__code="shop", status="filled").aggregate(t=Sum("quantity"))["t"] or 0
-        shop_empty = cstocks.filter(location__code="shop", status="empty").aggregate(t=Sum("quantity"))["t"] or 0
-        kandam_filled = cstocks.filter(location__code="kandam", status="filled").aggregate(t=Sum("quantity"))["t"] or 0
-        kandam_empty = cstocks.filter(location__code="kandam", status="empty").aggregate(t=Sum("quantity"))["t"] or 0
-        
+        columns = location_columns(matrix, cylinder.id, report_locations)
+        physical = sum(c["filled"] + c["empty"] for c in columns)
+        # Historical view: an inactive type is listed for as long as anything of it is held.
+        if not cylinder.is_active and not (physical or with_customers or customer_credits):
+            continue
+
         stock_snapshot.append({
             "type": cylinder.name,
-            "shop_filled": shop_filled,
-            "shop_empty": shop_empty,
-            "kandam_filled": kandam_filled,
-            "kandam_empty": kandam_empty,
+            "is_active": cylinder.is_active,
+            "locations": columns,
+            **legacy_location_keys(columns),
             "with_customers": with_customers,
             "customer_credits": customer_credits,
-            "supplier_stock": shop_filled + shop_empty + kandam_filled + kandam_empty + with_customers - customer_credits,
-            "physical_stock": shop_filled + shop_empty + kandam_filled + kandam_empty,
+            "supplier_stock": physical + with_customers - customer_credits,
+            "physical_stock": physical,
         })
 
     range_loads = range_movements.filter(
@@ -1562,7 +2706,7 @@ def reports(request):
         Q(from_location__is_main_supplier=True) | Q(to_location__is_main_supplier=True)
     ).order_by("created_at")
     
-    for cylinder in CylinderType.objects.filter(is_active=True):
+    for cylinder in CylinderType.objects.all():
         movements = supplier_movements.filter(cylinder_type=cylinder)
         sent_total = 0
         received_total = 0
@@ -1590,23 +2734,65 @@ def reports(request):
     return Response(
         {
             "range": {"start": start_str, "end": end_str},
+            # sales: gross, by sale date. cancelled: gross of sales voided in the range, by void
+            # date. net_sales = sales - cancelled. collection: every payment in the range, so a
+            # confirmed refund counts here as money paid out (refunds_paid shows it alone); a
+            # refund still owed is in refunds_owed only (all time, like pending).
             "summary": {
                 "sales": money_sum(range_sales, "total_amount"),
+                "cancelled": range_cancelled,
+                "net_sales": money_sum(range_sales, "total_amount") - range_cancelled,
+                # of "sales" (gross, like it): the new-cylinder deposits billed on new connections.
+                "deposits_included": deposits_in_sales(range_sales),
                 "collection": money_sum(range_payments, "amount"),
+                "refunds_paid": -money_sum(range_payments.filter(amount__lt=0, reverses_link__sale_refund__isnull=False), "amount"),
+                "refunds_owed": money_sum(SaleVoid.objects.filter(outcome=SaleVoid.Outcome.REFUND, refund__isnull=True), "refund_due"),
                 "expenses": money_sum(range_expenses, "amount"),
                 "movements": range_movements.count(),
-                "pending": Sale.objects.aggregate(total=Sum("balance_due"))["total"] or 0,
+                "pending": not_voided(Sale.objects.all()).aggregate(total=Sum("balance_due"))["total"] or 0,
             },
             "monthly": {
                 "sales": money_sum(Sale.objects.filter(created_at__date__gte=month_start), "total_amount"),
+                "cancelled": cancelled_sales_total(SaleVoid.objects.filter(created_at__date__gte=month_start)),
+                "net_sales": money_sum(Sale.objects.filter(created_at__date__gte=month_start), "total_amount")
+                - cancelled_sales_total(SaleVoid.objects.filter(created_at__date__gte=month_start)),
                 "collection": money_sum(Payment.objects.filter(created_at__date__gte=month_start), "amount"),
                 "expenses": money_sum(Expense.objects.filter(created_at__date__gte=month_start), "amount"),
             },
+            "cancellation_list": [
+                {
+                    "sale_id": void.sale_id,
+                    "customer_name": void.sale.customer.user.username if void.sale.customer_id else None,
+                    "location_name": void.sale.location.name,
+                    "sale_date": void.sale.created_at,
+                    "voided_at": void.created_at,
+                    "voided_by_name": display_name(void.voided_by),
+                    "reason": void.reason,
+                    "total_amount": serialize_decimal(void.sale.total_amount),
+                    "outcome": void.outcome,
+                    "refund_due": serialize_decimal(void.refund_due),
+                    "refunded": getattr(void, "refund", None) is not None,
+                    "refunded_at": void.refund.created_at if getattr(void, "refund", None) else None,
+                }
+                for void in range_voids.select_related("sale__customer__user", "sale__location", "voided_by", "refund").order_by("created_at")
+            ],
+            # Gross, like summary.sales: a sale cancelled later stays here on its own day.
             "cylinder_sales": list(cylinder_sales),
+            # Three views that overlap and must never be added together. recorded_by and
+            # handed_over_by add up to summary.sales (gross, cancelled sales included);
+            # collections_by_receiver adds up to summary.collection (refunds paid out and
+            # credit reversals included, as negative and offsetting entries).
+            "staff_breakdown": {
+                "recorded_by": totals_by_user(range_sales, "sold_by", "total_amount"),
+                "handed_over_by": totals_by_user(range_sales, "handover_staff", "total_amount", unassigned="Not specified"),
+                "collections_by_receiver": totals_by_user(range_payments, "received_by", "amount"),
+            },
+            "filters": {"start": start_str, "end": end_str, "location": location_id},
             "pending_dues": list(pending_sales),
             "sales_list": range_sales_list,
             "expense_list": range_expense_list,
             "stock_snapshot": stock_snapshot,
+            "stock_locations": location_summary(matrix, report_locations),
             "supplier_balance": supplier_balance,
             "load_summary": list(load_summary),
             "movement_history": StockMovementSerializer(

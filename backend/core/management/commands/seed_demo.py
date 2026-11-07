@@ -1,4 +1,5 @@
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+from django.conf import settings
 
 from core.models import CylinderType, Stock, StockLocation, User, Role
 
@@ -7,6 +8,8 @@ class Command(BaseCommand):
     help = "Seed GasBook with default locations, cylinder types, and starter stock."
 
     def handle(self, *args, **options):
+        if settings.GASBOOK_ENV != "development" or not settings.DEBUG:
+            raise CommandError("Demo data is restricted to explicit development mode with DEBUG enabled.")
         admin_role, _ = Role.objects.get_or_create(code="admin", defaults={"name": "Admin"})
         Role.objects.get_or_create(code="staff", defaults={"name": "Staff"})
         Role.objects.get_or_create(code="customer", defaults={"name": "Customer"})
@@ -58,4 +61,4 @@ class Command(BaseCommand):
                         defaults={"quantity": 0},
                     )
 
-        self.stdout.write(self.style.SUCCESS("GasBook demo data seeded. Login: admin / admin123"))
+        self.stdout.write(self.style.SUCCESS("Development demo data seeded. Never use this command for production."))

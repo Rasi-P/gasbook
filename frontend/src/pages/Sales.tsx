@@ -1,26 +1,59 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCapabilities } from '../hooks/useCapabilities';
+import { PaymentSummary, type PaymentFacts } from '../components/PaymentSummary';
+import { DirectSaleRates } from '../components/DirectSaleRates';
+import { formatDateTime } from '../lib/dateTime';
+import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
-  Banknote, Building2, CreditCard, Plus,
-  RotateCcw, Search, Smartphone, Trash2, User,
+  AlertTriangle, Banknote, Building2, CheckCircle2, CreditCard, Plus,
+  Receipt, RotateCcw, Smartphone, Trash2, User,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, extractApiError, fetchCatalogPages, fetchAllPages, getApiErrorCode, LIMITS, newClientRef } from '../lib/api';
+import { ErrorState, LoadingState } from '../components/AsyncState';
+import { Pager } from '../components/Pager';
+import { usePager } from '../hooks/usePager';
+import { SaleItemsCell } from '../components/SaleItemsCell';
+import { ConfirmRefundModal, VoidSaleModal, VoidStatusBadges, type SalePaymentRow, type SaleVoidInfo } from '../components/SaleVoidDialogs';
+import { Badge } from '../components/ui/Badge';
+import { Button } from '../components/ui/Button';
+import { Alert } from '../components/ui/Alert';
+import { Card, CardFooter, CardHeader } from '../components/ui/Card';
+import { ChoiceChips } from '../components/ui/ChoiceChips';
+import { Field, Input, Select } from '../components/ui/Field';
+import { IconButton } from '../components/ui/IconButton';
+import { EmptyState } from '../components/ui/EmptyState';
+import { PageHeader } from '../components/ui/PageHeader';
+import { SearchInput } from '../components/ui/SearchInput';
+import { SkeletonRows } from '../components/ui/Skeleton';
+import { Table, TableWrap, Td, Th } from '../components/ui/Table';
+import { Tabs } from '../components/ui/Tabs';
+import { fetchActiveCylinderTypes, fetchActiveLocations, useCatalogRevision } from '../lib/catalog';
 
-type CylinderType = { id: number; name: string; selling_price: number; refill_rate: number };
+type CylinderType = { id: number; name: string; deposit_amount: number; refill_rate: number };
 type Location = { id: number; name: string; code: string; is_main_supplier: boolean };
-type SaleItem = { cylinder_type: number; quantity: number | string; rate: string; empty_returned: number | string; rate_type: 'custom' | 'refill' | 'new' };
+type AccessoryProduct = { id: number; name: string; selling_price: string; is_active: boolean; available: boolean; stock: number; reserved: number };
+type AccessoryLine = { product: number; quantity: number | string };
+type SaleItem = { cylinder_type: number; quantity: number | string; empty_returned: number | string; rate_type: 'refill' | 'new'; rate?: string; deposit?: string };
+// The server validates active admins and eligible staff using the same handover rule.
+type StaffOption = { id: number; user: number; username: string; first_name: string; last_name: string; role: string; can_hand_over: boolean };
 type HistorySale = {
+  payment_summary?: PaymentFacts;
   id: number;
   customer_name: string;
   sold_by_name: string;
+  sold_by_full_name: string;
+  handover_staff_name: string | null;
+  is_direct: boolean;
+  void: SaleVoidInfo | null;
   note?: string;
+  accessory_items?: import('../components/BookingItems').BookingItem[];
   items: { cylinder_type_name: string; quantity: number; rate: number; empty_returned: number }[];
   total_amount: number;
   paid_amount: number;
   balance_due: number;
   payment_mode: string;
   created_at: string;
-  payments: { amount: number; mode: string }[];
+  payments: SalePaymentRow[];
 };
 
 const PAYMENT_MODES = [
@@ -35,7 +68,43 @@ function money(v: number | string) {
   return `Rs. ${Number(v || 0).toLocaleString('en-IN')}`;
 }
 
+/** The payments that paid for a sale (refunds and credit reversals are shown with its cancellation). */
+function originalPayments(sale: { payments: SalePaymentRow[] }) {
+  return (sale.payments ?? []).filter((p) => p.kind === 'payment');
+}
+
+function staffName(s: StaffOption) {
+  const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || s.username;
+  return `${name} · ${s.role === 'admin' ? 'Admin' : 'Staff'}`;
+}
+
+type ExistingCustomer = { id: number; name: string; phone: string };
+type CustomerSuggestion = {
+  id: number; name: string; phone: string; address: string; pending_balance: number | string;
+  credit_balance: number | string; empties_owed: Record<number, { owed: number; name: string }>;
+  sales_count: number; custom_rates: { cylinder_type: number; custom_price: string }[];
+  empty_credits: Record<number, { credit: number; name: string }>; is_active?: boolean;
+};
+type SalePayload = {
+  client_ref: string; location: number; payment_mode: string; paid_amount: string; quoted_total: string;
+  sale_items: SaleItem[]; accessory_lines: AccessoryLine[]; handover_staff?: number; customer?: number;
+  new_customer?: { name: string; phone: string; address: string }; paid_payment_mode?: string;
+  split_payments?: { mode: string; amount: number }[]; past_due_payments?: { mode: string; amount: string }[];
+};
+
+/** The customer already using a phone number, when a new-customer sale was refused for it. */
+function duplicateCustomerFrom(err: unknown): ExistingCustomer | null {
+  if (getApiErrorCode(err) !== 'duplicate_phone') return null;
+  return (err as { response?: { data?: { existing_customer?: ExistingCustomer } } }).response?.data?.existing_customer ?? null;
+}
+
+/** A request whose client_ref already recorded a sale: an earlier attempt went through. */
+function isReusedClientRef(err: unknown): boolean {
+  return getApiErrorCode(err) === 'client_ref_reused';
+}
+
 export default function Sales() {
+  const accessoryCapability = useCapabilities();
   const [tab, setTab] = useState<'new' | 'history'>('new');
   const [cylinderTypes, setCylinderTypes] = useState<CylinderType[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -44,13 +113,25 @@ export default function Sales() {
   const [customerName, setCustomerName] = useState('');
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
-  const [customerSuggestions, setCustomerSuggestions] = useState<{ id: number; name: string; phone: string; address: string; pending_balance: number; empties_owed: Record<number, { owed: number; name: string }>; sales_count: number; custom_rates: any[]; empty_credits: Record<number, { credit: number; name: string }> }[]>([]);
+  const [customerSuggestions, setCustomerSuggestions] = useState<CustomerSuggestion[]>([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
-  const [selectedCustomer, setSelectedCustomer] = useState<any | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerSuggestion | null>(null);
   const [location, setLocation] = useState(0);
+  // Who physically handed the cylinders over (optional). The server accepts only active staff.
+  const [staffOptions, setStaffOptions] = useState<StaffOption[]>([]);
+  const handoverOptions = staffOptions.filter((s) => s.can_hand_over);
+  const [staffLoadError, setStaffLoadError] = useState('');
+  const [handoverStaff, setHandoverStaff] = useState('');
 
   // Sale items (start empty — user adds as needed)
   const [items, setItems] = useState<SaleItem[]>([]);
+  const [products, setProducts] = useState<AccessoryProduct[]>([]);
+  const [accessories, setAccessories] = useState<AccessoryLine[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsError, setProductsError] = useState('');
+  const [productsRevision, setProductsRevision] = useState(0);
+  const availableProducts = products.filter(p => p.is_active && p.available && p.stock > p.reserved);
+  const nextProduct = availableProducts.find(p => !accessories.some(line => line.product === p.id));
   const [paymentMode, setPaymentMode] = useState('cash');
   const [paidAmount, setPaidAmount] = useState('');
   const [paidPaymentMode, setPaidPaymentMode] = useState('cash');
@@ -67,21 +148,36 @@ export default function Sales() {
 
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  // Identifies this sale for the server; kept across retries, renewed after each saved sale.
+  const [clientRef, setClientRef] = useState(newClientRef);
+  const [existingCustomer, setExistingCustomer] = useState<ExistingCustomer | null>(null);
+  const [refStatus, setRefStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [refError, setRefError] = useState('');
 
   // Stock availability
   const [stockData, setStockData] = useState<{ cylinder_type: number; location: number; status: string; quantity: number }[]>([]);
+  const [stockError, setStockError] = useState('');
 
   // History state
   const [sales, setSales] = useState<HistorySale[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [historyError, setHistoryError] = useState('');
   const [search, setSearch] = useState('');
   const [filterPending, setFilterPending] = useState(false);
+  const [filterHandover, setFilterHandover] = useState('');
+  const [filterVoid, setFilterVoid] = useState('');
+  const historyPager = usePager(sales, 10, `${search}|${filterPending}|${filterHandover}|${filterVoid}`);
+  // Cancelling a sale and confirming its refund (components/SaleVoidDialogs).
+  const [voidSaleId, setVoidSaleId] = useState<number | null>(null);
+  const [refundSale, setRefundSale] = useState<HistorySale | null>(null);
+  const [historyNotice, setHistoryNotice] = useState('');
 
-  useEffect(() => {
-    Promise.all([api.get('/cylinder-types/'), api.get('/locations/')])
-      .then(([tr, lr]) => {
-        const types: CylinderType[] = tr.data.results ?? tr.data;
-        const locs: Location[] = (lr.data.results ?? lr.data).filter((l: Location) => !l.is_main_supplier && l.code !== 'supplier');
-        setCylinderTypes(types);
+  function loadReferenceData() {
+    // Only active cylinder types and active stock locations can take a new sale (the server enforces the same).
+    Promise.all([fetchActiveCylinderTypes(), fetchActiveLocations('stock')])
+      .then(([types, locs]) => {
+        setCylinderTypes(types as unknown as CylinderType[]);
         setLocations(locs);
         const savedLoc = localStorage.getItem('lastSalesLoc');
         if (savedLoc && locs.find(l => l.id === Number(savedLoc))) {
@@ -89,9 +185,34 @@ export default function Sales() {
         } else {
           setLocation(locs[0]?.id ?? 1);
         }
+        setRefError('');
+        setRefStatus('ready');
         // Don't pre-populate items — user adds when ready
       })
-      .catch(() => undefined);
+      .catch((err) => {
+        setRefError(extractApiError(err, [], 'Could not load cylinder types and locations.'));
+        setRefStatus('error');
+      });
+  }
+
+  const catalogRevision = useCatalogRevision();
+  useEffect(() => { loadReferenceData(); }, [catalogRevision]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchCatalogPages<AccessoryProduct>('/products/').then(rows => {
+      if (!cancelled) { setProducts(rows); setProductsError(''); }
+    }).catch(err => {
+      if (!cancelled) setProductsError(extractApiError(err, [], 'Could not load accessories.'));
+    }).finally(() => { if (!cancelled) setProductsLoading(false); });
+    return () => { cancelled = true; };
+  }, [productsRevision]);
+
+  // Optional field: if the list cannot load, the sale can still be recorded without it.
+  useEffect(() => {
+    fetchAllPages<StaffOption>('/sales/handover-options/')
+      .then((rows) => { setStaffOptions(rows); setStaffLoadError(''); })
+      .catch((err) => setStaffLoadError(extractApiError(err, [], 'Could not load the handover list.')));
   }, []);
 
   useEffect(() => {
@@ -103,88 +224,76 @@ export default function Sales() {
     if (!location || locations.length === 0) return;
     const loc = locations.find(l => l.id === location);
     if (!loc) return;
-    api.get('/stock/', { params: { location: loc.code, status: 'filled' } })
-      .then((r) => setStockData(r.data.results ?? r.data))
-      .catch(() => undefined);
+    fetchAllPages<{ cylinder_type: number; location: number; status: string; quantity: number }>('/stock/', { location: loc.code, status: 'filled' })
+      .then((rows) => { setStockData(rows); setStockError(''); })
+      .catch((err) => setStockError(extractApiError(err, [], 'Stock levels unavailable.')));
   }, [location, locations]);
 
   useEffect(() => {
     if (!customerName.trim() || selectedCustomerId !== null) {
-      setCustomerSuggestions([]);
       return;
     }
+    let cancelled = false;
     const t = setTimeout(() => {
-      api.get('/customers/', { params: { search: customerName } })
-        .then((r) => setCustomerSuggestions((r.data.results ?? r.data).slice(0, 5)))
+      fetchAllPages<CustomerSuggestion>('/customers/', { search: customerName }, 2)
+        .then((rows) => {
+          if (cancelled) return;
+          // Deactivated customers cannot take new sales.
+          setCustomerSuggestions(rows.filter((c) => c.is_active !== false).slice(0, 5));
+        })
         .catch(() => undefined);
     }, 300);
-    return () => clearTimeout(t);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [customerName, selectedCustomerId]);
 
-  function fetchHistory() {
+  const fetchHistory = useCallback(() => {
     const params: Record<string, string> = {};
     if (search) params.search = search;
     if (filterPending) params.pending = '1';
-    api.get('/sales/', { params })
-      .then((r) => setSales(r.data.results ?? r.data))
-      .catch(() => undefined);
-  }
+    if (filterHandover) params.handover_staff = filterHandover;
+    if (filterVoid) params.void_status = filterVoid;
+    fetchAllPages<HistorySale>('/sales/', params)
+      .then((rows) => { setSales(rows); setHistoryError(''); setHistoryStatus('ready'); })
+      .catch((err) => {
+        setHistoryError(extractApiError(err, [], 'Could not load sales history.'));
+        setHistoryStatus('error');
+      });
+  }, [search, filterPending, filterHandover, filterVoid, setSales, setHistoryError, setHistoryStatus]);
 
   useEffect(() => {
     if (tab === 'history') fetchHistory();
-  }, [tab, search, filterPending]);
+  }, [tab, fetchHistory]);
 
   // ── Item helpers ──────────────────────────────────────────────────────────
 
   // ── Item helpers ──────────────────────────────────────────────────────────
-
-  function getApplicableRate(cylinder_type: number, rate_type: 'custom' | 'refill' | 'new', customer: any | null) {
-    const t = cylinderTypes.find(c => c.id === cylinder_type);
-    if (!t) return '0';
-    if (rate_type === 'custom') {
-      const custom = customer?.custom_rates?.find((cr: any) => cr.cylinder_type === cylinder_type);
-      return custom ? String(custom.custom_price) : String(t.refill_rate);
-    } else if (rate_type === 'refill') {
-      return String(t.refill_rate);
-    } else {
-      return String(t.selling_price);
-    }
-  }
 
   function updateItem(index: number, patch: Partial<SaleItem>) {
-    setItems((prev) => {
-      const next = [...prev];
-      const item = { ...next[index], ...patch };
+    setItems(prev => prev.map((item, i) => i === index
+      ? { ...item, ...(patch.cylinder_type !== undefined ? { rate: undefined, deposit: undefined } : {}), ...patch }
+      : item));
+  }
 
-      // If cylinder_type or rate_type changes, update the rate automatically
-      if (patch.cylinder_type !== undefined || patch.rate_type !== undefined) {
-        item.rate = getApplicableRate(item.cylinder_type, item.rate_type, selectedCustomer);
-      }
+  function itemAmounts(item: SaleItem) {
+    const cylinder = cylinderTypes.find(type => type.id === item.cylinder_type);
+    const agreed = selectedCustomer && selectedCustomerId === selectedCustomer.id
+      ? selectedCustomer.custom_rates?.find((value: { cylinder_type: number; custom_price: string }) => value.cylinder_type === item.cylinder_type)
+      : undefined;
+    return {
+      refill: item.rate ?? String(agreed?.custom_price ?? cylinder?.refill_rate ?? 0),
+      deposit: item.rate_type === 'new' ? item.deposit ?? String(cylinder?.deposit_amount ?? 0) : '0',
+    };
+  }
 
-      next[index] = item;
-      return next;
-    });
+  function itemSubtotal(item: SaleItem) {
+    const { refill, deposit } = itemAmounts(item);
+    return (Math.round(Number(refill) * 100) + Math.round(Number(deposit) * 100)) * Number(item.quantity) / 100;
   }
 
   function addItem() {
-    const t = cylinderTypes[0];
-    if (!t) return;
-    const hasCustom = selectedCustomer?.custom_rates?.find((cr: any) => cr.cylinder_type === t.id);
-    const initialRateType = hasCustom ? 'custom' : 'refill';
-    const rate = getApplicableRate(t.id, initialRateType, selectedCustomer);
-    const newItem: SaleItem = { cylinder_type: t.id, quantity: 1, rate, empty_returned: 1, rate_type: initialRateType };
-    setItems((prev) => [...prev, newItem]);
+    const cylinder = cylinderTypes[0];
+    if (cylinder) setItems(prev => [...prev, { cylinder_type: cylinder.id, quantity: 1, empty_returned: 1, rate_type: 'refill' }]);
   }
-
-  // Update rates if customer selection changes
-  useEffect(() => {
-    if (items.length > 0) {
-      setItems((prev) => prev.map(item => ({
-        ...item,
-        rate: getApplicableRate(item.cylinder_type, item.rate_type, selectedCustomer)
-      })));
-    }
-  }, [selectedCustomer]);
 
   function removeItem(index: number) {
     setItems((prev) => prev.filter((_, i) => i !== index));
@@ -209,10 +318,39 @@ export default function Sales() {
 
   // ── Totals ────────────────────────────────────────────────────────────────
 
-  const total = useMemo(
-    () => items.reduce((sum, item) => sum + (Number(item.quantity) || 0) * Number(item.rate || 0), 0),
-    [items],
-  );
+  type Quote = { total_amount: string; discount_amount: string; accessory_items?: { name: string; quantity: number; rate: string; total_amount: string }[] };
+  const [quote, setQuote] = useState<{ key: string; data?: Quote; error?: string } | null>(null);
+  const [quoteRevision, setQuoteRevision] = useState(0);
+  const quoteRequest = JSON.stringify({ customer: selectedCustomerId, sale_items: items.map(item => ({
+    cylinder_type: item.cylinder_type, quantity: Number(item.quantity), rate_type: item.rate_type,
+    empty_returned: Number(item.empty_returned),
+    refill_charge: itemAmounts(item).refill, deposit: itemAmounts(item).deposit,
+  })), accessory_lines: accessories.map(line => ({ product: line.product, quantity: Number(line.quantity) })) });
+  const quoteKey = `${quoteRevision}:${quoteRequest}`;
+  useEffect(() => {
+    let cancelled = false;
+    if (returnMode || (!items.length && !accessories.length)) return;
+    const timer = window.setTimeout(() => {
+      api.post<Quote>('/sales/preview/', JSON.parse(quoteRequest))
+        .then(({ data }) => { if (!cancelled) setQuote({ key: quoteKey, data }); })
+        .catch(err => { if (!cancelled) setQuote({ key: quoteKey, error: extractApiError(err, [], 'Could not calculate pricing.') }); });
+    }, 150);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [quoteRequest, quoteKey, items.length, accessories.length, returnMode]);
+  useEffect(() => {
+    const refresh = () => {
+      fetchActiveCylinderTypes()
+        .then(types => { setCylinderTypes(types as unknown as CylinderType[]); setQuoteRevision(value => value + 1); })
+        .catch(() => setQuoteRevision(value => value + 1));
+    };
+    window.addEventListener('gas-rates-changed', refresh);
+    return () => window.removeEventListener('gas-rates-changed', refresh);
+  }, []);
+  const currentQuote = !returnMode && (items.length || accessories.length) && quote?.key === quoteKey ? quote : null;
+  // The API combines accessories and returns them in product-ID order.
+  const quotedAccessories = new Map([...accessories].sort((a, b) => a.product - b.product)
+    .map((line, index) => [line.product, currentQuote?.data?.accessory_items?.[index]]));
+  const total = Number(currentQuote?.data?.total_amount ?? 0);
   const paid = paymentMode === 'split' ? (Number(saleSplit.cash || 0) + Number(saleSplit.gpay || 0) + Number(saleSplit.bank || 0)) : (paymentMode === 'credit' ? Number(paidAmount || 0) : total);
   const balance = Math.max(total - paid, 0);
 
@@ -222,15 +360,17 @@ export default function Sales() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    setMessage(''); setError('');
-    if (items.length === 0) { setError('Add at least one cylinder item.'); return; }
+    if (saving) return;
+    setMessage(''); setError(''); setExistingCustomer(null);
+    if (!items.length && !accessories.length) { setError('Add at least one cylinder or accessory.'); return; }
+    if (!currentQuote?.data) { setError('Wait for a valid price quote.'); return; }
     if (selectedCustomer && pastTotal > Number(selectedCustomer.pending_balance)) {
       setError(`Cannot collect past payment greater than the pending balance of Rs. ${selectedCustomer.pending_balance}.`);
       return;
     }
+    setSaving(true);
     try {
-      let customerId: number | null = selectedCustomerId;
-      if (!customerId) {
+      if (!selectedCustomerId) {
         if (!customerName.trim()) {
           setError('Please select a customer or enter details to register a new one.');
           return;
@@ -239,21 +379,22 @@ export default function Sales() {
           setError('Phone number is required to register a new customer.');
           return;
         }
-        const res = await api.post('/customers/', { name: customerName.trim(), phone, address });
-        customerId = res.data.id;
       }
-      const salePayload: any = {
-        customer: customerId,
+      // One request records everything (a new customer, the sale, its payments, past dues) or
+      // nothing; client_ref makes a retry of the same request return the saved sale.
+      const salePayload: SalePayload = {
+        client_ref: clientRef,
         location,
         payment_mode: paymentMode,
-        paid_amount: paid,
-        sale_items: items.map((item) => ({
-          cylinder_type: item.cylinder_type,
-          quantity: Number(item.quantity) || 1,
-          rate: item.rate,
-          empty_returned: Number(item.empty_returned) || 0,
-        })),
+        // 2-decimal string: float maths turns 899.99 × 3 into 2699.9700000000003, which the server rejects.
+        paid_amount: paid.toFixed(2),
+        quoted_total: Number(currentQuote.data.total_amount).toFixed(2),
+        sale_items: JSON.parse(quoteRequest).sale_items,
+        accessory_lines: JSON.parse(quoteRequest).accessory_lines,
       };
+      if (handoverStaff) salePayload.handover_staff = Number(handoverStaff);
+      if (selectedCustomerId) salePayload.customer = selectedCustomerId;
+      else salePayload.new_customer = { name: customerName.trim(), phone: phone.trim(), address };
 
       if (paymentMode === 'split') {
         salePayload.split_payments = [];
@@ -264,31 +405,50 @@ export default function Sales() {
         salePayload.paid_payment_mode = paidPaymentMode;
       }
 
-      await api.post('/sales/', salePayload);
-
-      if (pastTotal > 0 && customerId) {
-        if (pastPaymentMode === 'split') {
-          if (Number(pastSplit.cash) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.cash), payment_mode: 'cash', note: 'Past pending collected during sale' });
-          if (Number(pastSplit.gpay) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.gpay), payment_mode: 'gpay', note: 'Past pending collected during sale' });
-          if (Number(pastSplit.bank) > 0) await api.post('/payments/', { customer: customerId, amount: Number(pastSplit.bank), payment_mode: 'bank', note: 'Past pending collected during sale' });
-        } else {
-          await api.post('/payments/', {
-            customer: customerId,
-            amount: pastTotal,
-            payment_mode: pastPaymentMode,
-            note: 'Past pending collected during sale',
-          });
-        }
+      // Settles the customer's older dues only, never this sale.
+      if (pastTotal > 0 && selectedCustomerId) {
+        salePayload.past_due_payments = pastPaymentMode === 'split'
+          ? (['cash', 'gpay', 'bank'] as const)
+              .filter((mode) => Number(pastSplit[mode]) > 0)
+              .map((mode) => ({ mode, amount: Number(pastSplit[mode]).toFixed(2) }))
+          : [{ mode: pastPaymentMode, amount: pastTotal.toFixed(2) }];
       }
+
+      await api.post('/sales/', salePayload);
 
       setMessage(`Sale saved! Total ${money(total)}, Balance ${money(balance)}${pastTotal > 0 ? `, and collected ${money(pastTotal)} for past dues` : ''}.`);
       setCustomerName(''); setPhone(''); setAddress(''); setSelectedCustomerId(null); setSelectedCustomer(null);
       setPaidAmount(''); setPaymentMode('cash'); setPaidPaymentMode('cash'); setSaleSplit({ cash: '', gpay: '', bank: '' });
       setPastAmount(''); setPastPaymentMode('cash'); setPastSplit({ cash: '', gpay: '', bank: '' });
       setItems([]);
+      setAccessories([]);
+      setProductsRevision(value => value + 1);
+      setHandoverStaff('');
+      setClientRef(newClientRef());
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setError(msg ? JSON.stringify(msg) : 'Failed to save sale. Check backend connection.');
+      setExistingCustomer(duplicateCustomerFrom(err));
+      if (isReusedClientRef(err)) {
+        setClientRef(newClientRef());
+        setError('An earlier attempt of this sale was already saved. Check Sales history before entering it again.');
+      } else {
+        if (['rate_mismatch', 'quote_changed'].includes(getApiErrorCode(err) ?? '')) setQuoteRevision(value => value + 1);
+        setError(extractApiError(err, ['name', 'phone', 'address', 'customer', 'location', 'sale_items', 'accessory_lines', 'paid_amount', 'split_payments', 'handover_staff', 'non_field_errors'], 'Failed to save sale. Check backend connection.'));
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /** After a duplicate-phone refusal, switch the form to the customer who has that number. */
+  async function selectExistingCustomer() {
+    if (!existingCustomer) return;
+    try {
+      const { data } = await api.get(`/customers/${existingCustomer.id}/`);
+      setCustomerName(data.name); setPhone(data.phone); setAddress(data.address);
+      setSelectedCustomerId(data.id); setSelectedCustomer(data);
+      setExistingCustomer(null); setError('');
+    } catch (err: unknown) {
+      setError(extractApiError(err, [], 'Could not load that customer.'));
     }
   }
 
@@ -296,12 +456,15 @@ export default function Sales() {
 
   async function handleReturnSubmit(e: FormEvent) {
     e.preventDefault();
+    if (saving) return;
     setMessage(''); setError('');
     if (!selectedCustomerId) { setError('Select a customer to record empty returns.'); return; }
     if (returnEmpties.length === 0) { setError('Add at least one cylinder type to return.'); return; }
     const totalEmpties = returnEmpties.reduce((s, r) => s + (Number(r.quantity) || 0), 0);
+    setSaving(true);
     try {
       await api.post('/sales/', {
+        client_ref: clientRef,
         customer: selectedCustomerId,
         location,
         payment_mode: 'cash',
@@ -319,9 +482,16 @@ export default function Sales() {
       setCustomerName(''); setPhone(''); setAddress(''); setSelectedCustomerId(null); setSelectedCustomer(null);
       setReturnEmpties([]);
       setReturnMode(false);
+      setClientRef(newClientRef());
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: unknown } })?.response?.data;
-      setError(msg ? JSON.stringify(msg) : 'Failed to record return.');
+      if (isReusedClientRef(err)) {
+        setClientRef(newClientRef());
+        setError('An earlier attempt of this return was already saved. Check Sales history before entering it again.');
+        return;
+      }
+      setError(extractApiError(err, ['customer', 'location', 'sale_items', 'non_field_errors'], 'Failed to record return.'));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -329,72 +499,57 @@ export default function Sales() {
 
   return (
     <div>
-      <div className="page-title">
-        <div><h1>Sales</h1><p>Multi-cylinder invoice entry and history.</p></div>
-      </div>
+      <PageHeader title="Sales" description="Cylinder and accessory sales, payments and history." />
 
       {/* Tab switcher */}
-      <div style={{ display: 'flex', background: 'var(--border)', borderRadius: '8px', padding: '4px', marginBottom: '16px' }}>
-        {(['new', 'history'] as const).map((t) => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            flex: 1, padding: '10px', border: 'none', borderRadius: '6px',
-            background: tab === t ? 'var(--surface)' : 'transparent',
-            fontWeight: 600, color: tab === t ? 'var(--text)' : 'var(--text-muted)',
-          }}>
-            {t === 'new' ? 'New Sale' : 'History'}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        ariaLabel="Sales sections"
+        variant="tabs"
+        className="page-tabs"
+        value={tab}
+        onChange={setTab}
+        items={[{ value: 'new', label: 'New Sale' }, { value: 'history', label: 'History' }]}
+      />
 
-      {tab === 'new' && (
-        <>
+      {tab === 'new' && refStatus === 'loading' && <LoadingState label="Loading sale setup…" />}
+      {tab === 'new' && refStatus === 'error' && <ErrorState message={refError} onRetry={() => { setRefStatus('loading'); loadReferenceData(); }} />}
+
+      {tab === 'new' && refStatus === 'ready' && (
+        <div className="sale-form">
           {/* Mode toggle: Sale vs Return Empties */}
-          <div style={{ display: 'flex', background: 'var(--border)', borderRadius: '8px', padding: '4px', marginBottom: '16px' }}>
-            <button
-              type="button"
-              onClick={() => { setReturnMode(false); setError(''); setMessage(''); }}
-              style={{
-                flex: 1, padding: '9px', border: 'none', borderRadius: '6px',
-                background: !returnMode ? 'var(--surface)' : 'transparent',
-                fontWeight: 600, color: !returnMode ? 'var(--text)' : 'var(--text-muted)',
-              }}
-            >
-              🧾 Sale
-            </button>
-            <button
-              type="button"
-              onClick={() => { setReturnMode(true); setError(''); setMessage(''); }}
-              style={{
-                flex: 1, padding: '9px', border: 'none', borderRadius: '6px',
-                background: returnMode ? 'var(--primary)' : 'transparent',
-                fontWeight: 600, color: returnMode ? 'white' : 'var(--text-muted)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-              }}
-            >
-              <RotateCcw size={15} /> Return Empties Only
-            </button>
-          </div>
+          <Tabs
+            ariaLabel="Sale mode"
+            block
+            value={returnMode ? 'return' : 'sale'}
+            onChange={(mode) => {
+              setReturnMode(mode === 'return');
+              setError('');
+              setMessage('');
+            }}
+            items={[
+              { value: 'sale', label: 'Sale', icon: <Receipt /> },
+              { value: 'return', label: 'Return Empties Only', icon: <RotateCcw /> },
+            ]}
+          />
 
           {/* Customer section — shared between both modes */}
-          <div className="card form-card" style={{ marginBottom: '16px' }}>
-            <h2 style={{ marginBottom: '14px' }}>Customer</h2>
+          <Card className="sale-card sale-card--overflow">
+            <CardHeader title="Customer" />
             <div className="grid-2">
-              <label>
-                <span>Name</span>
-                <div style={{ position: 'relative' }}>
-                  <div className="input-with-icon">
-                    <User size={18} />
-                    <input
-                      value={customerName}
-                      onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); }}
-                      placeholder="Search or enter new customer"
-                      autoComplete="off"
-                    />
-                  </div>
-                  {customerSuggestions.length > 0 && (
+              <Field label="Name">
+                <div className="sale-search">
+                  <Input
+                    leadingIcon={<User />}
+                    value={customerName}
+                    onChange={(e) => { setCustomerName(e.target.value); setSelectedCustomerId(null); setCustomerSuggestions([]); }}
+                    placeholder="Search or enter new customer"
+                    autoComplete="off"
+                    maxLength={LIMITS.name}
+                  />
+                  {customerName.trim() && selectedCustomerId === null && customerSuggestions.length > 0 && (
                     <div className="dropdown-list">
                       {customerSuggestions.map((c) => (
-                        <button key={c.id} type="button"
+                        <button key={c.id} type="button" className="suggest-item"
                           onClick={() => {
                   setCustomerName(c.name);
                   setPhone(c.phone);
@@ -402,150 +557,146 @@ export default function Sales() {
                   setSelectedCustomerId(c.id);
                   setSelectedCustomer(c);
                   setCustomerSuggestions([]);
-                }}
-                          style={{ display: 'block', width: '100%', padding: '10px 14px', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div>
-                              <strong style={{ fontSize: '0.9rem' }}>{c.name}</strong>
-                              {c.phone && <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginLeft: '8px' }}>{c.phone}</span>}
-                              {c.address && <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem', display: 'block', marginTop: '2px' }}>{c.address}</span>}
-                            </div>
-                            <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: '8px' }}>
-                              {Number(c.pending_balance) > 0 && (
-                                <span className="badge badge-warning" style={{ fontSize: '0.75rem' }}>Due {money(c.pending_balance)}</span>
-                              )}
-                            </div>
-                          </div>
+                }}>
+                          <span className="suggest-item__main">
+                            <strong>{c.name}</strong>
+                            {c.phone && <span className="suggest-item__phone">{c.phone}</span>}
+                            {c.address && <span className="suggest-item__address">{c.address}</span>}
+                          </span>
+                          {Number(c.pending_balance) > 0 && (
+                            <Badge tone="warning" size="sm">Due {money(c.pending_balance)}</Badge>
+                          )}
                         </button>
                       ))}
                     </div>
                   )}
                 </div>
-              </label>
-              <label>
-                <span>Phone</span>
-                <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Required for new customer" required={Boolean(customerName.trim() && selectedCustomerId === null && !returnMode)} />
-              </label>
+              </Field>
+              <Field label="Phone">
+                <Input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Required for new customer" maxLength={LIMITS.phone} inputMode="numeric" pattern="[0-9]*" title="Only digits allowed" required={Boolean(customerName.trim() && selectedCustomerId === null && !returnMode)} />
+              </Field>
             </div>
-            <div style={{ marginTop: '12px' }}>
-              <label>
-                <span>Address</span>
-                <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
-              </label>
-            </div>
-            <div style={{ marginTop: '12px' }}>
-              <label>
-                <span>Location</span>
-                <select value={location} onChange={(e) => setLocation(Number(e.target.value))}>
+            <div className="grid-2 sale-card__row">
+              <Field label="Address">
+                <Input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Optional" />
+              </Field>
+              <Field label="Location">
+                <Select value={location} onChange={(e) => setLocation(Number(e.target.value))}>
                   {locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-                </select>
-              </label>
+                </Select>
+              </Field>
             </div>
+            {!returnMode && (
+              <div className="grid-2 sale-card__row">
+                <Field label="Handed over by" hint={staffLoadError || 'Optional. The admin or staff member who handed the items to the customer.'}>
+                  <Select value={handoverStaff} onChange={(e) => setHandoverStaff(e.target.value)}>
+                    <option value="">Not specified</option>
+                    {handoverOptions.map((s) => <option key={s.id} value={s.user}>{staffName(s)}</option>)}
+                  </Select>
+                </Field>
+              </div>
+            )}
 
             {selectedCustomer && (
-              <div style={{ marginTop: '16px', padding: '16px', background: 'var(--surface-muted, #f8fafc)', borderRadius: '8px', border: '1px solid var(--border)', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                <div style={{ flex: 1, minWidth: '120px' }}>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Payment Due</div>
+              <div className="sale-summary">
+                <div className="ui-tile">
+                  <span className="ui-tile__label">Payment Due</span>
                   {Number(selectedCustomer.pending_balance) > 0 ? (
-                    <strong style={{ color: 'var(--danger)', fontSize: '1.1rem' }}>{money(selectedCustomer.pending_balance)}</strong>
+                    <strong className="ui-tile__value sale-summary__due">{money(selectedCustomer.pending_balance)}</strong>
+                  ) : Number(selectedCustomer.credit_balance) > 0 ? (
+                    <span className="sale-summary__ok">Credit {money(selectedCustomer.credit_balance)}</span>
                   ) : (
-                    <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: '0.95rem' }}>Settled</span>
+                    <span className="sale-summary__ok">Settled</span>
                   )}
                 </div>
-                <div style={{ flex: 1, minWidth: '120px' }}>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Empties Owed</div>
+                <div className="ui-tile">
+                  <span className="ui-tile__label">Empties Owed</span>
                   {selectedCustomer.empties_owed && Object.values(selectedCustomer.empties_owed).length > 0 ? (
-                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                      {Object.values(selectedCustomer.empties_owed).map((ec: any) => (
-                        <span key={ec.name} className="badge" style={{ padding: '4px 8px', background: 'var(--danger-soft)', color: 'var(--danger)' }}>{ec.owed} × {ec.name}</span>
+                    <div className="sale-summary__badges">
+                      {Object.values(selectedCustomer.empties_owed).map((ec) => (
+                        <Badge key={ec.name} tone="danger">{ec.owed} × {ec.name}</Badge>
                       ))}
                     </div>
                   ) : (
-                    <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: '0.95rem' }}>None</span>
+                    <span className="sale-summary__ok">None</span>
                   )}
                 </div>
-                <div style={{ flex: 1, minWidth: '140px' }}>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '4px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>Empty Credits</div>
+                <div className="ui-tile">
+                  <span className="ui-tile__label">Empty Credits</span>
                   {selectedCustomer.empty_credits && Object.values(selectedCustomer.empty_credits).length > 0 ? (
-                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                      {Object.values(selectedCustomer.empty_credits).map((ec: any) => (
-                        <span key={ec.name} className="badge badge-success" style={{ padding: '4px 8px' }}>{ec.credit} × {ec.name}</span>
+                    <div className="sale-summary__badges">
+                      {Object.values(selectedCustomer.empty_credits).map((ec) => (
+                        <Badge key={ec.name} tone="success">{ec.credit} × {ec.name}</Badge>
                       ))}
                     </div>
                   ) : (
-                    <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.95rem' }}>No credits</span>
+                    <span className="sale-summary__muted">No credits</span>
                   )}
                 </div>
               </div>
             )}
-          </div>
+          </Card>
 
           {/* ── RETURN EMPTIES MODE ── */}
           {returnMode && (
             <form onSubmit={handleReturnSubmit} className="form-stack">
-              <div className="card">
-                <div className="section-head">
-                  <h2><RotateCcw size={18} style={{ display: 'inline', marginRight: '6px', color: 'var(--primary)' }} />Empty Cylinders Returned</h2>
-                  {returnEmpties.length < cylinderTypes.length && (
-                    <button type="button" className="btn btn-outline" style={{ width: 'auto', minHeight: '36px', padding: '6px 14px' }} onClick={addReturnRow}>
-                      <Plus size={16} /> Add
-                    </button>
-                  )}
-                </div>
+              <Card className="sale-card">
+                <CardHeader
+                  title={<span className="sale-card__title"><RotateCcw size={18} aria-hidden="true" />Empty Cylinders Returned</span>}
+                  meta={returnEmpties.length < cylinderTypes.length ? (
+                    <Button type="button" variant="secondary" size="sm" icon={<Plus />} onClick={addReturnRow}>Add</Button>
+                  ) : undefined}
+                />
 
                 {returnEmpties.length === 0 && (
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', padding: '8px 0' }}>
+                  <p className="sale-hint">
                     Click "+ Add" to add cylinders being returned.
                   </p>
                 )}
 
-                <div className="form-stack" style={{ marginTop: '8px' }}>
+                <div className="sale-rows">
                   {returnEmpties.map((row, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '12px', alignItems: 'center', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '14px' }}>
-                      <label style={{ flex: 2, margin: 0 }}>
-                        <span>Cylinder Type</span>
-                        <select value={row.cylinder_type} onChange={(e) => updateReturnRow(i, { cylinder_type: Number(e.target.value) })}>
+                    <div key={i} className="sale-return-row">
+                      <Field label="Cylinder Type" className="sale-return-row__type">
+                        <Select value={row.cylinder_type} onChange={(e) => updateReturnRow(i, { cylinder_type: Number(e.target.value) })}>
                           {cylinderTypes.filter(t => !returnEmpties.some((r, j) => j !== i && r.cylinder_type === t.id)).map((t) => (
                             <option key={t.id} value={t.id}>{t.name}</option>
                           ))}
-                        </select>
-                      </label>
-                      <label style={{ flex: 1, margin: 0 }}>
-                        <span>Qty Returned</span>
-                        <input
+                        </Select>
+                      </Field>
+                      <Field label="Qty Returned" className="sale-return-row__qty">
+                        <Input
                           type="number" min="1" placeholder="0"
+                          className="sale-num"
                           value={row.quantity}
                           onChange={(e) => updateReturnRow(i, { quantity: e.target.value })}
-                          style={{ textAlign: 'center', width: '100%' }}
                         />
-                      </label>
-                      <button type="button" onClick={() => removeReturnRow(i)}
-                        style={{ background: 'none', border: 'none', color: 'var(--danger)', padding: '4px', marginTop: '20px' }}>
+                      </Field>
+                      <IconButton type="button" label="Remove" tone="danger" className="sale-return-row__remove" onClick={() => removeReturnRow(i)}>
                         <Trash2 size={16} />
-                      </button>
+                      </IconButton>
                     </div>
                   ))}
                 </div>
 
                 {returnEmpties.length > 0 && (
-                  <>
-                    <hr style={{ border: 'none', borderTop: '1px solid var(--border)', margin: '16px 0' }} />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 800 }}>
-                      <span style={{ color: 'var(--text)', fontSize: '1.05rem' }}>Total Cylinders Returned</span>
-                      <strong style={{ color: 'var(--success)', fontSize: '1.2rem' }}>
-                        {returnEmpties.reduce((s, r) => s + (Number(r.quantity) || 0), 0)} cylinder(s)
-                      </strong>
-                    </div>
-                  </>
+                  <div className="sale-total-line">
+                    <span>Total Cylinders Returned</span>
+                    <strong className="ui-num-success">
+                      {returnEmpties.reduce((s, r) => s + (Number(r.quantity) || 0), 0)} cylinder(s)
+                    </strong>
+                  </div>
                 )}
+              </Card>
+
+              {error && <Alert tone="danger" role="alert">{error}</Alert>}
+              {message && <Alert tone="success">{message}</Alert>}
+
+              <div className="sale-submit">
+                <Button type="submit" size="lg" icon={<RotateCcw />} disabled={saving}>
+                  {saving ? 'Saving…' : 'Record Empty Return'}
+                </Button>
               </div>
-
-              {error && <p className="form-error">{error}</p>}
-              {message && <p className="form-note">{message}</p>}
-
-              <button type="submit" className="btn btn-primary">
-                <RotateCcw size={18} /> Record Empty Return
-              </button>
             </form>
           )}
 
@@ -553,346 +704,368 @@ export default function Sales() {
           {!returnMode && (
             <form onSubmit={handleSubmit} className="form-stack">
               {/* Cylinder Items */}
-              <div className="card">
-                <div className="section-head">
-                  <h2>Cylinders</h2>
-                  <button type="button" className="btn btn-outline" style={{ width: 'auto', minHeight: '36px', padding: '6px 14px' }} onClick={addItem}>
-                    <Plus size={16} /> Add
-                  </button>
-                </div>
+              <Card className="sale-card">
+                <CardHeader
+                  title="Cylinders"
+                  meta={<Button type="button" variant="secondary" size="sm" icon={<Plus />} onClick={addItem}>Add</Button>}
+                />
 
                 {items.length === 0 && (
-                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', padding: '8px 0' }}>
+                  <p className="sale-hint">
                     Click "+ Add" to add cylinder items.
                   </p>
                 )}
 
-                <div className="form-stack">
+                <div className="sale-rows">
                   {items.map((item, i) => {
                     const type = cylinderTypes.find((c) => c.id === item.cylinder_type);
-                    const isCustomRate = item.rate !== '' && 
-                      Number(item.rate) !== Number(type?.selling_price) && 
-                      Number(item.rate) !== Number(type?.refill_rate);
                     const available = stockData.find(s => s.cylinder_type === type?.id)?.quantity ?? 0;
                     return (
-                      <div key={i} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '16px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>Item {i + 1}</span>
-                            <span style={{ 
-                              fontSize: '0.72rem', 
-                              padding: '3px 10px', 
-                              borderRadius: '12px',
-                              fontWeight: 600,
-                              letterSpacing: '0.02em',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '5px',
-                              background: available > 0 ? 'var(--success-soft, rgba(34,197,94,0.1))' : 'var(--danger-soft, rgba(239,68,68,0.1))',
-                              color: available > 0 ? 'var(--success, #22c55e)' : 'var(--danger, #ef4444)',
-                              border: `1px solid ${available > 0 ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
-                            }}>
-                              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'currentColor' }} />
-                              {available} in stock
-                            </span>
+                      <div key={i} className="sale-item">
+                        <div className="sale-item__head">
+                          <div className="sale-item__title">
+                            <strong>Item {i + 1}</strong>
+                            <Badge
+                              size="sm"
+                              tone={stockError ? 'neutral' : available > 0 ? 'success' : 'danger'}
+                              title={stockError || undefined}
+                              icon={<span className="sale-dot" />}
+                            >
+                              {stockError ? 'stock unknown' : `${available} in stock`}
+                            </Badge>
                           </div>
-                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                            {isCustomRate && <span className="badge badge-warning">Custom Price</span>}
-                            <button type="button" onClick={() => removeItem(i)} style={{ background: 'none', border: 'none', color: 'var(--danger)', padding: '4px', cursor: 'pointer' }}>
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
+                          <IconButton type="button" label="Remove item" tone="danger" size="sm" onClick={() => removeItem(i)}>
+                            <Trash2 size={16} />
+                          </IconButton>
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1fr 1fr 1fr', gap: '12px', alignItems: 'end' }}>
-                          <label>
-                            <span>Cylinder</span>
-                            <select value={item.cylinder_type} onChange={(e) => updateItem(i, { cylinder_type: Number(e.target.value) })}>
+                        <div className={`sale-item__grid${item.rate_type === 'new' ? ' sale-item__grid--new' : ''}`}>
+                          <Field label="Cylinder" className="sale-item__cylinder">
+                            <Select value={item.cylinder_type} onChange={(e) => updateItem(i, { cylinder_type: Number(e.target.value) })}>
                               {cylinderTypes.map((t) => (
                                 <option key={t.id} value={t.id}>{t.name}</option>
                               ))}
-                            </select>
-                          </label>
-                          <label>
-                            <span>Rate Type</span>
-                            <select value={item.rate_type} onChange={(e) => updateItem(i, { rate_type: e.target.value as 'custom' | 'refill' | 'new' })}>
-                              {selectedCustomer?.custom_rates?.some((cr: any) => cr.cylinder_type === item.cylinder_type) && (
-                                <option value="custom">Agreed Rate</option>
-                              )}
+                            </Select>
+                          </Field>
+                          <Field label="Rate Type">
+                            <Select value={item.rate_type} onChange={(e) => updateItem(i, { rate_type: e.target.value as 'refill' | 'new' })}>
                               <option value="refill">Refill</option>
                               <option value="new">New Cylinder</option>
-                            </select>
-                          </label>
-                          <label>
-                            <span>Rate (Rs.)</span>
-                            <input type="number" min="0" value={item.rate} onChange={(e) => updateItem(i, { rate: e.target.value })} />
-                          </label>
-                          <label>
-                            <span>Qty</span>
-                            <input
+                            </Select>
+                          </Field>
+                          <DirectSaleRates
+                            rateType={item.rate_type}
+                            rate={itemAmounts(item).refill}
+                            deposit={itemAmounts(item).deposit}
+                            onRateChange={rate => updateItem(i, { rate })}
+                            onDepositChange={deposit => updateItem(i, { deposit })}
+                          />
+                          <Field label="Qty">
+                            <Input
                               type="number" min="1" placeholder="0"
+                              className="sale-num"
                               value={item.quantity}
                               onChange={(e) => updateItem(i, { quantity: e.target.value })}
-                              style={{ textAlign: 'center' }}
                             />
-                          </label>
-                          <label>
-                            <span style={{ color: 'var(--primary)' }}>Empty Returned</span>
-                            <input
+                          </Field>
+                          <Field label="Empty Returned">
+                            <Input
                               type="number" min="0" placeholder="0"
+                              className="sale-num"
                               value={item.empty_returned}
                               onChange={(e) => updateItem(i, { empty_returned: e.target.value })}
-                              style={{ textAlign: 'center', borderColor: 'var(--primary)', color: 'var(--primary)', background: 'var(--primary-soft)' }}
                             />
-                          </label>
+                          </Field>
                         </div>
 
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: '16px' }}>
+                        <div className="sale-item__foot">
                           {/* Quick qty buttons */}
-                          <div style={{ display: 'flex', gap: '6px' }}>
-                            {[1, 2, 5, 10].map((q) => (
-                              <button key={q} type="button" onClick={() => updateItem(i, { quantity: q })}
-                                style={{ padding: '6px 12px', border: '1px solid var(--border)', borderRadius: '6px', background: item.quantity === q ? 'var(--primary)' : 'var(--surface)', color: item.quantity === q ? 'white' : 'var(--text-muted)', fontWeight: 700, fontSize: '0.85rem' }}>
-                                {q}
-                              </button>
-                            ))}
-                          </div>
+                          <ChoiceChips
+                            ariaLabel="Quick quantity"
+                            size="sm"
+                            value={typeof item.quantity === 'number' ? item.quantity : null}
+                            onChange={(q) => updateItem(i, { quantity: q })}
+                            options={[1, 2, 5, 10].map((q) => ({ value: q, label: String(q) }))}
+                          />
 
-                          <div style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--primary)' }}>
-                            {money((Number(item.quantity) || 0) * Number(item.rate || 0))}
-                          </div>
+                          <strong className="sale-item__total">{money(itemSubtotal(item))}</strong>
                         </div>
 
                         {item.rate_type !== 'new' && Number(item.empty_returned) < Number(item.quantity) && (
-                          <div style={{ marginTop: '12px', padding: '8px 12px', background: 'var(--warning-soft, rgba(245,158,11,0.1))', color: 'var(--warning, #d97706)', borderRadius: '6px', fontSize: '0.85rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'currentColor' }} />
-                            Warning: Quantity is {item.quantity} but only {item.empty_returned} empty returned. Ensure customer has empty credits or change Rate Type to New Cylinder.
-                          </div>
+                          <Alert tone="warning" compact>
+                            Warning: Quantity is {item.quantity} but only {item.empty_returned} empty returned. Check the customer’s empty-cylinder balance. Returns do not change the price.
+                          </Alert>
                         )}
                       </div>
                     );
                   })}
                 </div>
-              </div>
+              </Card>
+
+              <Card className="sale-card" aria-label="Accessories">
+                <CardHeader title="Accessories" meta={<Button type="button" variant="secondary" size="sm" icon={<Plus />} disabled={accessoryCapability.value?.accessories !== true || saving || productsLoading || !!productsError || !nextProduct} onClick={() => { if (nextProduct) setAccessories(prev => [...prev, { product: nextProduct.id, quantity: 1 }]); }}>Add accessory</Button>} />
+                {accessoryCapability.value?.accessories === false && <p role="status">Accessories are disabled; cylinder sales remain available.</p>}
+                {accessoryCapability.error && <p role="alert">{accessoryCapability.error} <button type="button" onClick={accessoryCapability.retry}>Retry feature check</button></p>}
+                {productsLoading && <LoadingState label="Loading accessories…" />}
+                {productsError && <ErrorState message={productsError} onRetry={() => { setProductsLoading(true); setProductsRevision(value => value + 1); }} />}
+                {!productsLoading && !productsError && !accessories.length && <p className="muted">{availableProducts.length ? 'Add accessories to this sale, with or without cylinders.' : 'No accessories are currently available.'}</p>}
+                <div className="sale-accessories">
+                  {accessories.map((line, index) => {
+                    const product = products.find(p => p.id === line.product);
+                    const quoted = quotedAccessories.get(line.product);
+                    return <div className="sale-accessory" key={index}>
+                      <Field label="Product"><Select disabled={saving} value={line.product} onChange={e => setAccessories(rows => rows.map((r, i) => i === index ? { ...r, product: Number(e.target.value) } : r))}>{availableProducts.map(p => <option key={p.id} value={p.id} disabled={accessories.some((r, i) => i !== index && r.product === p.id)}>{p.name}</option>)}</Select></Field>
+                      <Field label="Rate (Rs.)"><Input readOnly value={quoted?.rate ?? product?.selling_price ?? ''} /></Field>
+                      <Field label="Accessory quantity" hint={product ? `${Math.max(0, product.stock - product.reserved)} available` : undefined}><Input type="number" inputMode="numeric" min="1" max={product ? product.stock - product.reserved : undefined} step="1" required disabled={saving} value={line.quantity} onChange={e => setAccessories(rows => rows.map((r, i) => i === index ? { ...r, quantity: e.target.value } : r))} /></Field>
+                      <div className="sale-accessory__subtotal"><span>Subtotal</span><strong>{quoted ? money(quoted.total_amount) : '—'}</strong></div>
+                      <IconButton type="button" label="Remove accessory" tone="danger" disabled={saving} onClick={() => setAccessories(rows => rows.filter((_, i) => i !== index))}><Trash2 size={17} /></IconButton>
+                    </div>;
+                  })}
+                </div>
+              </Card>
 
               {/* Payment */}
-              <div className="card">
-                <h2 style={{ marginBottom: '14px' }}>Payment</h2>
+              <Card className="sale-card">
+                <CardHeader title="Payment" />
 
-                <div className="payment-options" style={{ gridTemplateColumns: 'repeat(5, 1fr)', marginBottom: '14px' }}>
-                  {PAYMENT_MODES.map(({ value, label, icon: Icon }) => (
-                    <button key={value} type="button" className={paymentMode === value ? 'selected' : ''} onClick={() => setPaymentMode(value)}>
-                      <Icon size={18} /> {label}
-                    </button>
-                  ))}
-                </div>
+                <ChoiceChips
+                  ariaLabel="Payment mode"
+                  layout="icon"
+                  className="sale-pay-modes"
+                  value={paymentMode}
+                  onChange={setPaymentMode}
+                  options={PAYMENT_MODES.map(({ value, label, icon: Icon }) => ({ value, label, icon: <Icon size={18} /> }))}
+                />
 
                 {paymentMode === 'credit' && (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '12px' }}>
-                    <label>
-                      <span>Amount Received (Rs.)</span>
-                      <input type="number" min="0" value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)} placeholder="0" />
-                    </label>
+                  <div className="grid-2 sale-card__row">
+                    <Field label="Amount Received (Rs.)">
+                      <Input type="number" min="0" value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)} placeholder="0" />
+                    </Field>
                     {Number(paidAmount) > 0 && (
-                      <label>
-                        <span>Received Via</span>
-                        <select value={paidPaymentMode} onChange={(e) => setPaidPaymentMode(e.target.value)}>
+                      <Field label="Received Via">
+                        <Select value={paidPaymentMode} onChange={(e) => setPaidPaymentMode(e.target.value)}>
                           {PAYMENT_MODES.filter(m => m.value !== 'credit' && m.value !== 'split').map(m => (
                             <option key={m.value} value={m.value}>{m.label}</option>
                           ))}
-                        </select>
-                      </label>
+                        </Select>
+                      </Field>
                     )}
                   </div>
                 )}
 
                 {paymentMode === 'split' && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '12px' }}>
-                    <label>
-                      <span>Cash Paid</span>
-                      <input type="number" min="0" value={saleSplit.cash} onChange={(e) => setSaleSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
-                    </label>
-                    <label>
-                      <span>GPay Paid</span>
-                      <input type="number" min="0" value={saleSplit.gpay} onChange={(e) => setSaleSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
-                    </label>
-                    <label>
-                      <span>Bank Paid</span>
-                      <input type="number" min="0" value={saleSplit.bank} onChange={(e) => setSaleSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
-                    </label>
-                    <label>
-                      <span>Credit (Pending)</span>
-                      <input type="number" disabled value={balance > 0 ? balance : 0} style={{ background: 'var(--surface-muted)', color: 'var(--danger)' }} />
-                    </label>
+                  <div className="split-grid split-grid--4 sale-card__row">
+                    <Field label="Cash Paid">
+                      <Input type="number" min="0" value={saleSplit.cash} onChange={(e) => setSaleSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
+                    </Field>
+                    <Field label="GPay Paid">
+                      <Input type="number" min="0" value={saleSplit.gpay} onChange={(e) => setSaleSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
+                    </Field>
+                    <Field label="Bank Paid">
+                      <Input type="number" min="0" value={saleSplit.bank} onChange={(e) => setSaleSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
+                    </Field>
+                    <Field label="Credit (Pending)">
+                      <Input type="number" disabled className="split-grid__remaining" value={balance > 0 ? balance : 0} />
+                    </Field>
                   </div>
                 )}
 
-                <div className="total-box">
-                  <span>Grand Total</span>
-                  <strong>{money(total)}</strong>
-                  {balance > 0 && <small style={{ color: 'var(--danger)', fontWeight: 700 }}>Pending: {money(balance)}</small>}
-                  {balance === 0 && total > 0 && <small style={{ color: 'var(--success)' }}>Fully paid ✓</small>}
+                {(items.length > 0 || accessories.length > 0) && !currentQuote && <p>Calculating pricing…</p>}
+                {currentQuote?.error && <Alert tone="danger">{currentQuote.error} <Button type="button" onClick={() => setQuoteRevision(value => value + 1)}>Retry</Button></Alert>}
+                <div className="sale-total">
+                  <span className="sale-total__label">Grand Total</span>
+                  <strong className="sale-total__value">{currentQuote?.data ? money(total) : '—'}</strong>
+                  {Number(currentQuote?.data?.discount_amount) > 0 && <span>Refill discount: {money(currentQuote!.data!.discount_amount)}</span>}
+                  {balance > 0 && <span className="sale-total__pending">Pending: {money(balance)}</span>}
+                  {balance === 0 && total > 0 && <span className="sale-total__paid"><CheckCircle2 size={14} aria-hidden="true" /> Fully paid</span>}
                 </div>
-              </div>
+              </Card>
 
               {selectedCustomer && Number(selectedCustomer.pending_balance) > 0 && (
-                <div className="card" style={{ background: 'var(--danger-soft)', borderColor: 'var(--danger)' }}>
-                  <h2 style={{ marginBottom: '14px', color: 'var(--danger)' }}>
-                    Past Pending Balance: {money(selectedCustomer.pending_balance)}
-                  </h2>
-                  <p style={{ fontSize: '0.9rem', marginBottom: '16px' }}>
-                    You can collect payment for past dues along with this sale.
-                  </p>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                    <label style={{ display: pastPaymentMode === 'split' ? 'none' : 'block' }}>
-                      <span>Collect Past Pending (Rs.)</span>
-                      <input type="number" min="0" max={selectedCustomer.pending_balance} value={pastAmount} onChange={(e) => setPastAmount(e.target.value)} placeholder="0" />
-                    </label>
-                    <label>
-                      <span>Received Via</span>
-                      <select value={pastPaymentMode} onChange={(e) => setPastPaymentMode(e.target.value)}>
+                <Card className="sale-card sale-card--dues">
+                  <CardHeader
+                    title={<span className="sale-card__title"><AlertTriangle size={18} aria-hidden="true" />Past Pending Balance: {money(selectedCustomer.pending_balance)}</span>}
+                    description="You can collect payment for past dues along with this sale."
+                  />
+                  <div className="grid-2">
+                    <Field label="Collect Past Pending (Rs.)" className={pastPaymentMode === 'split' ? 'ui-hidden' : undefined}>
+                      <Input type="number" min="0" max={selectedCustomer.pending_balance} value={pastAmount} onChange={(e) => setPastAmount(e.target.value)} placeholder="0" />
+                    </Field>
+                    <Field label="Received Via">
+                      <Select value={pastPaymentMode} onChange={(e) => setPastPaymentMode(e.target.value)}>
                         {PAYMENT_MODES.filter(m => m.value !== 'credit').map(m => (
                           <option key={m.value} value={m.value}>{m.label}</option>
                         ))}
-                      </select>
-                    </label>
-                    {pastPaymentMode === 'split' && (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', gridColumn: '1 / -1' }}>
-                        <label>
-                          <span>Cash</span>
-                          <input type="number" min="0" value={pastSplit.cash} onChange={(e) => setPastSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
-                        </label>
-                        <label>
-                          <span>GPay</span>
-                          <input type="number" min="0" value={pastSplit.gpay} onChange={(e) => setPastSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
-                        </label>
-                        <label>
-                          <span>Bank</span>
-                          <input type="number" min="0" value={pastSplit.bank} onChange={(e) => setPastSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
-                        </label>
-                        <label>
-                          <span>Credit Remaining</span>
-                          <input type="number" disabled value={Math.max(0, Number(selectedCustomer.pending_balance) - pastTotal)} style={{ background: 'var(--surface-muted)', color: 'var(--danger)' }} />
-                        </label>
-                      </div>
-                    )}
+                      </Select>
+                    </Field>
                   </div>
-                </div>
+                  {pastPaymentMode === 'split' && (
+                    <div className="split-grid split-grid--4 sale-card__row">
+                      <Field label="Cash">
+                        <Input type="number" min="0" value={pastSplit.cash} onChange={(e) => setPastSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
+                      </Field>
+                      <Field label="GPay">
+                        <Input type="number" min="0" value={pastSplit.gpay} onChange={(e) => setPastSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
+                      </Field>
+                      <Field label="Bank">
+                        <Input type="number" min="0" value={pastSplit.bank} onChange={(e) => setPastSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
+                      </Field>
+                      <Field label="Credit Remaining">
+                        <Input type="number" disabled className="split-grid__remaining" value={Math.max(0, Number(selectedCustomer.pending_balance) - pastTotal)} />
+                      </Field>
+                    </div>
+                  )}
+                </Card>
               )}
 
-              {error && <p className="form-error">{error}</p>}
-              {message && <p className="form-note">{message}</p>}
+              {error && <Alert tone="danger" role="alert">{error}</Alert>}
+              {existingCustomer && (
+                <Button type="button" variant="secondary" icon={<User />} onClick={selectExistingCustomer}>
+                  Use existing customer: {existingCustomer.name} ({existingCustomer.phone})
+                </Button>
+              )}
+              {message && <Alert tone="success">{message}</Alert>}
 
-              <button type="submit" className="btn btn-primary">
-                <Plus size={20} /> Complete Sale
-              </button>
+              <div className="sale-submit">
+                <Button type="submit" size="lg" icon={<Plus />} disabled={saving || !currentQuote?.data}>
+                  {saving ? 'Saving…' : 'Complete Sale'}
+                </Button>
+              </div>
             </form>
           )}
-        </>
+        </div>
       )}
 
       {tab === 'history' && (
         <div>
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-            <div style={{ flex: 1, position: 'relative' }}>
-              <Search size={16} style={{ position: 'absolute', left: '10px', top: '14px', color: 'var(--text-muted)' }} />
-              <input placeholder="Search customer…" value={search} onChange={(e) => setSearch(e.target.value)}
-                style={{ paddingLeft: '36px' }} />
+          <div className="ui-toolbar">
+            <div className="ui-toolbar__grow">
+              <SearchInput aria-label="Search sales" placeholder="Search customer…" value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
-            <button type="button" onClick={() => setFilterPending((p) => !p)}
-              className={filterPending ? 'btn btn-primary' : 'btn btn-outline'}
-              style={{ width: 'auto', padding: '0 16px', whiteSpace: 'nowrap' }}>
+            <Button
+              type="button"
+              variant={filterPending ? 'primary' : 'secondary'}
+              aria-pressed={filterPending}
+              onClick={() => setFilterPending((p) => !p)}
+            >
               Pending only
-            </button>
+            </Button>
+            <Select aria-label="Handed over by" value={filterHandover} onChange={(e) => setFilterHandover(e.target.value)}>
+              <option value="">Handed over by: anyone</option>
+              <option value="none">Handed over by: not specified</option>
+              {/* Every admin and staff member, so older sales handed over by someone now inactive can be found. */}
+              {staffOptions.map((s) => <option key={s.id} value={s.user}>{s.can_hand_over ? staffName(s) : `${staffName(s)} (inactive)`}</option>)}
+            </Select>
+            <Select aria-label="Sale status" value={filterVoid} onChange={(e) => setFilterVoid(e.target.value)}>
+              <option value="">All sales</option>
+              <option value="active">Active</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="refund_pending">Refund owed</option>
+            </Select>
           </div>
+          {historyNotice && <Alert tone="success" compact>{historyNotice}</Alert>}
 
-          <div className="card">
-            <div className="table-wrap">
-              <table>
+          {historyStatus === 'error' && <ErrorState message={historyError} onRetry={() => { setHistoryStatus('loading'); fetchHistory(); }} />}
+          {historyStatus !== 'error' && (
+          <Card padding="none">
+            {historyStatus === 'loading' && (
+              <div className="ui-card__skeleton"><SkeletonRows rows={6} columns={6} label="Loading sales…" /></div>
+            )}
+            {historyStatus === 'ready' && sales.length === 0 && (
+              <EmptyState icon={<Receipt size={24} />} title="No sales found." />
+            )}
+            {historyStatus === 'ready' && sales.length > 0 && (
+            <TableWrap fade>
+              <Table cards stickyFirst className="sales-history-table">
                 <thead>
                   <tr>
-                    <th>Customer</th>
-                    <th>Items</th>
-                    <th style={{ textAlign: 'right' }}>Total</th>
-                    <th style={{ textAlign: 'right' }}>Balance</th>
-                    <th>Mode</th>
-                    <th>Staff</th>
-                    <th>Date</th>
+                    <Th>Customer</Th>
+                    <Th>Items</Th>
+                    <Th align="right">Total</Th>
+                    <Th align="right">Balance</Th>
+                    <Th>Mode</Th>
+                    <Th>Recorded by</Th>
+                    <Th>Handed over by</Th>
+                    <Th>Date &amp; time</Th>
+                    <Th className="sv-actions">Actions</Th>
                   </tr>
                 </thead>
                 <tbody>
-                  {sales.map((sale) => (
+                  {historyPager.pageItems.map((sale) => {
+                    const isReturn = sale.note === 'Empty cylinders returned';
+                    return (
                     <tr key={sale.id}>
-                      <td><strong>{sale.customer_name}</strong></td>
-                      <td>
-                        {sale.items.map((item, i) => (
-                          <span key={i} style={{ display: 'block', fontSize: '0.82rem', marginBottom: '2px' }}>
-                            {item.quantity > 0 && <span>{item.quantity}×{item.cylinder_type_name} @ {money(item.rate)}</span>}
-                            {item.empty_returned > 0 ? (
-                              <span style={{ 
-                                color: (!sale.customer_name && item.quantity > 0 && item.empty_returned < item.quantity) ? 'var(--danger)' : 'var(--text-muted)', 
-                                marginLeft: item.quantity > 0 ? '6px' : '0',
-                                background: (!sale.customer_name && item.quantity > 0 && item.empty_returned < item.quantity) ? 'var(--danger-soft, #fee2e2)' : 'var(--surface)',
-                                padding: '1px 6px',
-                                borderRadius: '4px',
-                                border: `1px solid ${(!sale.customer_name && item.quantity > 0 && item.empty_returned < item.quantity) ? 'var(--danger)' : 'var(--border)'}`
-                              }}>
-                                🔄 Returned {item.empty_returned} × {item.cylinder_type_name} empties
-                              </span>
-                            ) : (
-                              !sale.customer_name && item.quantity > 0 && (
-                                <span style={{ 
-                                  color: 'var(--danger)', 
-                                  marginLeft: '6px',
-                                  background: 'var(--danger-soft, #fee2e2)',
-                                  padding: '1px 6px',
-                                  borderRadius: '4px',
-                                  border: '1px solid var(--danger)'
-                                }}>
-                                  ⚠️ 0 empties returned
-                                </span>
-                              )
-                            )}
-                          </span>
-                        ))}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        {sale.note === 'Empty cylinders returned' ? '-' : money(sale.total_amount)}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        {sale.note === 'Empty cylinders returned' ? '-' : (
+                      <Td label="Customer"><strong className="sh-customer">{sale.customer_name}</strong></Td>
+                      <Td label="Items"><SaleItemsCell customerName={sale.customer_name} items={sale.items} accessoryItems={sale.accessory_items} /></Td>
+                      <Td label="Total" numeric>
+                        {isReturn ? <span className="ui-num-placeholder">-</span> : <span className="ui-num-strong">{money(sale.total_amount)}</span>}
+                      </Td>
+                      <Td label="Balance" align="right">
+                        <details><summary>Payment details</summary><PaymentSummary value={sale.payment_summary} allowCollection onCollected={fetchHistory} /></details>
+                        {sale.void ? <VoidStatusBadges saleVoid={sale.void} /> : isReturn ? <span className="ui-num-placeholder">-</span> : (
                           Number(sale.balance_due) > 0
-                            ? <span className="badge badge-warning">{money(sale.balance_due)}</span>
-                            : <span className="badge badge-success">Paid</span>
+                            ? <Badge tone="warning">{money(sale.balance_due)}</Badge>
+                            : <Badge tone="success">Paid</Badge>
                         )}
-                      </td>
-                      <td style={{ whiteSpace: 'nowrap' }}>
-                        {sale.note === 'Empty cylinders returned' ? (
-                          <span className="badge" style={{ background: 'var(--surface)', color: 'var(--text-muted)' }}>Return</span>
+                      </Td>
+                      <Td label="Mode" className="sh-nowrap">
+                        {isReturn ? (
+                          <Badge variant="outline" icon={<RotateCcw />}>Return</Badge>
                         ) : (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            <span className="badge">{sale.payment_mode}</span>
-                            {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && sale.payments && sale.payments.length > 0 && (
-                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                {sale.payments.map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
+                          <div className="sh-mode">
+                            <Badge variant="outline">{sale.payment_mode}</Badge>
+                            {(sale.payment_mode === 'split' || sale.payment_mode === 'credit') && originalPayments(sale).length > 0 && (
+                              <span className="ui-cell-sub">
+                                {originalPayments(sale).map(p => `${p.mode.toUpperCase()} ${p.amount}`).join(' + ')}
                               </span>
                             )}
                           </div>
                         )}
-                      </td>
-                      <td style={{ fontSize: '0.82rem' }}>{sale.sold_by_name}</td>
-                      <td style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                        {new Date(sale.created_at).toLocaleDateString('en-IN')}
-                      </td>
+                      </Td>
+                      <Td label="Recorded by" className="sh-meta">{sale.sold_by_full_name || sale.sold_by_name}</Td>
+                      <Td label="Handed over by" className="sh-meta">{sale.handover_staff_name || <span className="ui-num-placeholder">—</span>}</Td>
+                      <Td label="Date & time" className="sh-meta">
+                        {formatDateTime(sale.created_at)}
+                        {sale.void && <span className="ui-cell-sub sv-reason" title={sale.void.reason}>Cancelled {formatDateTime(sale.void.voided_at)}</span>}
+                        {sale.void?.refund && <span className="ui-cell-sub">Refunded {formatDateTime(sale.void.refund.confirmed_at)}</span>}
+                      </Td>
+                      <Td label="Actions" className="sh-nowrap sv-actions">
+                        {!sale.void && sale.is_direct && (
+                          <Button type="button" size="sm" variant="secondary" onClick={() => { setHistoryNotice(''); setVoidSaleId(sale.id); }}>
+                            Cancel
+                          </Button>
+                        )}
+                        {sale.void?.status === 'refund_pending' && (
+                          <Button type="button" size="sm" onClick={() => { setHistoryNotice(''); setRefundSale(sale); }}>
+                            Confirm refund
+                          </Button>
+                        )}
+                      </Td>
                     </tr>
-                  ))}
-                  {sales.length === 0 && (
-                    <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '24px' }}>No sales found.</td></tr>
-                  )}
+                    );
+                  })}
                 </tbody>
-              </table>
-            </div>
-          </div>
+              </Table>
+            </TableWrap>
+            )}
+            {historyStatus === 'ready' && historyPager.pageCount > 1 && (
+              <CardFooter>
+                <Pager page={historyPager.page} pageCount={historyPager.pageCount} onChange={historyPager.setPage} total={historyPager.total} />
+              </CardFooter>
+            )}
+          </Card>
+          )}
+          <VoidSaleModal
+            saleId={voidSaleId}
+            onClose={() => setVoidSaleId(null)}
+            onDone={() => { setHistoryNotice(`Sale #${voidSaleId} cancelled.`); setVoidSaleId(null); fetchHistory(); }}
+          />
+          <ConfirmRefundModal
+            sale={refundSale}
+            onClose={() => setRefundSale(null)}
+            onDone={() => { setHistoryNotice(`Refund for sale #${refundSale?.id} confirmed.`); setRefundSale(null); fetchHistory(); }}
+          />
         </div>
       )}
     </div>

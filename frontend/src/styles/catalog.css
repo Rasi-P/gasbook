@@ -1,0 +1,137 @@
+/* Products & Inventory tabs, Cylinder Types and Locations management. Uses the shared tokens and ui-* components. */
+.catalog-page { display: grid; gap: 16px; min-width: 0; padding: 16px; }
+.catalog-title { margin: 0; font-size: 24px; }
+.catalog-tabs.ui-tabs--block { width: 100%; }
+.catalog-tab-short { display: none; }
+.catalog-tabpanel { min-width: 0; }
+/* The accessories panel keeps its own look; only its outer padding moves to the page. */
+.catalog-tabpanel > .inventory-page { padding: 0; }
+.catalog-tabpanel .inventory-heading h2 { margin: 0; font-size: 18px; }
+
+.catalog-panel { display: grid; gap: 16px; min-width: 0; }
+.catalog-toolbar {
+  align-items: start;
+  column-gap: 16px;
+  display: grid;
+  grid-template-areas: "title action" "desc action";
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 4px;
+}
+.catalog-toolbar h2 { grid-area: title; margin: 0; font-size: 18px; }
+.catalog-toolbar > .ui-btn { grid-area: action; }
+.catalog-toolbar p { grid-area: desc; margin: 0; max-width: 62ch; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.catalog-filters { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+.catalog-filters > :first-child { flex: 1 1 240px; max-width: 360px; min-width: 0; }
+.catalog-count { margin: 0; color: var(--text-secondary); font-size: 13px; }
+
+.catalog-name { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.catalog-name > span { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.catalog-thumb { width: 44px; height: 44px; flex: 0 0 44px; border-radius: var(--radius-md); object-fit: contain; background: var(--surface-muted, var(--bg)); border: 1px solid var(--border); }
+.catalog-thumb--empty { display: inline-flex; align-items: center; justify-content: center; color: var(--text-muted, var(--text-secondary)); }
+.catalog-status { display: inline-flex; align-items: center; gap: 12px; }
+tr[data-inactive='true'] .catalog-name strong { color: var(--text-secondary); }
+
+.catalog-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.catalog-span-2 { grid-column: 1 / -1; }
+.catalog-form-alert { margin-bottom: 16px; }
+.catalog-image-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.catalog-image-row .catalog-thumb { width: 72px; height: 72px; flex-basis: 72px; }
+.catalog-image-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.catalog-file { position: relative; cursor: pointer; }
+.catalog-file input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.catalog-file:focus-within { outline: 3px solid var(--primary); outline-offset: 2px; }
+
+.catalog-dialog { display: grid; gap: 12px; }
+.catalog-dialog p { margin: 0; line-height: 1.6; }
+.catalog-dialog__list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 6px; }
+.catalog-dialog__hint { color: var(--text-secondary); font-size: 13px; }
+
+@media (max-width: 679px) {
+  .catalog-page { padding: 4px; gap: 12px; }
+  .catalog-title { font-size: 20px; }
+  .catalog-tab-long { display: none; }
+  .catalog-tab-short { display: inline; }
+  .catalog-tabs.ui-tabs--tabs { gap: 0; }
+  .catalog-tabs.ui-tabs--block .ui-tab { flex: 1 1 0; justify-content: center; min-width: 0; padding-inline: 4px; }
+  /* Same as the Products tab: title left, compact button right on one line, the description below. */
+  .catalog-toolbar { align-items: center; grid-template-areas: "title action" "desc desc"; row-gap: 8px; }
+}
+
+/* On the narrowest phones "Add cylinder type" would push the title onto two lines: shorten it to "Add type". */
+@media (max-width: 359px) {
+  .catalog-btn-long { display: none; }
+}
+
+@media (max-width: 679px) {
+  .catalog-filters > :first-child { max-width: none; flex-basis: 100%; }
+  .catalog-form-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.catalog-price-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 10px 12px; border: 1px dashed var(--border-strong, var(--border)); border-radius: var(--radius-md); background: var(--surface-muted, var(--bg)); font-size: 14px; }
+.catalog-price-summary small { color: var(--text-secondary); font-size: 12px; }
+
+.catalog-row-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+
+/* ── Phone cards for the Cylinder Types and Locations lists ───────────────────────────────────
+   Header line: name left, status right. Then the figures side by side. Then Edit / Delete as two
+   full-width buttons. Replaces the one-field-per-row stack of the shared card mode (no "ACTIONS" row). */
+@media (max-width: 679px) {
+  .catalog-table tbody tr {
+    align-items: flex-start;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    padding: 12px 14px;
+  }
+  /* td.catalog-… outranks the shared `.ui-table--cards td { width: 100% }` */
+  .catalog-table tbody tr > td { padding: 0; width: auto; }
+  .catalog-table .catalog-td-name { flex: 1 1 0; min-width: 0; order: 0; }
+  .catalog-table .catalog-td-status { flex: 0 0 auto; order: 1; }
+  /* a zero-height line break between the header line and the figures */
+  .catalog-table tbody tr::before { content: ''; flex: 0 0 100%; height: 0; margin-top: -10px; order: 2; }
+  .catalog-table .catalog-td-price,
+  .catalog-table .catalog-td-meta { flex: 1 1 0; min-width: 0; order: 3; }
+  .catalog-table td::before { line-height: 1.25; margin-bottom: 3px; white-space: normal; }
+  /* amount first, caption under it: the three amounts line up even when "New connection" wraps to two lines */
+  .catalog-table .catalog-td-price { display: flex; flex-direction: column-reverse; font-weight: var(--weight-semibold); justify-content: flex-end; white-space: nowrap; }
+  .catalog-table .catalog-td-price::before { font-size: 11px; letter-spacing: 0.01em; margin: 3px 0 0; overflow-wrap: normal; }
+  .catalog-table .catalog-td-actions { flex: 0 0 100%; order: 4; }
+  .catalog-table .catalog-row-actions { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; width: 100%; }
+  .catalog-table .catalog-row-actions:has(> :only-child) { grid-template-columns: 1fr; }
+  .catalog-table .catalog-row-actions .ui-btn { justify-content: center; min-height: 40px; width: 100%; }
+  /* Delete reads as the second of two equal buttons, in a warning colour, not as bare text */
+  .catalog-table .catalog-row-actions .ui-btn--ghost { border: 1px solid var(--border); color: var(--danger-text, var(--text)); }
+  .catalog-table .catalog-thumb { flex-basis: 40px; height: 40px; width: 40px; }
+  .catalog-table .catalog-status { gap: 8px; }
+
+  /* The shared Alert wraps its icon above the text under 480px (made for alerts with action buttons);
+     these alerts have none, so keep the icon beside the text. */
+  .catalog-dialog .ui-alert,
+  .catalog-form-alert { flex-wrap: nowrap; }
+
+  /* The live price summary reads as two lines, not a run-on with a stray dot. */
+  .catalog-price-summary { display: grid; gap: 2px; }
+  .catalog-price-summary > [aria-hidden='true'] { display: none; }
+  .catalog-form-grid { gap: 14px; }
+}
+
+/* Tablet: the full table (six columns plus Edit and Delete) is wider than the space beside the sidebar, so it scrolled
+   sideways inside its frame. Icon-only row buttons (they keep their accessible names) and tighter cells make it fit. */
+@media (min-width: 680px) and (max-width: 1100px) {
+  .catalog-table.ui-table th,
+  .catalog-table.ui-table td { padding-inline: 10px; }
+  .catalog-table.ui-table th { white-space: normal; }
+  .catalog-table .catalog-row-actions { flex-wrap: nowrap; gap: 4px; }
+  .catalog-table .catalog-row-actions .ui-btn__label { display: none; }
+  .catalog-table .catalog-row-actions .ui-btn { min-width: 36px; padding-inline: 8px; }
+  .catalog-table .catalog-status { gap: 8px; }
+  .catalog-table .catalog-td-name { min-width: 128px; }
+  .catalog-table .catalog-name > span { overflow-wrap: normal; }
+  .catalog-table .catalog-row-actions .ui-btn--ghost { color: var(--danger-text, var(--text)); }
+}
+
+/* The narrowest tablet band (680–719px) is a few pixels short even when compact; drop the thumbnail there. */
+@media (min-width: 680px) and (max-width: 719px) {
+  .catalog-table .catalog-thumb { display: none; }
+  .catalog-table .catalog-td-name { min-width: 80px; }
+}

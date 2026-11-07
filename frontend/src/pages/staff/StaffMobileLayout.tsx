@@ -1,8 +1,27 @@
-import { useState, useEffect } from 'react';
+import { MediaImage } from '../../components/MediaImage';
+import { useSearchParams } from 'react-router-dom';
+import StaffDirectSale from './StaffDirectSale';
+import { TodayCollections } from '../../components/TodayCollections';
+import { PaymentCollectionForm } from '../../components/PaymentCollectionForm';
+import { emptyCollection, receiptParts, collectionError, type CollectionForm } from '../../lib/paymentCollection';
+import { PaymentSummary, type PaymentFacts } from '../../components/PaymentSummary';
+import { BookingDetailItems } from '../../components/BookingDetailItems';
+import { type BookingItem } from '../../components/BookingItems';
+import { PricingBreakdown, type PricingSnapshot } from '../../components/PricingBreakdown';
+import { formatDateTime } from '../../lib/dateTime';
+import { StaffHistory, StaffHistoryCard } from '../../components/StaffHistory';
+import { useCallback, useState, useEffect, type ReactNode } from 'react';
 import {
+  AlertTriangle,
+  Banknote,
+  ShoppingCart,
   Bell,
   CalendarDays,
   CheckCircle2,
+  CircleSlash,
+  ClipboardList,
+  Clock,
+  Cylinder,
   MapPin,
   Mail,
   Navigation,
@@ -12,19 +31,41 @@ import {
   ChevronRight,
   History,
   Check,
-  Pencil
+  LogOut,
+  Pencil,
+  RefreshCw,
+  X
 } from 'lucide-react';
-import { api, logout } from '../../lib/api';
-import cylinderImg from '../../assets/splash_cylinder.png';
+import { api, logout, extractApiError, fetchAllPages, getApiErrorCode, LIMITS } from '../../lib/api';
+import { CylinderImage } from '../../components/CylinderImage';
+import { LoadingState } from '../../components/AsyncState';
+import { Alert } from '../../components/ui/Alert';
+import { Badge, type BadgeTone } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { buttonClassName } from '../../components/ui/buttonClass';
+import { Card } from '../../components/ui/Card';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { Field, Input, Select, Textarea } from '../../components/ui/Field';
+import { IconButton } from '../../components/ui/IconButton';
+import { Modal } from '../../components/ui/Modal';
+import { SectionHeader } from '../../components/ui/SectionHeader';
+import { Tabs } from '../../components/ui/Tabs';
+import { cx } from '../../components/ui/cx';
 
-type Delivery = {
+type Delivery = PricingSnapshot & {
+  payment_summary?: PaymentFacts | null;
   id: number;
+  booking: number;
+  order_id?: string;
   status: string;
   customer_name: string;
   customer_phone: string;
   customer_address: string;
   customer_area: string;
   cylinder_type_name: string;
+  cylinder_type_weight?: string | null;
+  cylinder_type_image?: string | null;
+  order_items?: BookingItem[];
   quantity: number;
   rate: string;
   original_amount?: string;
@@ -35,6 +76,9 @@ type Delivery = {
   deposit_cylinders: number;
   booking_payment_method?: string;
   booking_payment_status?: string;
+  booked_at?: string | null;
+  completed_at?: string | null;
+  cancelled_at?: string | null;
   created_at?: string;
   updated_at?: string;
 };
@@ -68,6 +112,19 @@ function money(v: number | string) {
   return `₹${Number(v || 0).toLocaleString('en-IN')}`;
 }
 
+// The order number shown to staff is the booking's id (GB{booking}), never the delivery row id.
+function orderRef(d: Delivery) {
+  return d.order_id || `GB${d.booking}`;
+}
+
+function DeliveryTimes({ delivery }: { delivery: Delivery }) {
+  return <span className="event-times">
+    <span>Booked {formatDateTime(delivery.booked_at)}</span>
+    {delivery.status === 'delivered' && <span>Delivered {formatDateTime(delivery.completed_at)}</span>}
+    {delivery.status === 'cancelled' && <span>Cancelled {formatDateTime(delivery.cancelled_at)}</span>}
+  </span>;
+}
+
 function originalAmount(delivery: Delivery) {
   return Number(delivery.original_amount || Number(delivery.rate || 0) * delivery.quantity || 0);
 }
@@ -82,27 +139,101 @@ function finalAmount(delivery: Delivery) {
 
 // Staff see the struck-through original while picking up and delivering, so the
 // amount they collect is unambiguous. History shows the settled amount only.
+type AmountTone = 'primary' | 'success' | 'warning' | 'neutral';
+
 function AmountToCollect({
   delivery,
   showOriginal,
-  valueStyle,
+  tone = 'primary',
+  showBreakdown = true,
 }: {
   delivery: Delivery;
   showOriginal: boolean;
-  valueStyle: React.CSSProperties;
+  tone?: AmountTone;
+  showBreakdown?: boolean;
 }) {
   const isDiscounted = showOriginal && discountAmount(delivery) > 0;
   return (
-    <div style={{ textAlign: 'right' }}>
+    <div className="sa-amount">
+      {showBreakdown && !delivery.order_items?.length && <PricingBreakdown value={delivery} />}
       {isDiscounted && (
-        <div style={{ fontSize: '11px', color: '#94a3b8', textDecoration: 'line-through', lineHeight: 1.3 }}>
+        <div className="sa-amount__original">
           {money(originalAmount(delivery))}
         </div>
       )}
-      <span style={valueStyle}>{money(finalAmount(delivery))}</span>
+      <span className={`sa-amount__value sa-amount__value--${tone}`}>{money(finalAmount(delivery))}</span>
     </div>
   );
 }
+
+const STATUS_TONE: Record<string, BadgeTone> = {
+  assigned: 'warning',
+  accepted: 'primary',
+  out_for_delivery: 'primary',
+  delivered: 'success',
+};
+
+function statusTone(status: string): BadgeTone {
+  return STATUS_TONE[status] || 'neutral';
+}
+
+// Delivery.Status values (backend core.models.Delivery).
+const OPEN_STATUSES = ['assigned', 'accepted', 'out_for_delivery'];
+const ACTIVE_STATUSES = ['accepted', 'out_for_delivery'];
+
+// Same wording as the backend's Delivery.Status choice labels.
+const STATUS_LABEL: Record<string, string> = {
+  assigned: 'Assigned',
+  accepted: 'Accepted',
+  out_for_delivery: 'Out for Delivery',
+  delivered: 'Delivered',
+  cancelled: 'Cancelled',
+};
+
+const STATUS_ICON: Record<string, ReactNode> = {
+  assigned: <Clock size={12} />,
+  accepted: <Check size={12} />,
+  out_for_delivery: <Truck size={12} />,
+  delivered: <CheckCircle2 size={12} />,
+  cancelled: <CircleSlash size={12} />,
+};
+
+// Pending list order: orders already on the road first, then accepted, then new assignments.
+// Array.sort is stable, so the API order is kept within each status.
+const STATUS_PRIORITY: Record<string, number> = { out_for_delivery: 0, accepted: 1, assigned: 2 };
+
+function byStatusPriority(a: Delivery, b: Delivery) {
+  return (STATUS_PRIORITY[a.status] ?? 9) - (STATUS_PRIORITY[b.status] ?? 9);
+}
+
+// Same rule as the original "All" filter: every delivery except ones this staff member declined.
+// Cancelled deliveries (booking rejected by admin) stay visible there, without actions.
+function isListed(delivery: Delivery) {
+  return delivery.status !== 'rejected';
+}
+
+function isPaidOnline(delivery: Delivery) {
+  return delivery.payment_summary?.status === 'PAID';
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return (
+    <Badge tone={statusTone(status)} icon={STATUS_ICON[status]}>
+      {STATUS_LABEL[status] || status.replaceAll('_', ' ')}
+    </Badge>
+  );
+}
+
+function PaymentBadge({ delivery }: { delivery: Delivery }) {
+  const online = isPaidOnline(delivery);
+  return (
+    <Badge tone={online ? 'success' : 'warning'} icon={online ? <Check size={12} /> : <Banknote size={12} />}>
+      {online ? 'Payment confirmed' : 'Collect payment'}
+    </Badge>
+  );
+}
+
+type DeliveryFilter = 'pending' | 'assigned' | 'active' | 'completed' | 'all';
 
 function formatJoinDate(value?: string) {
   if (!value) return 'Not available';
@@ -112,14 +243,23 @@ function formatJoinDate(value?: string) {
 }
 
 export default function StaffMobileLayout() {
-  const [activeTab, setActiveTab] = useState<'home' | 'deliveries' | 'history' | 'profile'>('home');
-  const [filterTab, setFilterTab] = useState<'all' | 'assigned' | 'active' | 'completed'>('all');
-  
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get('tab');
+  const activeTab = (['home', 'deliveries', 'sale', 'history', 'profile'].includes(requestedTab || '') ? requestedTab : 'home') as 'home' | 'deliveries' | 'sale' | 'history' | 'profile';
+  const [saleBusy, setSaleBusy] = useState(false);
+  const [paymentForms, setPaymentForms] = useState<Record<number,CollectionForm>>({});
+  const [filterTab, setFilterTab] = useState<DeliveryFilter>('pending');
+  // Order open in the detail view. Viewing is local UI state only; it never calls the API.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [notifError, setNotifError] = useState('');
 
+  const [mixedEmpties, setMixedEmpties] = useState<Record<number, Record<number, number>>>({});
   const [collections, setCollections] = useState<
     Record<
       number,
@@ -127,8 +267,9 @@ export default function StaffMobileLayout() {
     >
   >({});
   const [message, setMessage] = useState('');
-  const [userName, setUserName] = useState('');
-  const [vehicleLocation, setVehicleLocation] = useState('');
+  const [messageTone, setMessageTone] = useState<'info' | 'error'>('info');
+  const [userName, setUserName] = useState(() => localStorage.getItem('gasbook_name') || 'Staff Partner');
+  const [vehicleLocation, setVehicleLocation] = useState(() => localStorage.getItem('gasbook_vehicle_location') || '');
   const [staffProfile, setStaffProfile] = useState<StaffProfileData | null>(null);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [editProfileValues, setEditProfileValues] = useState({ full_name: '', phone: '', email: '', address: '' });
@@ -137,6 +278,11 @@ export default function StaffMobileLayout() {
 
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState('Too far');
+  const [customRejectReason, setCustomRejectReason] = useState('');
+  const [rejectBusy, setRejectBusy] = useState(false);
+  const [actionBusyId, setActionBusyId] = useState<number | null>(null);
+  // Set when the server needs to know which stock location a delivery takes cylinders from (shop unavailable, several others active).
+  const [locationChoice, setLocationChoice] = useState<{ id: number; isCod: boolean; totalAmount: number; locations: { id: number; name: string }[]; picked: string } | null>(null);
   const [codConfirmed, setCodConfirmed] = useState<Record<number, boolean>>({});
 
   // Dynamic Greeting based on time of day
@@ -147,25 +293,37 @@ export default function StaffMobileLayout() {
     return 'Good Evening';
   };
 
-  function load() {
-    setIsLoading(true);
-    setUserName(localStorage.getItem('gasbook_name') || 'Staff Partner');
-    setVehicleLocation(localStorage.getItem('gasbook_vehicle_location') || '');
+  function showInfo(text: string) {
+    setMessageTone('info');
+    setMessage(text);
+  }
 
-    Promise.all([
+  function showError(text: string) {
+    setMessageTone('error');
+    setMessage(text);
+  }
+
+  const requestStaffData = useCallback(() => {
+    return Promise.all([
       api.get('/auth/me/'),
-      api.get('/deliveries/'),
-      api.get('/stock/'),
-      api.get('/notifications/').catch(() => ({ data: [] }))
+      fetchAllPages<Delivery>('/deliveries/'),
+      fetchAllPages<NotificationItem>('/notifications/')
+        .then((rows) => ({ rows, error: '' }))
+        .catch((err) => ({ rows: null, error: extractApiError(err, [], 'Notifications unavailable.') })),
     ])
-      .then(([meRes, deliveryRes, , notifRes]) => {
+      .then(([meRes, rows, notif]) => {
         setStaffProfile(meRes.data);
         setUserName(meRes.data.name || localStorage.getItem('gasbook_name') || 'Staff Partner');
         setVehicleLocation(meRes.data.vehicle_location_name || '');
-        const rows = deliveryRes.data.results ?? deliveryRes.data;
         setDeliveries(rows);
-        const notifData = notifRes.data.results ?? notifRes.data;
-        setNotifications(Array.isArray(notifData) ? notifData : []);
+        // Close the detail view if its order was declined or reassigned meanwhile.
+        setSelectedId((current) => (current !== null && rows.some((d) => d.id === current && isListed(d)) ? current : null));
+        if (notif.rows) {
+          setNotifications(notif.rows);
+          setNotifError('');
+        } else {
+          setNotifError(notif.error);
+        }
         setCollections(
           Object.fromEntries(
             rows.map((d: Delivery) => [
@@ -180,11 +338,19 @@ export default function StaffMobileLayout() {
           )
         );
       })
-      .catch(() => undefined)
+      .catch((err) => {
+        setLoadError(extractApiError(err, [], 'Could not load your deliveries.'));
+      })
       .finally(() => setIsLoading(false));
+  }, []);
+
+  function load() {
+    setIsLoading(true);
+    setLoadError('');
+    void requestStaffData();
   }
 
-  useEffect(load, []);
+  useEffect(() => { void requestStaffData(); }, [requestStaffData]);
 
   const handleMarkRead = async (id: number) => {
     try {
@@ -198,37 +364,59 @@ export default function StaffMobileLayout() {
   const unreadNotifCount = notifications.filter((n) => !n.is_read).length;
 
   async function accept(id: number) {
+    if (actionBusyId !== null) return;
+    setActionBusyId(id);
     try {
       await api.post(`/deliveries/${id}/accept/`);
-      setMessage('Delivery accepted!');
+      showInfo('Delivery accepted!');
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to accept delivery.');
+    } catch (err) {
+      showError(extractApiError(err, [], 'Failed to accept delivery.'));
+    } finally {
+      setActionBusyId(null);
     }
   }
 
   async function reject(id: number) {
+    if (rejectBusy) return;
+    const reason = (rejectReason === 'other' ? customRejectReason : rejectReason).trim();
+    if (!reason) {
+      showError('Please enter a reason for declining.');
+      return;
+    }
+    if (reason.length > LIMITS.staffReason) {
+      showError(`Reason must be ${LIMITS.staffReason} characters or fewer.`);
+      return;
+    }
+    setRejectBusy(true);
     try {
-      await api.post(`/deliveries/${id}/reject/`, { reason: rejectReason });
-      setMessage('Delivery rejected.');
+      await api.post(`/deliveries/${id}/reject/`, { reason });
+      showInfo('Delivery declined. Admin will reassign it.');
       setRejectingId(null);
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to reject delivery.');
+    } catch (err) {
+      showError(extractApiError(err, ['reason'], 'Failed to decline delivery.'));
+    } finally {
+      setRejectBusy(false);
     }
   }
 
   async function start(id: number) {
+    if (actionBusyId !== null) return;
+    setActionBusyId(id);
     try {
       await api.post(`/deliveries/${id}/start/`);
-      setMessage('Delivery started. Customer notified.');
+      showInfo('Delivery started. Customer notified.');
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to start delivery.');
+    } catch (err) {
+      showError(extractApiError(err, [], 'Failed to start delivery.'));
+    } finally {
+      setActionBusyId(null);
     }
   }
 
-  async function complete(id: number, isCod: boolean, totalAmount: number) {
+  async function complete(id: number, isCod: boolean, totalAmount: number, locationId?: number) {
+    if (actionBusyId !== null) return;
     const form = collections[id] || {
       amount: String(totalAmount),
       method: 'cash',
@@ -236,35 +424,71 @@ export default function StaffMobileLayout() {
       empty: '1'
     };
 
+    const paymentForm = paymentForms[id] || emptyCollection();
+    if (isCod && collectionError(paymentForm,totalAmount)) { showError(collectionError(paymentForm,totalAmount)); return; }
     if (isCod && !codConfirmed[id]) {
-      setMessage('Please confirm payment collected from customer.');
+      showError('Please confirm payment collected from customer.');
       return;
     }
 
-    const payload: any = {
-      payment_method: isCod ? form.method : 'gpay',
-      empty_collected: Number(form.empty || 0),
-      payment_collected: String(totalAmount)
+    const order = deliveries.find(d => d.id === id);
+    const cylinderItems = order?.order_items?.filter(i => i.type === 'cylinder') || [];
+    const emptyByType = Object.fromEntries(cylinderItems.map(i => [String(i.cylinder_type), mixedEmpties[id]?.[i.cylinder_type!] ?? (new Set(cylinderItems.map(line => line.cylinder_type)).size === 1 ? Number(form.empty || 0) : 0)]));
+    const payload = {
+      ...(Object.keys(emptyByType).length > 1 ? { empty_collected_by_type: emptyByType } : {}),
+      ...(isCod ? (receiptParts(paymentForm).length ? { split_payments: receiptParts(paymentForm) } : {}) : {}),
+      empty_collected: cylinderItems.length ? Object.values(emptyByType).reduce((sum, value) => sum + value, 0) : Number(form.empty || 0),
+      payment_collected: isCod ? receiptParts(paymentForm).reduce((sum,p)=>sum+Number(p.amount),0).toFixed(2) : '0.00',
+      ...(locationId ? { location: locationId } : {}),
     };
 
+    setActionBusyId(id);
     try {
       await api.post(`/deliveries/${id}/complete/`, payload);
-      setMessage('Delivery completed successfully!');
+      showInfo('Delivery completed successfully!');
       load();
-    } catch (err: any) {
-      setMessage(err.response?.data?.detail || 'Failed to complete delivery.');
+    } catch (err) {
+      const code = getApiErrorCode(err);
+      const detail = extractApiError(err, ['empty_collected', 'payment_collected', 'split_payments'], 'Failed to complete delivery.');
+      const offered = (err as { response?: { data?: { locations?: { id: number; name: string }[] } } })?.response?.data?.locations;
+      if (code === 'location_required' && Array.isArray(offered) && offered.length) {
+        setLocationChoice({ id, isCod, totalAmount, locations: offered, picked: String(offered[0].id) });
+      } else if (code === 'insufficient_stock') {
+        showError(`Stock not loaded — contact admin: ${detail}`);
+      } else if (code === 'already_completed') {
+        showError(detail);
+        load();
+      } else {
+        showError(detail);
+      }
+    } finally {
+      setActionBusyId(null);
     }
   }
 
   // Filtered Delivery Lists
+  const pendingOrders = deliveries.filter((d) => OPEN_STATUSES.includes(d.status)).sort(byStatusPriority);
   const pendingAssignments = deliveries.filter((d) => d.status === 'assigned');
-  const activeDelivery = deliveries.find((d) => d.status === 'accepted' || d.status === 'out_for_delivery');
+  // Several deliveries can be active at once; the one already on the road is shown as current.
+  const activeDeliveries = pendingOrders.filter((d) => ACTIVE_STATUSES.includes(d.status));
+  const activeDelivery = activeDeliveries[0];
   const completedDeliveries = deliveries.filter((d) => d.status === 'delivered');
   const recentCompleted = completedDeliveries.length > 0 ? completedDeliveries[0] : null;
 
+  const pendingCount = pendingOrders.length;
   const assignedCount = pendingAssignments.length;
-  const activeCount = deliveries.filter((d) => d.status === 'accepted' || d.status === 'out_for_delivery').length;
+  const activeCount = activeDeliveries.length;
   const completedCount = completedDeliveries.length;
+  const allDeliveries = deliveries.filter(isListed);
+
+  const filteredDeliveries = {
+    pending: pendingOrders,
+    assigned: pendingAssignments,
+    active: activeDeliveries,
+    completed: completedDeliveries,
+    all: allDeliveries,
+  }[filterTab];
+  const selectedOrder = selectedId === null ? undefined : deliveries.find((d) => d.id === selectedId);
   const profileInitials = (staffProfile?.name || userName || 'SP')
     .split(' ')
     .map((part) => part[0])
@@ -272,11 +496,11 @@ export default function StaffMobileLayout() {
     .slice(0, 2)
     .toUpperCase();
   const profileRows = [
-    { icon: <User size={17} />, label: 'Full Name', value: staffProfile?.name || userName || 'Not available' },
-    { icon: <Phone size={17} />, label: 'Phone Number', value: staffProfile?.phone || 'Not available' },
-    { icon: <Mail size={17} />, label: 'Email Address', value: staffProfile?.email || 'Not available' },
-    { icon: <MapPin size={17} />, label: 'Address', value: staffProfile?.address || 'Not available' },
-    { icon: <CalendarDays size={17} />, label: 'Member Since', value: formatJoinDate(staffProfile?.date_joined) },
+    { icon: <User size={16} />, label: 'Full Name', value: staffProfile?.name || userName || 'Not available' },
+    { icon: <Phone size={16} />, label: 'Phone Number', value: staffProfile?.phone || 'Not available' },
+    { icon: <Mail size={16} />, label: 'Email Address', value: staffProfile?.email || 'Not available' },
+    { icon: <MapPin size={16} />, label: 'Address', value: staffProfile?.address || 'Not available' },
+    { icon: <CalendarDays size={16} />, label: 'Member Since', value: formatJoinDate(staffProfile?.date_joined) },
   ];
 
   function openEditProfile() {
@@ -314,683 +538,766 @@ export default function StaffMobileLayout() {
       setUserName(data.name || userName);
       localStorage.setItem('gasbook_name', data.name || userName);
       setShowEditProfile(false);
-      setMessage('Profile updated successfully.');
-    } catch (err: any) {
-      setEditProfileError(err.response?.data?.detail || 'Failed to update profile.');
+      showInfo('Profile updated successfully.');
+    } catch (err) {
+      setEditProfileError(extractApiError(err, ['full_name', 'name', 'phone', 'email', 'address'], 'Failed to update profile.'));
     } finally {
       setIsSavingProfile(false);
     }
   }
 
-  const activeDeliveriesList = deliveries.filter((d) => {
-    if (d.status === 'rejected') return false;
-    if (filterTab === 'assigned') return d.status === 'assigned';
-    if (filterTab === 'active') return d.status === 'accepted' || d.status === 'out_for_delivery';
-    if (filterTab === 'completed') return d.status === 'delivered';
-    return true;
-  });
+  function goTab(tab: typeof activeTab) {
+    if (saleBusy) return;
+    setSearchParams(previous => {
+      const next = new URLSearchParams(previous);
+      if (tab === 'home') next.delete('tab');
+      else next.set('tab', tab);
+      return next;
+    });
+    window.scrollTo({ top: 0 });
+  }
+
+  function showDeliveries(filter: DeliveryFilter) {
+    setFilterTab(filter);
+    goTab('deliveries');
+  }
+
+  function openOrder(id: number) {
+    setMessage('');
+    setSelectedId(id);
+  }
+
+  function closeOrder() {
+    if (actionBusyId !== null || rejectBusy) return;
+    setSelectedId(null);
+  }
+
+  // ── Order building blocks (shared by Home, the Deliveries list and the detail view) ──
+
+  // Collect payment only after dispatch; starting delivery never requires payment entry.
+  function renderCodConfirm(order: Delivery) {
+    if (order.status !== 'out_for_delivery' || isPaidOnline(order)) return null;
+    const value = paymentForms[order.id] || emptyCollection();
+    return (
+      <div className="sa-stack sa-stack--tight">
+        <PaymentCollectionForm value={value} total={finalAmount(order)} disabled={actionBusyId !== null}
+          onChange={next => { setPaymentForms(prev => ({...prev,[order.id]:next})); setCodConfirmed(prev=>({...prev,[order.id]:false})); }} />
+        <label className="sa-check"><input type="checkbox" checked={!!codConfirmed[order.id]}
+          disabled={actionBusyId !== null || !!collectionError(value,finalAmount(order))}
+          onChange={e=>setCodConfirmed(prev=>({...prev,[order.id]:e.target.checked}))} />
+          <span>I confirm the amount actually received and the remaining credit.</span>
+        </label>
+      </div>
+    );
+  }
+
+  // The existing lifecycle actions for the order's current status; nothing else changes its status.
+  function renderOrderActions(order: Delivery) {
+    const busy = actionBusyId !== null || isLoading;
+    const isBusy = actionBusyId === order.id;
+
+    if (order.status === 'assigned') {
+      return rejectingId === order.id ? (
+        <div className="sa-reject">
+          <Select
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            disabled={rejectBusy}
+            aria-label="Decline reason"
+          >
+            <option value="Too far">Too far</option>
+            <option value="Unavailable">Unavailable</option>
+            <option value="Vehicle issue">Vehicle issue</option>
+            <option value="other">Other — write a reason</option>
+          </Select>
+          {rejectReason === 'other' && (
+            <Field label="Custom reason" required hint={`Required · ${customRejectReason.length}/${LIMITS.staffReason} characters`}>
+              <Textarea
+                aria-label="Custom reason"
+                value={customRejectReason}
+                onChange={e => setCustomRejectReason(e.target.value)}
+                placeholder="Tell the admin why you cannot take this delivery"
+                rows={3}
+                maxLength={LIMITS.staffReason}
+                required
+                disabled={rejectBusy}
+              />
+            </Field>
+          )}
+          <div className="sa-reject__actions">
+            <Button type="button" variant="danger" onClick={() => reject(order.id)} disabled={rejectBusy || (rejectReason === 'other' && !customRejectReason.trim())} loading={rejectBusy}>
+              {rejectBusy ? 'Declining…' : 'Confirm Reject'}
+            </Button>
+            <Button type="button" variant="secondary" onClick={() => setRejectingId(null)} disabled={rejectBusy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="sa-order__actions">
+          <Button type="button" variant="secondary" size="lg" onClick={() => { setRejectReason('Too far'); setCustomRejectReason(''); setRejectingId(order.id); }} disabled={busy}>
+            Reject
+          </Button>
+          <Button type="button" size="lg" onClick={() => accept(order.id)} disabled={busy} loading={isBusy}>
+            {isBusy ? 'Accepting…' : 'Accept Assignment'}
+          </Button>
+        </div>
+      );
+    }
+
+    if (order.status === 'accepted') {
+      return (
+        <Button
+          type="button"
+          size="lg"
+          block
+          icon={<Navigation size={18} />}
+          onClick={() => start(order.id)}
+          disabled={busy}
+          loading={isBusy}
+        >
+          Start Delivery &amp; Notify Customer
+        </Button>
+      );
+    }
+
+    if (order.status === 'out_for_delivery') {
+      const online = isPaidOnline(order);
+      const cylinderItems = order.order_items?.filter(i => i.type === 'cylinder') || [];
+      const byType = [...new Map(cylinderItems.map(i => [i.cylinder_type, i])).values()];
+      return (<>
+        {byType.length > 0 && <div style={{ display: 'grid', gap: 8, padding: 12 }}>{byType.map(item => <label key={item.cylinder_type}>Empty {item.name} returned<input aria-label={`Empty ${item.name} returned`} type="number" min="0" value={mixedEmpties[order.id]?.[item.cylinder_type!] ?? (byType.length === 1 ? Number(collections[order.id]?.empty || 0) : 0)} onChange={e => setMixedEmpties(prev => ({ ...prev, [order.id]: { ...prev[order.id], [item.cylinder_type!]: Number(e.target.value) } }))} /></label>)}</div>}
+        <Button
+          type="button"
+          size="lg"
+          block
+          icon={<CheckCircle2 size={18} />}
+          onClick={() => complete(order.id, !online, finalAmount(order))}
+          disabled={(!online && !codConfirmed[order.id]) || busy}
+          loading={isBusy}
+        >
+          {isBusy ? 'Completing…' : 'Complete Delivery'}
+        </Button></>
+      );
+    }
+
+    return null;
+  }
+
+  // Full order details: the Home active card and the detail view.
+  function renderOrderDetail(order: Delivery) {
+    const online = isPaidOnline(order);
+    const delivered = order.status === 'delivered';
+    const cancelled = order.status === 'cancelled';
+    const discount = discountAmount(order);
+
+    return (
+      <>
+        <DeliveryTimes delivery={order} />
+        <div className="sa-cylinder">
+          <CylinderImage cylinder={{ image: order.cylinder_type_image, weight: order.cylinder_type_weight, name: order.cylinder_type_name }} className="sa-cylinder__img" alt="Cylinder" />
+          <div className="sa-cylinder__text">
+            <div className="sa-cylinder__type">{order.cylinder_type_name}</div>
+            <div className="sa-cylinder__qty">Qty: {order.quantity}</div>
+          </div>
+          {order.customer_phone ? (
+            <a href={`tel:${order.customer_phone}`} className={buttonClassName({ variant: 'secondary', size: 'sm' })}>
+              <span className="ui-btn__icon" aria-hidden="true"><Phone size={14} /></span>
+              <span className="ui-btn__label">Call</span>
+            </a>
+          ) : null}
+        </div>
+
+        <BookingDetailItems items={order.order_items || []} />
+        <div className="sa-block">
+          <div className="sa-block__eyebrow">CUSTOMER &amp; ADDRESS</div>
+          <div className="sa-block__name">{order.customer_name}</div>
+          <div className="sa-block__text">{order.customer_address || 'No address provided'}</div>
+          {order.customer_area || order.customer_phone ? (
+            <div className="sa-block__meta">
+              {order.customer_area ? (
+                <span><MapPin size={14} aria-hidden="true" />{order.customer_area}</span>
+              ) : null}
+              {order.customer_phone ? (
+                <span><Phone size={14} aria-hidden="true" />{order.customer_phone}</span>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        {!online && (order.status === 'assigned' || order.status === 'accepted') ? (
+          <div className="sa-amount-row sa-amount-row--footer">
+            <span className="sa-amount-row__label">Amount to collect on delivery</span>
+            <AmountToCollect delivery={order} showOriginal showBreakdown={false} />
+          </div>
+        ) : <div className={`sa-pay ${online ? 'sa-pay--online' : 'sa-pay--cod'}`}>
+          <div className="sa-pay__row">
+            <div className="sa-pay__text">
+              <div className="sa-pay__title">
+                {online ? <CheckCircle2 size={14} aria-hidden="true" /> : <Banknote size={14} aria-hidden="true" />}
+                <span>{online ? 'Payment confirmed' : 'Payment on delivery'}</span>
+              </div>
+              <div className="sa-pay__sub">
+                {delivered
+                  ? 'Delivery completed'
+                  : cancelled
+                    ? 'Order cancelled'
+                    : online
+                      ? 'Payment verified by system'
+                      : 'Record the payment actually received'}
+              </div>
+            </div>
+            <AmountToCollect delivery={order} showOriginal={!delivered} tone={online ? 'success' : 'warning'} />
+          </div>
+          {!delivered && discount > 0 ? (
+            <div className="sa-pay__note">Includes {money(discount)} discount</div>
+          ) : null}
+          {renderCodConfirm(order)}
+        </div>}
+
+        {renderOrderActions(order)}
+      </>
+    );
+  }
+
+  // Compact list card. Tapping the summary opens the detail view; only the action buttons change status.
+  function renderOrderCard(order: Delivery) {
+    const delivered = order.status === 'delivered';
+    const actions = renderOrderActions(order);
+    const codConfirm = renderCodConfirm(order);
+    const itemSummary = order.order_items?.length
+      ? order.order_items.map(item => `${item.quantity} × ${item.name}`).join(' · ')
+      : `${order.quantity} × ${order.cylinder_type_name}`;
+
+    return (
+      <Card key={order.id} padding="sm" className={cx('sa-ocard', ACTIVE_STATUSES.includes(order.status) && 'sa-ocard--active')}>
+        <button type="button" className="sa-ocard__open" onClick={() => openOrder(order.id)}>
+          <span className="sa-order__top">
+            <strong className="sa-order__ref">Order #{orderRef(order)}</strong>
+            <StatusBadge status={order.status} />
+          </span>
+          <DeliveryTimes delivery={order} />
+          <span className="sa-ocard__name" title={order.customer_name}>{order.customer_name}</span>
+          <span className="sa-ocard__line">
+            <MapPin size={14} aria-hidden="true" />
+            <span className="sa-ocard__address" title={order.customer_address}>{order.customer_address || 'No address provided'}</span>
+          </span>
+          <span className="sa-ocard__items sa-ocard__line">
+            <Cylinder size={14} aria-hidden="true" />
+            <span title={itemSummary}>{itemSummary}</span>
+          </span>
+          <span className="sa-ocard__meta">
+            <PaymentBadge delivery={order} />
+            <span className="sa-ocard__more">View details<ChevronRight size={16} aria-hidden="true" /></span>
+          </span>
+        </button>
+
+        <div className="sa-amount-row sa-amount-row--footer">
+          <span className="sa-amount-row__label">{delivered ? 'Amount Collected:' : 'Amount to Collect:'}</span>
+          <AmountToCollect delivery={order} showOriginal={!delivered} showBreakdown={false} />
+        </div>
+
+        {codConfirm ? <div className="sa-ocard__confirm">{codConfirm}</div> : null}
+        {actions}
+      </Card>
+    );
+  }
+
+  const filterEmpty: Record<DeliveryFilter, { icon: ReactNode; title: string; hint: string }> = {
+    pending: { icon: <Check size={24} />, title: 'No pending deliveries', hint: "You're all caught up! New assignments will appear here." },
+    assigned: { icon: <Truck size={24} />, title: 'No new assignments', hint: 'Orders assigned to you by the admin appear here.' },
+    active: { icon: <Navigation size={24} />, title: 'No active deliveries', hint: 'Accepted and out-for-delivery orders appear here.' },
+    completed: { icon: <History size={24} />, title: 'No completed deliveries yet', hint: 'Delivered orders appear here.' },
+    all: { icon: <ClipboardList size={24} />, title: 'No deliveries yet', hint: 'Orders assigned to you appear here.' },
+  };
+
+
+  const navItems = [
+    { tab: 'home' as const, label: 'Home', icon: <Truck size={20} /> },
+    { tab: 'deliveries' as const, label: 'Deliveries', icon: <Navigation size={20} /> },
+    { tab: 'sale' as const, label: 'Sale', icon: <ShoppingCart size={20} /> },
+    { tab: 'history' as const, label: 'History', icon: <History size={20} /> },
+    { tab: 'profile' as const, label: 'Profile', icon: <User size={20} /> },
+  ];
+
+
 
   return (
-    <div style={{ background: '#F7F9FC', minHeight: '100vh', width: '100%', fontFamily: '"SF Pro Display", "Segoe UI", sans-serif' }}>
-      <div style={{ width: '100%', maxWidth: '430px', margin: '0 auto', background: '#F7F9FC', paddingBottom: '90px', minHeight: '100vh', position: 'relative', overflowX: 'hidden' }}>
-        
-        {/* ================================================== */}
-        {/* 1. STAFF HEADER */}
-        {/* ================================================== */}
-        <div style={{ padding: '20px 20px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
-            <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#132B4F', margin: 0, letterSpacing: '-0.02em' }}>
+    <div className="sa">
+      <div className={`sa__column${activeTab === 'sale' ? ' sa__column--sale' : ''}`}>
+
+        {/* Header */}
+        {activeTab !== 'sale' && <header className="sa-header">
+          <div className="sa-header__text">
+            <h2>
               {getGreeting()}, {userName.split(' ')[0] || userName} 👋
             </h2>
             {vehicleLocation ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px', color: '#1457B8', fontSize: '13px', fontWeight: 600 }}>
-                <MapPin size={14} color="#1457B8" />
+              <div className="sa-header__location">
+                <MapPin size={14} aria-hidden="true" />
                 <span>{vehicleLocation}</span>
               </div>
             ) : null}
           </div>
 
-          <div style={{ display: 'flex', gap: '10px' }}>
-            <button
-              onClick={() => setShowNotifications(true)}
-              style={{ position: 'relative', width: '42px', height: '42px', borderRadius: '50%', background: '#FFFFFF', border: '1px solid #E2E8F0', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#132B4F', cursor: 'pointer', boxShadow: '0 4px 12px rgba(0,0,0,0.04)' }}
-            >
+          <span className="sa-bell">
+            <IconButton type="button" variant="outline" size="lg" label="Notifications" onClick={() => setShowNotifications(true)}>
               <Bell size={20} />
-              {unreadNotifCount > 0 && (
-                <span style={{ position: 'absolute', top: '8px', right: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#FF6F00', border: '2px solid #FFFFFF' }} />
-              )}
-            </button>
-          </div>
-        </div>
+            </IconButton>
+            {unreadNotifCount > 0 && <span className="sa-bell__dot" aria-hidden="true" />}
+          </span>
+        </header>}
 
+        {/* Sticky so action results stay visible when acting from further down a list */}
         {message && (
-          <div style={{ margin: '0 20px 16px', background: '#EFF6FF', border: '1px solid #BFDBFE', color: '#1457B8', padding: '10px 14px', borderRadius: '12px', fontSize: '13px', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>{message}</span>
-            <button onClick={() => setMessage('')} style={{ background: 'none', border: 'none', color: '#1457B8', cursor: 'pointer', fontWeight: 700 }}>✕</button>
+          <div className="sa-flash">
+            <Alert
+              tone={messageTone === 'error' ? 'danger' : 'info'}
+              actions={
+                <IconButton type="button" size="sm" label="Dismiss" onClick={() => setMessage('')}>
+                  <X size={16} />
+                </IconButton>
+              }
+            >
+              <span>{message}</span>
+            </Alert>
           </div>
         )}
 
-        {/* LOADING STATE */}
-        {isLoading ? (
-          <div style={{ padding: '20px', textAlign: 'center', color: '#718096' }}>
-            <div style={{ fontSize: '14px', fontWeight: 600 }}>Loading staff schedule...</div>
-          </div>
+        {/* Loading */}
+        {isLoading && activeTab !== 'sale' ? (
+          <Card className="sa-state">
+            <LoadingState label="Loading staff schedule..." />
+          </Card>
         ) : null}
 
-        {/* ================================================== */}
-        {/* MAIN TAB CONTENT */}
-        {/* ================================================== */}
-        {activeTab === 'home' && !isLoading && (
-          <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        {/* Load error */}
+        {!isLoading && loadError && activeTab !== 'profile' && activeTab !== 'sale' ? (
+          <Card className="sa-state sa-state--error" role="alert">
+            <EmptyState
+              icon={<AlertTriangle size={24} />}
+              title="Could not load deliveries"
+              hint={loadError}
+              action={
+                <Button type="button" icon={<RefreshCw size={16} />} onClick={load}>
+                  Retry
+                </Button>
+              }
+            />
+          </Card>
+        ) : null}
 
-            {/* ================================================== */}
-            {/* 2. STAFF HERO / SUMMARY CARD */}
-            {/* ================================================== */}
-            <div
-              style={{
-                background: 'linear-gradient(135deg, #132B4F 0%, #1457B8 100%)',
-                borderRadius: '24px',
-                padding: '22px 20px',
-                color: '#FFFFFF',
-                boxShadow: '0 12px 28px rgba(20, 87, 184, 0.25)',
-                position: 'relative',
-                overflow: 'hidden'
-              }}
-            >
-              <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#93C5FD', marginBottom: '8px' }}>
-                TODAY'S OPERATIONS
-              </div>
-              <h3 style={{ fontSize: '20px', fontWeight: 800, margin: '0 0 16px', letterSpacing: '-0.01em' }}>
-                Delivery Summary
-              </h3>
+        {activeTab === 'sale' && <StaffDirectSale onBack={() => goTab('home')} onDone={load} onBusyChange={setSaleBusy} />}
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(8px)', borderRadius: '16px', padding: '12px' }}>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#FFFFFF' }}>{assignedCount}</div>
-                  <div style={{ fontSize: '11px', color: '#DBEAFE', fontWeight: 600 }}>Assigned</div>
-                </div>
-                <div style={{ textAlign: 'center', borderLeft: '1px solid rgba(255,255,255,0.15)', borderRight: '1px solid rgba(255,255,255,0.15)' }}>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#FF9E43' }}>{activeCount}</div>
-                  <div style={{ fontSize: '11px', color: '#DBEAFE', fontWeight: 600 }}>Active</div>
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#4ADE80' }}>{completedCount}</div>
-                  <div style={{ fontSize: '11px', color: '#DBEAFE', fontWeight: 600 }}>Completed</div>
-                </div>
-              </div>
-            </div>
+        {/* ── Home ── */}
+        {activeTab === 'home' && !isLoading && !loadError && (
+          <div className="sa-stack">
 
-            {/* ================================================== */}
-            {/* 3. QUICK ACTIONS */}
-            {/* ================================================== */}
-            <div>
-              <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: '0 0 12px' }}>Quick Actions</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
-                {/* 1. My Tasks */}
-                <div
-                  onClick={() => { setActiveTab('deliveries'); setFilterTab('assigned'); }}
-                  style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px 10px', textAlign: 'center', border: '1px solid #EDF2F7', boxShadow: '0 4px 14px rgba(19, 43, 79, 0.04)', cursor: 'pointer' }}
-                >
-                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 8px', color: '#1457B8' }}>
-                    <Truck size={22} />
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#132B4F' }}>My Tasks</div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginTop: '2px' }}>{assignedCount} assigned</div>
+            {/* Summary */}
+            <section className="sa-hero">
+              <div className="sa-hero__eyebrow">TODAY'S OPERATIONS</div>
+              <h3 className="sa-hero__title">Delivery Summary</h3>
+              <div className="sa-hero__stats">
+                <div className="sa-hero__stat">
+                  <div className="sa-hero__value">{assignedCount}</div>
+                  <div className="sa-hero__label">Assigned</div>
                 </div>
-
-                {/* 2. Active Delivery */}
-                <div
-                  onClick={() => { setActiveTab('deliveries'); setFilterTab('active'); }}
-                  style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px 10px', textAlign: 'center', border: '1px solid #EDF2F7', boxShadow: '0 4px 14px rgba(19, 43, 79, 0.04)', cursor: 'pointer' }}
-                >
-                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: '#FFF7ED', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 8px', color: '#FF6F00' }}>
-                    <Navigation size={22} />
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#132B4F' }}>Active Order</div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginTop: '2px' }}>{activeCount} in progress</div>
+                <div className="sa-hero__stat">
+                  <div className="sa-hero__value sa-hero__value--active">{activeCount}</div>
+                  <div className="sa-hero__label">Active</div>
                 </div>
-
-                {/* 3. History */}
-                <div
-                  onClick={() => setActiveTab('history')}
-                  style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px 10px', textAlign: 'center', border: '1px solid #EDF2F7', boxShadow: '0 4px 14px rgba(19, 43, 79, 0.04)', cursor: 'pointer' }}
-                >
-                  <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: '#F0FDF4', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 8px', color: '#22A06B' }}>
-                    <History size={22} />
-                  </div>
-                  <div style={{ fontSize: '13px', fontWeight: 700, color: '#132B4F' }}>History</div>
-                  <div style={{ fontSize: '11px', color: '#718096', marginTop: '2px' }}>Past orders</div>
+                <div className="sa-hero__stat">
+                  <div className="sa-hero__value sa-hero__value--done">{completedCount}</div>
+                  <div className="sa-hero__label">Completed</div>
                 </div>
               </div>
-            </div>
+              <button type="button" className="sa-hero__cta" onClick={() => showDeliveries('pending')}>
+                <ClipboardList size={18} aria-hidden="true" />
+                <span className="sa-hero__cta-label">View All Deliveries</span>
+                <span className="sa-hero__cta-count">{pendingCount} pending</span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
+            </section>
 
-            {/* ================================================== */}
-            {/* 4. PENDING ASSIGNMENTS */}
-            {/* ================================================== */}
-            {pendingAssignments.length > 0 ? (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: 0 }}>New Assignment</h4>
-                  <span style={{ fontSize: '12px', background: '#FFF3EB', color: '#FF6F00', padding: '2px 8px', borderRadius: '10px', fontWeight: 700 }}>
-                    {pendingAssignments.length} Pending
-                  </span>
-                </div>
+            <TodayCollections refreshKey={0} />
+            {/* Quick actions */}
+            <section>
+              <SectionHeader as="h3" title="Quick Actions" className="sa-section-head" />
+              <div className="sa-quick">
+                <button type="button" className="sa-quick__tile" onClick={() => showDeliveries('assigned')}>
+                  <span className="sa-quick__icon sa-quick__icon--primary" aria-hidden="true"><Truck size={20} /></span>
+                  <span className="sa-quick__title">My Tasks</span>
+                  <span className="sa-quick__sub">{assignedCount} assigned</span>
+                </button>
 
-                {pendingAssignments.slice(0, 1).map((order) => {
-                  const isOnline = order.booking_payment_method === 'ONLINE' || order.booking_payment_status === 'PAID';
+                <button type="button" className="sa-quick__tile" onClick={() => showDeliveries('active')}>
+                  <span className="sa-quick__icon sa-quick__icon--warning" aria-hidden="true"><Navigation size={20} /></span>
+                  <span className="sa-quick__title">Active Orders</span>
+                  <span className="sa-quick__sub">{activeCount} in progress</span>
+                </button>
 
-                  return (
-                    <div key={order.id} style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 6px 18px rgba(19, 43, 79, 0.06)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 800, color: '#132B4F' }}>Order #GB{order.id}</span>
-                        <span style={{ fontSize: '12px', color: isOnline ? '#22A06B' : '#FF6F00', fontWeight: 700, background: isOnline ? '#E6F4EA' : '#FFF3EB', padding: '2px 8px', borderRadius: '8px' }}>
-                          {isOnline ? '✓ Paid Online' : '💵 COD'}
-                        </span>
-                      </div>
-
-                      <div style={{ fontSize: '15px', fontWeight: 700, color: '#132B4F' }}>
-                        {order.quantity} x {order.cylinder_type_name}
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '6px', background: '#F8FAFC', padding: '10px 12px', borderRadius: '12px', margin: '10px 0' }}>
-                        <MapPin size={15} color="#718096" style={{ marginTop: '2px', flexShrink: 0 }} />
-                        <span style={{ fontSize: '13px', color: '#2D3748', lineHeight: 1.4 }}>{order.customer_address || 'No address provided'}</span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
-                        <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>Amount to Collect:</span>
-                        <AmountToCollect
-                          delivery={order}
-                          showOriginal
-                          valueStyle={{ fontSize: '15px', fontWeight: 800, color: '#1457B8' }}
-                        />
-                      </div>
-
-                      {rejectingId === order.id ? (
-                        <div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', padding: '12px', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          <select
-                            value={rejectReason}
-                            onChange={(e) => setRejectReason(e.target.value)}
-                            style={{ width: '100%', padding: '8px', borderRadius: '8px', border: '1px solid #FCA5A5', fontSize: '13px' }}
-                          >
-                            <option value="Too far">Too far</option>
-                            <option value="Unavailable">Unavailable</option>
-                            <option value="Vehicle issue">Vehicle issue</option>
-                          </select>
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <button onClick={() => reject(order.id)} style={{ flex: 1, padding: '8px', background: '#E11D48', color: '#FFF', border: 'none', borderRadius: '8px', fontWeight: 700, cursor: 'pointer' }}>Confirm Reject</button>
-                            <button onClick={() => setRejectingId(null)} style={{ padding: '8px 12px', background: '#FFF', border: '1px solid #CBD5E1', borderRadius: '8px', fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '10px' }}>
-                          <button onClick={() => setRejectingId(order.id)} style={{ padding: '12px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer' }}>
-                            Reject
-                          </button>
-                          <button onClick={() => accept(order.id)} style={{ padding: '12px', background: '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '12px', fontWeight: 700, cursor: 'pointer' }}>
-                            Accept Assignment
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                <button type="button" className="sa-quick__tile" onClick={() => goTab('history')}>
+                  <span className="sa-quick__icon sa-quick__icon--success" aria-hidden="true"><History size={20} /></span>
+                  <span className="sa-quick__title">History</span>
+                  <span className="sa-quick__sub">Past orders</span>
+                </button>
               </div>
-            ) : null}
+            </section>
 
-            {/* ================================================== */}
-            {/* 5. ACTIVE DELIVERY */}
-            {/* ================================================== */}
+            {/* Active deliveries: the current one in full, any others one tap away */}
             {activeDelivery ? (
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: 0 }}>Your Active Delivery</h4>
-                  <span style={{ fontSize: '12px', color: '#1457B8', fontWeight: 700 }}>In Progress</span>
-                </div>
-
-                {(() => {
-                  const isOnline = activeDelivery.booking_payment_method === 'ONLINE' || activeDelivery.booking_payment_status === 'PAID';
-                  const totalAmt = finalAmount(activeDelivery);
-
-                  return (
-                    <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '18px', border: '1px solid #E2E8F0', boxShadow: '0 8px 24px rgba(19, 43, 79, 0.08)' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                        <span style={{ fontSize: '15px', fontWeight: 800, color: '#132B4F' }}>Order #GB{activeDelivery.id}</span>
-                        <span style={{ background: '#E0E7FF', color: '#1457B8', padding: '4px 10px', borderRadius: '12px', fontSize: '12px', fontWeight: 700 }}>
-                          {activeDelivery.status.replaceAll('_', ' ')}
-                        </span>
-                      </div>
-
-                      <div style={{ display: 'flex', gap: '14px', alignItems: 'center', marginBottom: '14px' }}>
-                        <img src={cylinderImg} style={{ width: '48px', height: '48px', objectFit: 'contain' }} alt="Cylinder" />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: '15px', fontWeight: 700, color: '#132B4F' }}>{activeDelivery.cylinder_type_name}</div>
-                          <div style={{ fontSize: '12px', color: '#718096' }}>Qty: {activeDelivery.quantity}</div>
-                        </div>
-                        {activeDelivery.customer_phone ? (
-                          <a
-                            href={`tel:${activeDelivery.customer_phone}`}
-                            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', borderRadius: '20px', border: '1px solid #1457B8', color: '#1457B8', textDecoration: 'none', fontSize: '13px', fontWeight: 700 }}
-                          >
-                            <Phone size={14} /> Call
-                          </a>
-                        ) : null}
-                      </div>
-
-                      <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '12px', marginBottom: '14px' }}>
-                        <div style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>CUSTOMER &amp; ADDRESS</div>
-                        <div style={{ fontSize: '14px', fontWeight: 700, color: '#132B4F', marginTop: '2px' }}>{activeDelivery.customer_name}</div>
-                        <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '2px' }}>{activeDelivery.customer_address}</div>
-                      </div>
-
-                      {/* PAYMENT INFO CASE 1 & CASE 2 */}
-                      <div style={{ background: isOnline ? '#F0FDF4' : '#FFF7ED', padding: '12px', borderRadius: '12px', marginBottom: '14px', border: isOnline ? '1px solid #DCFCE7' : '1px solid #FFEDD5' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <div style={{ fontSize: '12px', fontWeight: 700, color: isOnline ? '#15803D' : '#C2410C' }}>
-                              {isOnline ? '✓ Paid Online — No Cash Needed' : '💵 Cash on Delivery'}
-                            </div>
-                            <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '2px' }}>
-                              {isOnline ? 'Payment verified by system' : 'Collect cash upon delivery'}
-                            </div>
-                          </div>
-                          <AmountToCollect
-                            delivery={activeDelivery}
-                            showOriginal
-                            valueStyle={{ fontSize: '16px', fontWeight: 800, color: isOnline ? '#15803D' : '#C2410C' }}
-                          />
-                        </div>
-
-                        {!isOnline ? (
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px', fontSize: '12px', fontWeight: 700, color: '#132B4F', cursor: 'pointer' }}>
-                            <input
-                              type="checkbox"
-                              checked={!!codConfirmed[activeDelivery.id]}
-                              onChange={(e) => setCodConfirmed((prev) => ({ ...prev, [activeDelivery.id]: e.target.checked }))}
-                            />
-                            <span>Confirm Cash Collected ({money(totalAmt)})</span>
-                          </label>
-                        ) : null}
-                      </div>
-
-                      {/* WORKFLOW ACTIONS */}
-                      {activeDelivery.status === 'accepted' && (
-                        <button
-                          onClick={() => start(activeDelivery.id)}
-                          style={{ width: '100%', padding: '14px', background: '#1457B8', color: '#FFFFFF', border: 'none', borderRadius: '14px', fontWeight: 700, fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', cursor: 'pointer' }}
-                        >
-                          <Navigation size={18} /> Start Delivery &amp; Notify Customer
-                        </button>
-                      )}
-
-                      {activeDelivery.status === 'out_for_delivery' && (
-                        <button
-                          onClick={() => complete(activeDelivery.id, !isOnline, totalAmt)}
-                          disabled={!isOnline && !codConfirmed[activeDelivery.id]}
-                          style={{
-                            width: '100%',
-                            padding: '14px',
-                            background: (!isOnline && !codConfirmed[activeDelivery.id]) ? '#A0AEC0' : '#22A06B',
-                            color: '#FFFFFF',
-                            border: 'none',
-                            borderRadius: '14px',
-                            fontWeight: 700,
-                            fontSize: '14px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '8px',
-                            cursor: (!isOnline && !codConfirmed[activeDelivery.id]) ? 'not-allowed' : 'pointer'
-                          }}
-                        >
-                          <CheckCircle2 size={18} /> Complete Delivery
-                        </button>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-            ) : null}
-
-            {/* ================================================== */}
-            {/* 10. NO ACTIVE DELIVERY STATE */}
-            {/* ================================================== */}
-            {!activeDelivery && pendingAssignments.length === 0 ? (
-              <div style={{ background: '#FFFFFF', borderRadius: '20px', padding: '32px 20px', textAlign: 'center', border: '1px solid #E2E8F0' }}>
-                <div style={{ width: '56px', height: '56px', borderRadius: '50%', background: '#F1F5F9', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px', color: '#94A3B8' }}>
-                  <Check size={28} />
-                </div>
-                <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: 0 }}>No active deliveries</h4>
-                <p style={{ fontSize: '13px', color: '#718096', marginTop: '4px' }}>You're all caught up! New assignments will appear here.</p>
-              </div>
-            ) : null}
-
-            {/* ================================================== */}
-            {/* 11. COMPLETED / RECENT DELIVERY */}
-            {/* ================================================== */}
-            {!activeDelivery && recentCompleted ? (
-              <div>
-                <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#132B4F', margin: '0 0 12px' }}>Recent Delivery</h4>
-                <div style={{ background: '#FFFFFF', borderRadius: '18px', padding: '16px', border: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontSize: '14px', fontWeight: 700, color: '#132B4F' }}>Order #GB{recentCompleted.id}</div>
-                    <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>{recentCompleted.cylinder_type_name}</div>
+              <section>
+                <SectionHeader
+                  as="h3"
+                  title="Your Active Delivery"
+                  className="sa-section-head"
+                  meta={<span className="sa-section-head__note">In Progress</span>}
+                />
+                <Card className="sa-order sa-order--active">
+                  <div className="sa-order__top">
+                    <strong className="sa-order__ref">Order #{orderRef(activeDelivery)}</strong>
+                    <StatusBadge status={activeDelivery.status} />
                   </div>
-                  <span style={{ fontSize: '12px', background: '#E6F4EA', color: '#22A06B', padding: '4px 10px', borderRadius: '12px', fontWeight: 700 }}>
-                    ✓ Delivered
-                  </span>
-                </div>
-              </div>
-            ) : null}
-          </div>
-        )}
-
-        {/* TAB 2: DELIVERIES ALL LIST */}
-        {activeTab === 'deliveries' && !isLoading && (
-          <div style={{ padding: '0 20px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#132B4F', marginBottom: '14px' }}>All Deliveries</h3>
-            <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '12px', marginBottom: '12px' }}>
-              <button onClick={() => setFilterTab('all')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'all' ? '#1457B8' : '#E2E8F0', color: filterTab === 'all' ? '#FFF' : '#475569' }}>All</button>
-              <button onClick={() => setFilterTab('assigned')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'assigned' ? '#1457B8' : '#E2E8F0', color: filterTab === 'assigned' ? '#FFF' : '#475569' }}>Assigned ({assignedCount})</button>
-              <button onClick={() => setFilterTab('active')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'active' ? '#1457B8' : '#E2E8F0', color: filterTab === 'active' ? '#FFF' : '#475569' }}>Active ({activeCount})</button>
-              <button onClick={() => setFilterTab('completed')} style={{ padding: '6px 14px', borderRadius: '20px', border: 'none', fontSize: '12px', fontWeight: 700, background: filterTab === 'completed' ? '#1457B8' : '#E2E8F0', color: filterTab === 'completed' ? '#FFF' : '#475569' }}>Completed ({completedCount})</button>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {activeDeliveriesList.map((d) => (
-                <div key={d.id} style={{ background: '#FFFFFF', borderRadius: '16px', padding: '16px', border: '1px solid #E2E8F0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #GB{d.id}</span>
-                    <span style={{ fontSize: '12px', fontWeight: 700, color: '#1457B8' }}>{d.status.replaceAll('_', ' ')}</span>
-                  </div>
-                  <div style={{ fontSize: '13px', color: '#4A5568' }}>{d.customer_name} — {d.customer_address}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #F1F5F9' }}>
-                    <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>
-                      {d.status === 'delivered' ? 'Amount Collected:' : 'Amount to Collect:'}
-                    </span>
-                    <AmountToCollect
-                      delivery={d}
-                      showOriginal={d.status !== 'delivered'}
-                      valueStyle={{ fontSize: '14px', fontWeight: 800, color: '#1457B8' }}
-                    />
-                  </div>
-                </div>
-              ))}
-              {activeDeliveriesList.length === 0 && <div style={{ textAlign: 'center', color: '#718096', padding: '30px' }}>No deliveries found for filter.</div>}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: HISTORY */}
-        {activeTab === 'history' && !isLoading && (
-          <div style={{ padding: '0 20px' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 800, color: '#132B4F', marginBottom: '14px' }}>Delivery History</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {completedDeliveries.map((d) => (
-                <div key={d.id} style={{ background: '#FFFFFF', borderRadius: '16px', padding: '16px', border: '1px solid #E2E8F0' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span style={{ fontWeight: 800, color: '#132B4F' }}>Order #GB{d.id}</span>
-                    <span style={{ fontSize: '12px', background: '#E6F4EA', color: '#22A06B', padding: '2px 8px', borderRadius: '8px', fontWeight: 700 }}>✓ Delivered</span>
-                  </div>
-                  <div style={{ fontSize: '13px', color: '#4A5568', marginTop: '4px' }}>{d.cylinder_type_name} ({d.quantity} qty)</div>
-                  <div style={{ fontSize: '12px', color: '#718096', marginTop: '2px' }}>{d.customer_name}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #F1F5F9' }}>
-                    <span style={{ fontSize: '12px', color: '#718096', fontWeight: 600 }}>Amount Collected:</span>
-                    <AmountToCollect
-                      delivery={d}
-                      showOriginal={false}
-                      valueStyle={{ fontSize: '14px', fontWeight: 800, color: '#132B4F' }}
-                    />
-                  </div>
-                </div>
-              ))}
-              {completedDeliveries.length === 0 && <div style={{ textAlign: 'center', color: '#718096', padding: '30px' }}>No completed history yet.</div>}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 4: PROFILE */}
-        {activeTab === 'profile' && !isLoading && (
-          <div style={{ padding: '0 20px' }}>
-            <div
-              style={{
-                background: 'linear-gradient(135deg, rgba(165, 221, 247, 0.95) 0%, rgba(223, 241, 255, 0.94) 56%, rgba(255, 255, 255, 0.98) 100%)',
-                borderRadius: '28px',
-                padding: '26px 22px',
-                marginBottom: '18px',
-                position: 'relative',
-                overflow: 'hidden',
-                border: '1px solid rgba(191, 219, 254, 0.8)',
-                boxShadow: '0 18px 40px rgba(15, 23, 42, 0.08)',
-              }}
-            >
-              <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at top right, rgba(255,255,255,0.55), transparent 42%)' }} />
-              <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '16px' }}>
-                {staffProfile?.staff_image_url ? (
-                  <img
-                    src={staffProfile.staff_image_url}
-                    alt={staffProfile.name || userName}
-                    style={{ width: '86px', height: '86px', borderRadius: '50%', objectFit: 'cover', border: '4px solid #1F3B73', boxShadow: '0 12px 28px rgba(31, 59, 115, 0.12)' }}
-                  />
-                ) : (
-                  <div style={{ width: '86px', height: '86px', borderRadius: '50%', background: 'rgba(255,255,255,0.32)', border: '4px solid #1F3B73', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '30px', fontWeight: 900, color: '#1F3B73' }}>
-                    {profileInitials}
-                  </div>
-                )}
-                <div style={{ minWidth: 0 }}>
-                  <h3 style={{ fontSize: '22px', fontWeight: 900, color: '#243B67', margin: '0 0 6px', lineHeight: 1.1 }}>
-                    {staffProfile?.name || userName}
-                  </h3>
-                  <p style={{ fontSize: '15px', color: '#3E5E95', margin: 0, lineHeight: 1.5 }}>
-                    Manage your account and saved details.
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '16px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#132B4F', margin: 0 }}>Account Details</h4>
-                <button
-                  type="button"
-                  onClick={openEditProfile}
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '16px', border: '1px solid #BCD6FF', background: '#F7FBFF', color: '#315FB7', fontSize: '13px', fontWeight: 800, cursor: 'pointer', boxShadow: '0 8px 16px rgba(49, 95, 183, 0.08)' }}
-                >
-                  <Pencil size={16} />
-                  Edit
-                </button>
-              </div>
-              <div style={{ background: '#FFFFFF', borderRadius: '26px', border: '1px solid #EDF2F7', overflow: 'hidden', boxShadow: '0 18px 38px rgba(15, 23, 42, 0.06)' }}>
-                {profileRows.map((row, index) => (
-                  <div key={row.label}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '22px 22px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0 }}>
-                        <div style={{ width: '46px', height: '46px', borderRadius: '16px', background: '#EEF4FF', color: '#365FC4', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                          {row.icon}
-                        </div>
-                        <span style={{ fontSize: '13px', color: '#233B69', fontWeight: 800 }}>{row.label}</span>
-                      </div>
-                      <div style={{ fontSize: '14px', color: '#6F7F9C', fontWeight: 700, textAlign: 'right', lineHeight: 1.45, maxWidth: '46%', wordBreak: 'break-word' }}>{row.value}</div>
-                    </div>
-                    {index < profileRows.length - 1 ? <div style={{ height: '1px', background: '#EEF2F7', margin: '0 22px' }} /> : null}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div style={{ marginBottom: '18px' }}>
-              <h4 style={{ fontSize: '16px', fontWeight: 800, color: '#132B4F', margin: '0 0 10px' }}>Account</h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <button
-                  onClick={() => { logout(); window.location.href = '/login'; }}
-                  style={{ width: '100%', padding: '20px 22px', background: '#FFFFFF', border: '1px solid #F2E7E7', borderRadius: '26px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', boxShadow: '0 18px 38px rgba(15, 23, 42, 0.06)' }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                    <div style={{ width: '46px', height: '46px', borderRadius: '16px', background: '#FFF1F1', color: '#E24C40', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <ChevronRight size={18} style={{ transform: 'rotate(180deg)' }} />
-                    </div>
-                    <div style={{ textAlign: 'left' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 900, color: '#D13E34' }}>Logout</div>
-                    </div>
-                  </div>
-                  <ChevronRight size={20} color="#D13E34" />
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ================================================== */}
-        {/* 13. BOTTOM NAVIGATION (STAFF WORKFLOW) */}
-        {/* ================================================== */}
-        <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: '430px', background: '#FFFFFF', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-around', padding: '10px 0 16px', zIndex: 1000, boxShadow: '0 -4px 20px rgba(0,0,0,0.05)' }}>
-          <button
-            onClick={() => setActiveTab('home')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'home' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <Truck size={22} color={activeTab === 'home' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'home' ? 700 : 500 }}>Home</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('deliveries')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'deliveries' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <Navigation size={22} color={activeTab === 'deliveries' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'deliveries' ? 700 : 500 }}>Deliveries</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('history')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'history' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <History size={22} color={activeTab === 'history' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'history' ? 700 : 500 }}>History</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('profile')}
-            style={{ background: 'none', border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', color: activeTab === 'profile' ? '#FF6F00' : '#718096', cursor: 'pointer', flex: 1 }}
-          >
-            <User size={22} color={activeTab === 'profile' ? '#FF6F00' : '#718096'} />
-            <span style={{ fontSize: '11px', fontWeight: activeTab === 'profile' ? 700 : 500 }}>Profile</span>
-          </button>
-        </div>
-
-        {/* NOTIFICATIONS MODAL */}
-        {showNotifications && (
-          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}>
-            <div style={{ background: '#FFF', width: '100%', maxWidth: '360px', maxHeight: '80vh', borderRadius: '16px', padding: '20px', display: 'flex', flexDirection: 'column' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid #F1F5F9', paddingBottom: '12px' }}>
-                <h3 style={{ fontSize: '16px', fontWeight: 700, margin: 0 }}>Staff Notifications</h3>
-                <button onClick={() => setShowNotifications(false)} style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer' }}>✕</button>
-              </div>
-
-              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {notifications.map((n) => (
-                  <div
-                    key={n.id}
-                    onClick={() => void handleMarkRead(n.id)}
-                    style={{ padding: '12px', borderRadius: '10px', background: n.is_read ? '#F8FAFC' : '#EFF6FF', border: n.is_read ? '1px solid #E2E8F0' : '1px solid #BFDBFE', cursor: 'pointer' }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                      <strong style={{ fontSize: '13px', color: '#1E293B' }}>{n.title}</strong>
-                      <small style={{ fontSize: '10px', color: '#94A3B8' }}>{new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
-                    </div>
-                    <p style={{ fontSize: '12px', color: '#475569', margin: 0 }}>{n.body}</p>
-                  </div>
-                ))}
-                {notifications.length === 0 && <p style={{ textAlign: 'center', color: '#94A3B8', marginTop: '40px', fontSize: '13px' }}>No alerts received yet.</p>}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {showEditProfile && (
-          <div
-            onClick={() => { if (!isSavingProfile) setShowEditProfile(false); }}
-            style={{ position: 'fixed', inset: 0, background: 'rgba(15, 23, 42, 0.55)', backdropFilter: 'blur(4px)', zIndex: 2500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
-          >
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{ width: '100%', maxWidth: '430px', background: '#FFFFFF', borderRadius: '24px', boxShadow: '0 24px 48px rgba(15, 23, 42, 0.18)', overflow: 'hidden' }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 20px 14px', borderBottom: '1px solid #F1F5F9' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                  <div style={{ width: '42px', height: '42px', borderRadius: '14px', background: '#EFF6FF', color: '#1457B8', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <Pencil size={18} />
-                  </div>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: '#132B4F' }}>Edit Profile</h3>
-                    <p style={{ margin: '2px 0 0', fontSize: '12px', color: '#718096' }}>Update your personal details</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => { if (!isSavingProfile) setShowEditProfile(false); }}
-                  style={{ width: '32px', height: '32px', borderRadius: '50%', border: 'none', background: '#F1F5F9', color: '#64748B', cursor: 'pointer', fontSize: '18px' }}
-                >
-                  ×
-                </button>
-              </div>
-
-              <form onSubmit={saveProfileChanges} style={{ padding: '18px 20px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                {editProfileError ? (
-                  <div style={{ padding: '10px 12px', borderRadius: '12px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#B91C1C', fontSize: '12.5px', fontWeight: 700 }}>
-                    {editProfileError}
-                  </div>
+                  {renderOrderDetail(activeDelivery)}
+                </Card>
+                {activeCount > 1 ? (
+                  <button type="button" className="sa-more" onClick={() => showDeliveries('active')}>
+                    <span>{activeCount - 1} more active {activeCount - 1 === 1 ? 'delivery' : 'deliveries'}</span>
+                    <ChevronRight size={16} aria-hidden="true" />
+                  </button>
                 ) : null}
+              </section>
+            ) : null}
 
-                {[
-                  { key: 'full_name', label: 'Full Name *', type: 'text', placeholder: 'Enter your full name' },
-                  { key: 'phone', label: 'Phone Number', type: 'tel', placeholder: 'Enter mobile number' },
-                  { key: 'email', label: 'Email Address', type: 'email', placeholder: 'Enter email address' },
-                ].map((field) => (
-                  <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#334155' }}>{field.label}</span>
-                    <input
-                      type={field.type}
-                      value={editProfileValues[field.key as keyof typeof editProfileValues]}
-                      onChange={(e) => setEditProfileValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
-                      placeholder={field.placeholder}
-                      style={{ width: '100%', padding: '12px 14px', borderRadius: '14px', border: '1px solid #D7E0EA', fontSize: '14px', color: '#132B4F', outline: 'none', background: '#FFFFFF' }}
-                    />
-                  </label>
-                ))}
-
-                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <span style={{ fontSize: '12.5px', fontWeight: 800, color: '#334155' }}>Address</span>
-                  <textarea
-                    rows={3}
-                    value={editProfileValues.address}
-                    onChange={(e) => setEditProfileValues((prev) => ({ ...prev, address: e.target.value }))}
-                    placeholder="Enter full address"
-                    style={{ width: '100%', padding: '12px 14px', borderRadius: '14px', border: '1px solid #D7E0EA', fontSize: '14px', color: '#132B4F', outline: 'none', resize: 'vertical', background: '#FFFFFF' }}
-                  />
-                </label>
-
-                <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-                  <button
-                    type="button"
-                    onClick={() => setShowEditProfile(false)}
-                    disabled={isSavingProfile}
-                    style={{ flex: 1, padding: '12px 14px', borderRadius: '14px', border: '1px solid #CBD5E1', background: '#FFFFFF', color: '#475569', fontWeight: 800, cursor: isSavingProfile ? 'not-allowed' : 'pointer' }}
-                  >
-                    Cancel
+            {/* Next eligible assignment */}
+            {pendingAssignments.length > 0 ? (
+              <section>
+                <SectionHeader
+                  as="h3"
+                  title="New Assignment"
+                  className="sa-section-head"
+                  meta={<Badge tone="warning">{assignedCount} Assigned</Badge>}
+                />
+                {renderOrderCard(pendingAssignments[0])}
+                {assignedCount > 1 ? (
+                  <button type="button" className="sa-more" onClick={() => showDeliveries('assigned')}>
+                    <span>View all {assignedCount} assigned orders</span>
+                    <ChevronRight size={16} aria-hidden="true" />
                   </button>
-                  <button
-                    type="submit"
-                    disabled={isSavingProfile}
-                    style={{ flex: 1, padding: '12px 14px', borderRadius: '14px', border: 'none', background: '#1457B8', color: '#FFFFFF', fontWeight: 800, cursor: isSavingProfile ? 'not-allowed' : 'pointer' }}
-                  >
-                    {isSavingProfile ? 'Saving...' : 'Save Changes'}
-                  </button>
-                </div>
-              </form>
+                ) : null}
+              </section>
+            ) : null}
+
+            {/* Nothing to do */}
+            {!activeDelivery && pendingAssignments.length === 0 ? (
+              <Card>
+                <EmptyState
+                  icon={<Check size={24} />}
+                  title="No active deliveries"
+                  hint="You're all caught up! New assignments will appear here."
+                />
+              </Card>
+            ) : null}
+
+            {/* Most recent completed */}
+            {!activeDelivery && recentCompleted ? (
+              <section>
+                <SectionHeader as="h3" title="Recent Delivery" className="sa-section-head" />
+                <Card padding="sm" className="sa-recent">
+                  <div>
+                    <div className="sa-order__ref">Order #{orderRef(recentCompleted)}</div>
+                    <div className="sa-muted">{recentCompleted.cylinder_type_name}</div>
+                    <DeliveryTimes delivery={recentCompleted} />
+                  </div>
+                  <Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>
+                </Card>
+              </section>
+            ) : null}
+          </div>
+        )}
+
+        {/* ── All deliveries ── */}
+        {activeTab === 'deliveries' && !isLoading && !loadError && (
+          <section className="sa-stack sa-stack--tight">
+            <div className="sa-list-head">
+              <h3 className="sa-page-title">All Deliveries</h3>
+              <Badge tone={pendingCount > 0 ? 'warning' : 'neutral'}>{pendingCount} Pending</Badge>
             </div>
+            <div className="sa-filters">
+              <Tabs
+                ariaLabel="Delivery filter"
+                block
+                value={filterTab}
+                onChange={setFilterTab}
+                items={[
+                  { value: 'pending', label: 'All Pending', count: pendingCount },
+                  { value: 'assigned', label: 'Assigned', count: assignedCount },
+                  { value: 'active', label: 'Active', count: activeCount },
+                  { value: 'completed', label: 'Completed', count: completedCount },
+                  { value: 'all', label: 'All', count: allDeliveries.length },
+                ]}
+              />
+            </div>
+
+            <div className="sa-list">
+              {filteredDeliveries.map((d) => renderOrderCard(d))}
+              {filteredDeliveries.length === 0 && (
+                <Card>
+                  <EmptyState
+                    compact
+                    icon={filterEmpty[filterTab].icon}
+                    title={filterEmpty[filterTab].title}
+                    hint={filterEmpty[filterTab].hint}
+                  />
+                </Card>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* ── History ── */}
+        {activeTab === 'history' && !isLoading && !loadError && (
+          <StaffHistory<Delivery> onCollected={load} renderDelivery={(d) => (
+            <StaffHistoryCard
+              reference={`Order #${orderRef(d)}`}
+              badge={<Badge tone="success" icon={<Check size={12} />}>Delivered</Badge>}
+              times={<DeliveryTimes delivery={d} />}
+              customer={d.customer_name}
+              summary={d.order_items?.length
+                ? d.order_items.map(item => `${item.name} (${item.quantity} qty)`).join(' · ')
+                : `${d.cylinder_type_name} (${d.quantity} qty)`}
+              amountLabel="Order total"
+              amount={money(finalAmount(d))}
+              details={<><PaymentSummary value={d.payment_summary} allowCollection onCollected={load} /><BookingDetailItems items={d.order_items?.length ? d.order_items : [{
+                id: d.id, name: d.cylinder_type_name, type: 'cylinder', quantity: d.quantity,
+                rate: d.rate, total_amount: String(finalAmount(d)), rate_type: d.rate_type,
+                deposit_unit_amount: d.deposit_unit_amount, refill_unit_amount: d.refill_unit_amount,
+              }]} /></>}
+            />
+          )} />
+        )}
+
+        {/* ── Profile ── */}
+        {activeTab === 'profile' && !isLoading && (
+          <div className="sa-stack">
+            <Card className="sa-profile">
+              {staffProfile?.staff_image_url ? (
+                <MediaImage src={staffProfile.staff_image_url} alt={staffProfile.name || userName} className="sa-profile__avatar" />
+              ) : (
+                <div className="sa-profile__avatar sa-profile__avatar--initials">{profileInitials}</div>
+              )}
+              <div className="sa-profile__text">
+                <h3>{staffProfile?.name || userName}</h3>
+                <p>Manage your account and saved details.</p>
+              </div>
+            </Card>
+
+            <section>
+              <SectionHeader
+                as="h3"
+                title="Account Details"
+                className="sa-section-head"
+                meta={
+                  <Button type="button" variant="secondary" size="sm" icon={<Pencil size={14} />} onClick={openEditProfile}>
+                    Edit
+                  </Button>
+                }
+              />
+              <Card padding="none" className="sa-details">
+                {profileRows.map((row) => (
+                  <div key={row.label} className="sa-details__row">
+                    <div className="sa-details__label">
+                      <span className="sa-details__icon" aria-hidden="true">{row.icon}</span>
+                      <span>{row.label}</span>
+                    </div>
+                    <div className="sa-details__value">{row.value}</div>
+                  </div>
+                ))}
+              </Card>
+            </section>
+
+            <section>
+              <SectionHeader as="h3" title="Account" className="sa-section-head" />
+              <button
+                type="button"
+                className="sa-logout"
+                onClick={() => { logout(); window.location.href = '/login'; }}
+              >
+                <span className="sa-logout__icon" aria-hidden="true"><LogOut size={18} /></span>
+                <span className="sa-logout__label">Logout</span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
+            </section>
           </div>
         )}
       </div>
+
+      {/* Bottom navigation */}
+      <nav className="sa-nav" aria-label="Staff navigation">
+        <div className="sa-nav__inner">
+          {navItems.map((item) => (
+            <button
+              key={item.tab}
+              type="button"
+              className={`sa-nav__item${activeTab === item.tab ? ' is-active' : ''}`}
+              aria-current={activeTab === item.tab ? 'page' : undefined}
+              disabled={saleBusy}
+              onClick={() => goTab(item.tab)}
+            >
+              {item.icon}
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {/* Notifications */}
+      <Modal open={showNotifications} onClose={() => setShowNotifications(false)} title="Staff Notifications" size="sm">
+        <div className="sa-notifs">
+          {notifications.map((n) => (
+            <button
+              key={n.id}
+              type="button"
+              className={`sa-notif${n.is_read ? '' : ' sa-notif--unread'}`}
+              onClick={() => void handleMarkRead(n.id)}
+            >
+              <span className="sa-notif__head">
+                <strong>{n.title}</strong>
+                <small>{formatDateTime(n.created_at)}</small>
+              </span>
+              <span className="sa-notif__body">{n.body}</span>
+            </button>
+          ))}
+          {notifError && (
+            <Alert
+              tone="danger"
+              actions={<Button type="button" size="sm" variant="secondary" onClick={load}>Retry</Button>}
+            >
+              <p>Notifications unavailable. {notifError}</p>
+            </Alert>
+          )}
+          {!notifError && notifications.length === 0 && (
+            <EmptyState compact icon={<Bell size={24} />} title="No alerts received yet." />
+          )}
+        </div>
+      </Modal>
+
+      {/* Order details (read-only view; only the action buttons inside change status) */}
+      <Modal
+        open={!!selectedOrder}
+        onClose={closeOrder}
+        closeOnEscape
+        closeOnOverlay
+        title={selectedOrder ? `Order #${orderRef(selectedOrder)}` : undefined}
+        className="sa-detail"
+      >
+        {selectedOrder ? (
+          <div className="sa-detail__body">
+            {message ? (
+              <Alert
+                tone={messageTone === 'error' ? 'danger' : 'info'}
+                compact
+                actions={
+                  <IconButton type="button" size="sm" label="Dismiss" onClick={() => setMessage('')}>
+                    <X size={16} />
+                  </IconButton>
+                }
+              >
+                <span>{message}</span>
+              </Alert>
+            ) : null}
+            <div className="sa-detail__badges">
+              <StatusBadge status={selectedOrder.status} />
+              <PaymentBadge delivery={selectedOrder} />
+            </div>
+            {renderOrderDetail(selectedOrder)}
+          </div>
+        ) : null}
+      </Modal>
+
+      {/* Edit profile */}
+      <Modal
+        open={showEditProfile}
+        onClose={() => { if (!isSavingProfile) setShowEditProfile(false); }}
+        closeOnOverlay
+        title="Edit Profile"
+        description="Update your personal details"
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setShowEditProfile(false)} disabled={isSavingProfile}>
+              Cancel
+            </Button>
+            <Button type="submit" form="staff-edit-profile-form" disabled={isSavingProfile} loading={isSavingProfile}>
+              {isSavingProfile ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </>
+        }
+      >
+        <form id="staff-edit-profile-form" onSubmit={saveProfileChanges} className="sa-form">
+          {editProfileError ? <Alert tone="danger" compact>{editProfileError}</Alert> : null}
+
+          {([
+            { key: 'full_name', label: 'Full Name *', type: 'text', placeholder: 'Enter your full name', maxLength: LIMITS.name },
+            { key: 'phone', label: 'Phone Number', type: 'tel', placeholder: 'Enter mobile number', maxLength: LIMITS.phone, inputMode: 'numeric', pattern: '[0-9]*' },
+            { key: 'email', label: 'Email Address', type: 'email', placeholder: 'Enter email address', maxLength: LIMITS.email },
+          ] as { key: string; label: string; type: string; placeholder: string; maxLength: number; inputMode?: 'numeric'; pattern?: string }[]).map((field) => (
+            <Field key={field.key} label={field.label}>
+              <Input
+                type={field.type}
+                value={editProfileValues[field.key as keyof typeof editProfileValues]}
+                onChange={(e) => setEditProfileValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                placeholder={field.placeholder}
+                maxLength={field.maxLength}
+                inputMode={field.inputMode}
+                pattern={field.pattern}
+                title={field.pattern ? 'Only digits allowed' : undefined}
+              />
+            </Field>
+          ))}
+
+          <Field label="Address">
+            <Textarea
+              rows={3}
+              value={editProfileValues.address}
+              onChange={(e) => setEditProfileValues((prev) => ({ ...prev, address: e.target.value }))}
+              placeholder="Enter full address"
+            />
+          </Field>
+        </form>
+      </Modal>
+
+      <Modal
+        open={locationChoice !== null}
+        onClose={() => setLocationChoice(null)}
+        title="Where are these cylinders coming from?"
+        description="The shop is not available, so choose the stock location this delivery takes cylinders from."
+        size="sm"
+        footer={(
+          <>
+            <Button type="button" variant="secondary" onClick={() => setLocationChoice(null)}>Cancel</Button>
+            <Button
+              type="button"
+              disabled={actionBusyId !== null}
+              onClick={() => {
+                if (!locationChoice) return;
+                const choice = locationChoice;
+                setLocationChoice(null);
+                void complete(choice.id, choice.isCod, choice.totalAmount, Number(choice.picked));
+              }}
+            >
+              Complete delivery
+            </Button>
+          </>
+        )}
+      >
+        {locationChoice && (
+          <Field label="Stock location">
+            <Select value={locationChoice.picked} onChange={(e) => setLocationChoice({ ...locationChoice, picked: e.target.value })}>
+              {locationChoice.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            </Select>
+          </Field>
+        )}
+      </Modal>
     </div>
   );
 }

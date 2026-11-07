@@ -1,7 +1,33 @@
+import { useNavigate } from 'react-router-dom';
+import { pendingTransaction, transactionRequest } from '../lib/transactionRequest';
+import { BookingItems, type BookingItem } from '../components/BookingItems';
+import { PricingBreakdown, type PricingSnapshot } from '../components/PricingBreakdown';
+import { BookingTimes } from '../components/BookingTimes';
+import { formatDateTime } from '../lib/dateTime';
 import { useEffect, useState, useCallback } from 'react';
 import type { FormEvent } from 'react';
-import { Search, ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag, ClipboardList, Truck } from 'lucide-react';
-import { api } from '../lib/api';
+import { ChevronRight, ArrowLeft, IndianRupee, Package, RotateCcw, UserPlus, X, Pencil, Check, KeyRound, Trash2, Copy, Phone, Mail, MapPin, Share2, Tag, ClipboardList, Truck, UserX, UserCheck, Receipt, Wallet } from 'lucide-react';
+import { api, extractApiError, fetchAllPages, getApiErrorCode, getApiStatus, LIMITS } from '../lib/api';
+import { ErrorState, LoadingState } from '../components/AsyncState';
+import { Pager } from '../components/Pager';
+import { usePager } from '../hooks/usePager';
+import { Alert } from '../components/ui/Alert';
+import { Badge } from '../components/ui/Badge';
+import { Button } from '../components/ui/Button';
+import { Card, CardFooter, CardHeader } from '../components/ui/Card';
+import { ChoiceChips } from '../components/ui/ChoiceChips';
+import { Modal } from '../components/ui/Modal';
+import { StatCard } from '../components/ui/StatCard';
+import { Switch } from '../components/ui/Switch';
+import { Tabs } from '../components/ui/Tabs';
+import { bookingStatusTone } from '../components/bookingStatus';
+import { EmptyState } from '../components/ui/EmptyState';
+import { Field, Input, Select } from '../components/ui/Field';
+import { IconButton } from '../components/ui/IconButton';
+import { PageHeader } from '../components/ui/PageHeader';
+import { SearchInput } from '../components/ui/SearchInput';
+import { SkeletonRows } from '../components/ui/Skeleton';
+import { VoidStatusBadges, type SaleVoidInfo } from '../components/SaleVoidDialogs';
 
 type Customer = {
   id: number;
@@ -11,6 +37,7 @@ type Customer = {
   address: string;
   opening_balance: number;
   pending_balance: number;
+  credit_balance?: string;  // money the customer holds as credit; it offsets later dues
   global_discount_type?: 'percentage' | 'fixed' | null;
   global_discount_value?: string;
   global_discount_is_active?: boolean;
@@ -23,7 +50,11 @@ type Customer = {
     cylinder_type_name: string;
     custom_price: string;
   }[];
+  is_active?: boolean;
 };
+
+type CylinderTypeOption = { id: number; name: string; refill_rate?: string; is_active?: boolean };
+type RowNotice = { id: number; text: string; tone: 'info' | 'error' | 'confirm' };
 
 type CylinderDiscount = {
   id: number;
@@ -35,7 +66,7 @@ type CylinderDiscount = {
   is_active: boolean;
 };
 
-type SaleItem = {
+type SaleItem = PricingSnapshot & {
   cylinder_type_name: string;
   quantity: number;
   rate: number;
@@ -43,6 +74,7 @@ type SaleItem = {
 };
 
 type Sale = {
+  accessory_items?: BookingItem[];
   id: number;
   created_at: string;
   original_amount?: number | string;
@@ -57,8 +89,11 @@ type Sale = {
   payment_mode: string;
   location_name: string;
   delivery_type: string;
+  sold_by_full_name?: string;
+  handover_staff_name?: string | null;
+  void?: SaleVoidInfo | null;
   items: SaleItem[];
-  payments?: { amount: number; mode: string; date: string }[];
+  payments?: { amount: number; mode: string; date: string; kind?: string }[];
 };
 
 type Payment = {
@@ -69,6 +104,7 @@ type Payment = {
   note: string;
   empty_collected: number;
   sale: number | null;
+  kind?: 'payment' | 'refund' | 'credit_reversal' | 'credit' | 'reversal';
 };
 
 type Ledger = {
@@ -78,7 +114,8 @@ type Ledger = {
   bookings: Booking[];
 };
 
-type Booking = {
+type Booking = PricingSnapshot & {
+  order_items?: BookingItem[];
   id: number;
   customer: number;
   customer_name: string;
@@ -102,6 +139,12 @@ type Booking = {
   payment_method?: string;
   payment_status?: string;
   created_at: string;
+  delivery_status?: string | null;
+  delivery_staff_name?: string | null;
+  delivery_rejection_reason?: string | null;
+  needs_reassignment?: boolean;
+  delivered_at?: string | null;
+  rejected_at?: string | null;
 };
 
 type Staff = { id: number; username: string; full_name: string; assigned_area: string; user: number };
@@ -111,7 +154,7 @@ function money(v: number | string) {
 }
 
 function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return formatDateTime(iso);
 }
 
 function hasActiveDiscount(customer: Customer) {
@@ -170,6 +213,7 @@ function getBookingFinalAmount(booking: Booking) {
 }
 
 export default function Customers() {
+  const navigate = useNavigate();
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Ledger | null>(null);
@@ -180,6 +224,14 @@ export default function Customers() {
   const [requestsId, setRequestsId] = useState<number | null>(null);
   const [requestsBusyId, setRequestsBusyId] = useState<number | null>(null);
   const [requestsMessage, setRequestsMessage] = useState('');
+  const [requestsMessageTone, setRequestsMessageTone] = useState<'info' | 'error'>('info');
+  const [listStatus, setListStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [listError, setListError] = useState('');
+  const [bookingsError, setBookingsError] = useState('');
+  const [ledgerError, setLedgerError] = useState('');
+  const [ledgerErrorId, setLedgerErrorId] = useState<number | null>(null);
+  const [rowNotice, setRowNotice] = useState<RowNotice | null>(null);
+  const listPager = usePager(customers, 10, search);
 
   // Per-row action state — track which customer's panel is open
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -198,7 +250,7 @@ export default function Customers() {
 
   const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  const [cylinderTypes, setCylinderTypes] = useState<{ id: number; name: string }[]>([]);
+  const [cylinderTypes, setCylinderTypes] = useState<CylinderTypeOption[]>([]);
   const [discountId, setDiscountId] = useState<number | null>(null);
   const [discountTab, setDiscountTab] = useState<'global' | 'cylinder'>('global');
   const [discountType, setDiscountType] = useState<'percentage' | 'fixed'>('percentage');
@@ -213,6 +265,7 @@ export default function Customers() {
   const [cylinderDiscountIsPercentage, setCylinderDiscountIsPercentage] = useState(false);
   const [cylinderDiscountEnabled, setCylinderDiscountEnabled] = useState(true);
   const [cylinderDiscountSaving, setCylinderDiscountSaving] = useState(false);
+  const [cylinderDiscountError, setCylinderDiscountError] = useState('');
 
   // Add customer form
   const [showAdd, setShowAdd] = useState(false);
@@ -255,10 +308,9 @@ export default function Customers() {
 
   async function ensureCylinderTypes() {
     if (cylinderTypes.length > 0) return cylinderTypes;
-    const { data } = await api.get('/cylinder-types/');
-    const rows = data.results || data;
+    const rows = await fetchAllPages<CylinderTypeOption>('/cylinder-types/');
     setCylinderTypes(rows);
-    return rows as { id: number; name: string }[];
+    return rows;
   }
 
   function resetCylinderDiscountEditor() {
@@ -267,6 +319,16 @@ export default function Customers() {
     setCylinderDiscountValue('');
     setCylinderDiscountIsPercentage(false);
     setCylinderDiscountEnabled(true);
+    setCylinderDiscountError('');
+  }
+
+  // Price the discount is validated against: the customer's agreed rate when one exists, else the configured refill charge.
+  function cylinderPriceFor(customer: Customer, cylinderTypeId: number) {
+    const custom = customer.custom_rates?.find((rate) => rate.cylinder_type === cylinderTypeId)?.custom_price;
+    const type = cylinderTypes.find((t) => t.id === cylinderTypeId);
+    const raw = custom ?? type?.refill_rate;
+    const price = Number(raw);
+    return raw !== undefined && Number.isFinite(price) ? price : null;
   }
 
   function availableCylinderOptions(customer: Customer, currentCylinderId?: number) {
@@ -275,7 +337,7 @@ export default function Customers() {
         .filter((discount) => discount.cylinder_type !== currentCylinderId)
         .map((discount) => discount.cylinder_type),
     );
-    return cylinderTypes.filter((type) => !usedIds.has(type.id));
+    return cylinderTypes.filter((type) => type.is_active !== false && !usedIds.has(type.id));
   }
 
   function startEdit(c: Customer) {
@@ -299,8 +361,8 @@ export default function Customers() {
       });
       syncCustomerRecord(customerId, data);
       setEditingId(null);
-    } catch {
-      setEditError('Failed to save. Try again.');
+    } catch (err) {
+      setEditError(extractApiError(err, ['name', 'full_name', 'phone', 'email', 'address'], 'Failed to save. Try again.'));
     } finally {
       setEditSaving(false);
     }
@@ -326,8 +388,8 @@ export default function Customers() {
     try {
       const { data } = await api.post(`/customers/${customerId}/credentials/`, {});
       setPwMsg(data.temporary_password || 'Password reset successfully.');
-    } catch {
-      setPwMsg('Failed to reset password.');
+    } catch (err) {
+      setPwMsg(extractApiError(err, [], 'Failed to reset password.'));
     } finally {
       setPwSaving(false);
     }
@@ -335,14 +397,61 @@ export default function Customers() {
 
   async function handleDeleteCustomer(customerId: number, name: string) {
     const ok = window.confirm(
-      `PERMANENTLY DELETE customer ${name}? This will completely destroy all their sales, payments, and booking data. This cannot be undone.`
+      `Delete customer ${name}? Customers with sales, payments or bookings cannot be deleted and can only be deactivated.`
     );
     if (!ok) return;
     setDeletingId(customerId);
+    setRowNotice(null);
     try {
-      await api.delete(`/customers/${customerId}/credentials/`);
+      await api.delete(`/customers/${customerId}/`);
       setCustomers((prev) => prev.filter((c) => c.id !== customerId));
       if (selected && selected.customer.id === customerId) setSelected(null);
+    } catch (err) {
+      const detail = extractApiError(err, [], 'Failed to delete customer.');
+      if (getApiStatus(err) === 409 && getApiErrorCode(err) === 'has_history') {
+        const body = (err as { response?: { data?: { is_active?: boolean } } })?.response?.data;
+        const alreadyInactive = body?.is_active === false || customers.find((c) => c.id === customerId)?.is_active === false;
+        if (alreadyInactive) {
+          setRowNotice({
+            id: customerId,
+            text: 'This customer has transaction history and cannot be deleted. The account is already deactivated; ledger and order history are preserved.',
+            tone: 'info',
+          });
+        } else {
+          setRowNotice({ id: customerId, text: detail, tone: 'confirm' });
+        }
+      } else {
+        setRowNotice({ id: customerId, text: detail, tone: 'error' });
+      }
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function deactivateCustomer(customerId: number) {
+    setDeletingId(customerId);
+    try {
+      const { data } = await api.post(`/customers/${customerId}/deactivate/`, {});
+      const updated = (data as { customer?: Partial<Customer> } | undefined)?.customer;
+      syncCustomerRecord(customerId, { ...(updated ?? {}), is_active: false });
+      setRowNotice({ id: customerId, text: (data as { detail?: string })?.detail || 'Customer deactivated. Ledger and order history are preserved.', tone: 'info' });
+    } catch (err) {
+      setRowNotice({ id: customerId, text: extractApiError(err, [], 'Failed to deactivate customer.'), tone: 'error' });
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  async function reactivateCustomer(customerId: number) {
+    setDeletingId(customerId);
+    setRowNotice(null);
+    try {
+      const { data } = await api.post(`/customers/${customerId}/reactivate/`, {});
+      const updated = (data as { customer?: Partial<Customer> } | undefined)?.customer;
+      syncCustomerRecord(customerId, { ...(updated ?? {}), is_active: true });
+      setRowNotice({ id: customerId, text: (data as { detail?: string })?.detail || 'Customer reactivated.', tone: 'info' });
+    } catch (err) {
+      setRowNotice({ id: customerId, text: extractApiError(err, [], 'Failed to reactivate customer.'), tone: 'error' });
     } finally {
       setDeletingId(null);
     }
@@ -390,12 +499,7 @@ export default function Customers() {
       syncCustomerRecord(customerId, data);
       setDiscountMessage('Global discount saved.');
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: Record<string, string> } })?.response?.data;
-      setDiscountError(
-        detail?.global_discount_value ||
-        detail?.global_discount_type ||
-        'Failed to save discount settings.'
-      );
+      setDiscountError(extractApiError(err, ['global_discount_value', 'global_discount_type', 'global_discount_is_active'], 'Failed to save discount settings.'));
     } finally {
       setDiscountSaving(false);
     }
@@ -414,10 +518,12 @@ export default function Customers() {
         return;
       }
       setEditingCylinderDiscountId('new');
-      setCylinderDiscountCylinderId(String(nextType.id));
+      // No pre-selection: the admin must pick the cylinder explicitly.
+      setCylinderDiscountCylinderId('');
       setCylinderDiscountValue('');
       setCylinderDiscountIsPercentage(false);
       setCylinderDiscountEnabled(true);
+      setCylinderDiscountError('');
     } catch {
       setDiscountError('Failed to load cylinder sizes.');
     }
@@ -432,13 +538,32 @@ export default function Customers() {
     setCylinderDiscountValue(String(discount.discount_value || ''));
     setCylinderDiscountIsPercentage(discount.discount_type === 'percentage');
     setCylinderDiscountEnabled(discount.is_active);
+    setCylinderDiscountError('');
   }
 
   async function handleSaveCylinderDiscount(e: FormEvent, customer: Customer) {
     e.preventDefault();
+    setCylinderDiscountError('');
     if (!cylinderDiscountCylinderId) {
-      setDiscountError('Select a cylinder size.');
+      setCylinderDiscountError('Select a cylinder size.');
       return;
+    }
+    const cylinderTypeId = Number(cylinderDiscountCylinderId);
+    const value = Number(cylinderDiscountValue);
+    if (!cylinderDiscountValue.trim() || !Number.isFinite(value) || value <= 0) {
+      setCylinderDiscountError('Enter a discount greater than 0.');
+      return;
+    }
+    if (cylinderDiscountIsPercentage && value > 100) {
+      setCylinderDiscountError('Percentage discount cannot exceed 100%.');
+      return;
+    }
+    if (!cylinderDiscountIsPercentage) {
+      const price = cylinderPriceFor(customer, cylinderTypeId);
+      if (price !== null && value > price) {
+        setCylinderDiscountError(`Fixed discount cannot exceed the cylinder price (${money(price)}).`);
+        return;
+      }
     }
     setCylinderDiscountSaving(true);
     setDiscountError('');
@@ -446,9 +571,9 @@ export default function Customers() {
     try {
       const payload = {
         customer: customer.id,
-        cylinder_type: Number(cylinderDiscountCylinderId),
+        cylinder_type: cylinderTypeId,
         discount_type: cylinderDiscountIsPercentage ? 'percentage' : 'fixed',
-        discount_value: cylinderDiscountValue || '0',
+        discount_value: cylinderDiscountValue.trim(),
         is_active: cylinderDiscountEnabled,
       };
       if (editingCylinderDiscountId === 'new') {
@@ -461,11 +586,7 @@ export default function Customers() {
       await refreshCustomerRecord(customer.id);
       resetCylinderDiscountEditor();
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: Record<string, string | string[]> } })?.response?.data;
-      const fieldError = detail?.discount_value || detail?.cylinder_type || detail?.non_field_errors;
-      setDiscountError(
-        Array.isArray(fieldError) ? fieldError.join(', ') : fieldError || 'Failed to save cylinder discount.'
-      );
+      setCylinderDiscountError(extractApiError(err, ['discount_value', 'cylinder_type', 'discount_type', 'non_field_errors'], 'Failed to save cylinder discount.'));
     } finally {
       setCylinderDiscountSaving(false);
     }
@@ -486,8 +607,8 @@ export default function Customers() {
         resetCylinderDiscountEditor();
       }
       setDiscountMessage(`${discount.cylinder_type_name} discount removed.`);
-    } catch {
-      setDiscountError('Failed to remove cylinder discount.');
+    } catch (err) {
+      setDiscountError(extractApiError(err, [], 'Failed to remove cylinder discount.'));
     } finally {
       setCylinderDiscountSaving(false);
     }
@@ -518,8 +639,7 @@ export default function Customers() {
         setCreatedUsername(username);
       }
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setAddError(detail || 'Failed to save. Try again.');
+      setAddError(extractApiError(err, ['full_name', 'name', 'username', 'phone', 'email', 'address', 'linked_customer'], 'Failed to save. Try again.'));
     } finally {
       setAddSaving(false);
     }
@@ -527,25 +647,44 @@ export default function Customers() {
 
   const fetchCustomers = useCallback(() => {
     const params = search ? { search } : {};
-    api.get('/customers/', { params })
-      .then((r) => setCustomers(r.data.results ?? r.data))
-      .catch(() => undefined);
+    setListStatus((prev) => (prev === 'ready' ? prev : 'loading'));
+    setListError('');
+    return fetchAllPages<Customer>('/customers/', params)
+      .then((rows) => {
+        setCustomers(rows);
+        setListStatus('ready');
+      })
+      .catch((err) => {
+        setListError(extractApiError(err, [], 'Could not load customers.'));
+        setListStatus('error');
+      });
   }, [search]);
 
   const loadBookingData = useCallback(() => {
-    const bookingsRequest = api.get('/bookings/').then((r) => r.data.results ?? r.data).catch(() => []);
-    const staffRequest = api.get('/staff-profiles/').then((r) => r.data.results ?? r.data).catch(() => []);
-
-    Promise.all([bookingsRequest, staffRequest])
-      .then(([bookingRows, staffRows]) => {
-        setBookings(bookingRows);
-        setStaff(staffRows);
-        setStaffByBooking((prev) => ({
-          ...Object.fromEntries(bookingRows.map((b: Booking) => [b.id, String(b.assigned_staff || '')])),
-          ...prev,
-        }));
-      })
-      .catch(() => undefined);
+    // Only pending bookings feed the per-customer request badges.
+    Promise.allSettled([
+      fetchAllPages<Booking>('/bookings/', { status: 'pending' }),
+      fetchAllPages<Staff>('/staff-profiles/'),
+    ])
+      .then(([bookingsResult, staffResult]) => {
+        let problem = '';
+        if (bookingsResult.status === 'fulfilled') {
+          const bookingRows = bookingsResult.value;
+          setBookings(bookingRows);
+          setStaffByBooking((prev) => ({
+            ...Object.fromEntries(bookingRows.map((b: Booking) => [b.id, String(b.assigned_staff || '')])),
+            ...prev,
+          }));
+        } else {
+          problem = extractApiError(bookingsResult.reason, [], 'Booking requests unavailable.');
+        }
+        if (staffResult.status === 'fulfilled') {
+          setStaff(staffResult.value);
+        } else if (!problem) {
+          problem = extractApiError(staffResult.reason, [], 'Staff list unavailable.');
+        }
+        setBookingsError(problem);
+      });
   }, []);
 
   useEffect(() => {
@@ -558,29 +697,41 @@ export default function Customers() {
   }, [loadBookingData]);
 
   async function approveBooking(id: number) {
+    if (requestsBusyId !== null) return;
     const assigned_staff = staffByBooking[id];
-    setRequestsBusyId(id);
     setRequestsMessage('');
+    const booking = bookings.find((b) => b.id === id);
+    if (booking?.needs_reassignment && !assigned_staff) {
+      setRequestsMessageTone('error');
+      setRequestsMessage('Pick a different staff member before reassigning.');
+      return;
+    }
+    setRequestsBusyId(id);
     try {
       await api.post(`/bookings/${id}/approve/`, { assigned_staff });
+      setRequestsMessageTone('info');
       setRequestsMessage('Booking approved and assigned.');
       loadBookingData();
-    } catch {
-      setRequestsMessage('Failed to approve booking.');
+    } catch (err) {
+      setRequestsMessageTone('error');
+      setRequestsMessage(extractApiError(err, ['assigned_staff'], 'Failed to approve booking.'));
     } finally {
       setRequestsBusyId(null);
     }
   }
 
   async function rejectBooking(id: number) {
+    if (requestsBusyId !== null) return;
     setRequestsBusyId(id);
     setRequestsMessage('');
     try {
       await api.post(`/bookings/${id}/reject/`, { reason: 'Rejected by admin' });
+      setRequestsMessageTone('info');
       setRequestsMessage('Booking rejected.');
       loadBookingData();
-    } catch {
-      setRequestsMessage('Failed to reject booking.');
+    } catch (err) {
+      setRequestsMessageTone('error');
+      setRequestsMessage(extractApiError(err, ['reason'], 'Failed to reject booking.'));
     } finally {
       setRequestsBusyId(null);
     }
@@ -588,48 +739,48 @@ export default function Customers() {
 
   function openLedger(id: number) {
     setLoading(true);
+    setLedgerError('');
+    setLedgerErrorId(null);
     setEditingId(null); setCredsId(null); setCreds(null); setCredsError(''); setPwMsg(''); closeDiscount();
     api.get(`/customers/${id}/ledger/`)
       .then((r) => setSelected(r.data))
-      .catch(() => undefined)
+      .catch((err) => {
+        setLedgerError(extractApiError(err, [], 'Could not load the customer ledger.'));
+        setLedgerErrorId(id);
+      })
       .finally(() => setLoading(false));
   }
 
   async function handleReceivePayment(e: FormEvent) {
     e.preventDefault();
-    if (!selected) return;
-    
+    if (!selected || paymentSaving) return;
+    const scope = `customer-balance-${selected.customer.id}`;
+    const pending = pendingTransaction(scope);
     const totalPayment = paymentMode === 'split' 
       ? Number(paymentSplit.cash) + Number(paymentSplit.gpay) + Number(paymentSplit.bank)
       : Number(paymentAmount);
       
-    if (totalPayment > Number(selected.customer.pending_balance)) {
+    if (!pending && totalPayment > Number(selected.customer.pending_balance)) {
       alert(`Cannot receive more than the pending balance of Rs. ${selected.customer.pending_balance}.`);
       return;
     }
 
     setPaymentSaving(true);
     try {
-      if (paymentMode === 'split') {
-        if (Number(paymentSplit.cash) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.cash), payment_mode: 'cash', note: 'Balance clearance' });
-        if (Number(paymentSplit.gpay) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.gpay), payment_mode: 'gpay', note: 'Balance clearance' });
-        if (Number(paymentSplit.bank) > 0) await api.post('/payments/', { customer: selected.customer.id, amount: Number(paymentSplit.bank), payment_mode: 'bank', note: 'Balance clearance' });
-      } else {
-        await api.post('/payments/', {
-          customer: selected.customer.id,
-          amount: Number(paymentAmount),
-          payment_mode: paymentMode,
-          note: 'Balance clearance',
-        });
-      }
+      const payments = paymentMode === 'split'
+        ? Object.entries(paymentSplit).filter(([,amount]) => Number(amount)>0).map(([mode,amount]) => ({mode,amount}))
+        : [{mode:paymentMode,amount:paymentAmount}];
+      await transactionRequest(scope, '/payments/collect/', pending ? undefined : {
+        customer:selected.customer.id, payments, note:'Balance clearance',
+      });
       setShowPaymentModal(false);
       setPaymentAmount('');
       setPaymentMode('cash');
       setPaymentSplit({ cash: '', gpay: '', bank: '' });
       openLedger(selected.customer.id);
       fetchCustomers();
-    } catch {
-      alert('Failed to record payment');
+    } catch (error) {
+      alert(extractApiError(error, [], 'Failed to record payment. Retry to confirm the saved request.'));
     } finally {
       setPaymentSaving(false);
     }
@@ -642,20 +793,7 @@ export default function Customers() {
     compact = false,
     disabled = false,
   ) {
-    return (
-      <label className={`discount-switch${compact ? ' compact' : ''}${disabled ? ' disabled' : ''}`}>
-        <input
-          type="checkbox"
-          checked={checked}
-          disabled={disabled}
-          onChange={(e) => onChange(e.target.checked)}
-        />
-        <span className="discount-switch-track">
-          <span className="discount-switch-thumb" />
-        </span>
-        <span className="discount-switch-label">{label}</span>
-      </label>
-    );
+    return <Switch checked={checked} onChange={onChange} label={label} compact={compact} disabled={disabled} />;
   }
 
   function renderDiscountTypePills(
@@ -664,24 +802,17 @@ export default function Customers() {
     disabled = false,
   ) {
     return (
-      <div className={`discount-type-pills${disabled ? ' disabled' : ''}`}>
-        <button
-          type="button"
-          className={`discount-type-pill${value === 'fixed' ? ' active' : ''}`}
-          onClick={() => onChange('fixed')}
-          disabled={disabled}
-        >
-          Amount
-        </button>
-        <button
-          type="button"
-          className={`discount-type-pill${value === 'percentage' ? ' active' : ''}`}
-          onClick={() => onChange('percentage')}
-          disabled={disabled}
-        >
-          Percentage
-        </button>
-      </div>
+      <ChoiceChips
+        ariaLabel="Discount type"
+        size="sm"
+        layout="grid"
+        columns={2}
+        className="discount-type-chips"
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        options={[{ value: 'fixed', label: 'Amount' }, { value: 'percentage', label: 'Percentage' }]}
+      />
     );
   }
 
@@ -718,47 +849,38 @@ export default function Customers() {
     const cylinderOptions = availableCylinderOptions(customer, currentCylinderId);
 
     return (
-      <div
-        className={`${useCardClass ? 'card ' : ''}discount-manager`}
-        style={useCardClass ? { marginBottom: '16px' } : {
-          padding: '16px 18px',
-          borderBottom: '1px solid var(--border)',
-          background: 'var(--surface-muted)',
-        }}
-      >
+      <div className={useCardClass ? 'ui-card ui-card--pad-md discount-manager cd-block' : 'ui-list-panel discount-manager'}>
         <div className="discount-header">
           <div className="discount-header-copy">
-            <h2 className="discount-heading" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <h2 className="discount-heading">
               <IndianRupee size={18} /> Customer Discount
             </h2>
             <p className="discount-subtitle">
               Configure one global rule and optional cylinder-wise overrides for future bookings.
             </p>
           </div>
-          <span className={`discount-summary-badge${hasActiveDiscount(customer) ? ' active' : ''}`}>
+          <Badge tone={hasActiveDiscount(customer) ? 'primary' : 'neutral'}>
             {formatCustomerDiscount(customer)}
-          </span>
+          </Badge>
         </div>
 
-        <div className="discount-tabs">
-          {(['global', 'cylinder'] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => {
-                setDiscountTab(tab);
-                setDiscountError('');
-                setDiscountMessage('');
-              }}
-              className={`discount-tab${discountTab === tab ? ' active' : ''}`}
-            >
-              {tab === 'global' ? 'Global Discount' : 'Cylinder-wise Discount'}
-            </button>
-          ))}
-        </div>
+        <Tabs
+          ariaLabel="Discount type"
+          block
+          value={discountTab}
+          onChange={(tab) => {
+            setDiscountTab(tab);
+            setDiscountError('');
+            setDiscountMessage('');
+          }}
+          items={[
+            { value: 'global', label: 'Global Discount' },
+            { value: 'cylinder', label: 'Cylinder-wise Discount' },
+          ]}
+        />
 
-        {discountMessage && <p className="form-note">{discountMessage}</p>}
-        {discountError && <p className="form-error">{discountError}</p>}
+        {discountMessage && <Alert tone="success" compact>{discountMessage}</Alert>}
+        {discountError && <Alert tone="danger" compact>{discountError}</Alert>}
 
         {discountTab === 'global' ? (
           <form onSubmit={(e) => handleSaveDiscount(e, customer.id)} className="discount-surface form-stack">
@@ -791,26 +913,20 @@ export default function Customers() {
               </div>
             </div>
 
-            <div className="discount-note">
+            <Alert tone="info" compact>
               If a cylinder-specific discount exists and is active, it will be applied instead of the global discount.
-            </div>
+            </Alert>
 
             <div className="discount-actions">
-              <button className="btn btn-primary" type="submit" disabled={discountSaving} style={{ width: 'auto', padding: '0 18px' }}>
+              <Button type="submit" disabled={discountSaving}>
                 {discountSaving ? 'Saving…' : 'Save Global Discount'}
-              </button>
-              <button
-                className="btn btn-outline"
-                type="button"
-                disabled={discountSaving}
-                style={{ width: 'auto', padding: '0 18px' }}
-                onClick={() => setDiscountEnabled(false)}
-              >
+              </Button>
+              <Button type="button" variant="secondary" disabled={discountSaving} onClick={() => setDiscountEnabled(false)}>
                 Disable
-              </button>
-              <button className="btn btn-secondary" type="button" disabled={discountSaving} style={{ width: 'auto', padding: '0 18px' }} onClick={closeDiscount}>
+              </Button>
+              <Button type="button" variant="ghost" disabled={discountSaving} onClick={closeDiscount}>
                 Close
-              </button>
+              </Button>
             </div>
           </form>
         ) : (
@@ -822,21 +938,13 @@ export default function Customers() {
                   Set different discounts for specific cylinder sizes. These will override the global discount.
                 </p>
               </div>
-              <button
-                className="btn btn-outline"
-                type="button"
-                style={{ width: 'auto', padding: '0 14px' }}
-                onClick={() => startNewCylinderDiscount(customer)}
-              >
-                <Tag size={16} />
+              <Button type="button" variant="secondary" size="sm" icon={<Tag />} onClick={() => startNewCylinderDiscount(customer)}>
                 Add Cylinder Discount
-              </button>
+              </Button>
             </div>
 
             {cylinderDiscounts.length === 0 && editingCylinderDiscountId !== 'new' ? (
-              <div className="discount-empty-state">
-                No cylinder-wise discounts configured yet.
-              </div>
+              <EmptyState compact icon={<Tag size={24} />} title="No cylinder-wise discounts configured yet." />
             ) : (
               <div className="discount-card-list">
                 {cylinderDiscounts.map((discount) => {
@@ -849,19 +957,18 @@ export default function Customers() {
                     <div key={discount.id} className="cylinder-discount-card">
                       <div className="cylinder-discount-title">
                         <strong>{discount.cylinder_type_name}</strong>
-                        <span>{isActive ? 'Active' : 'Inactive'}</span>
+                        <Badge tone={isActive ? 'success' : 'neutral'} size="sm">{isActive ? 'Active' : 'Inactive'}</Badge>
                       </div>
 
                       {isEditing ? (
                         <form onSubmit={(e) => handleSaveCylinderDiscount(e, customer)} className="discount-inline-form">
-                          <label className="discount-field">
-                            <span>Cylinder Size</span>
-                            <select value={cylinderDiscountCylinderId} onChange={(e) => setCylinderDiscountCylinderId(e.target.value)}>
+                          <Field label="Cylinder Size" className="discount-field">
+                            <Select value={cylinderDiscountCylinderId} onChange={(e) => setCylinderDiscountCylinderId(e.target.value)}>
                               {cylinderOptions.map((type) => (
                                 <option key={type.id} value={type.id}>{type.name}</option>
                               ))}
-                            </select>
-                          </label>
+                            </Select>
+                          </Field>
 
                           <div className="discount-field">
                             <span>Discount Type</span>
@@ -896,13 +1003,15 @@ export default function Customers() {
                             {renderSwitch(cylinderDiscountEnabled, setCylinderDiscountEnabled, isActive ? 'On' : 'Off', true)}
                           </div>
 
+                          {cylinderDiscountError && <Alert tone="danger" role="alert" compact className="discount-span">{cylinderDiscountError}</Alert>}
+
                           <div className="discount-row-actions">
-                            <button className="btn btn-primary" type="submit" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }}>
+                            <Button type="submit" size="sm" disabled={cylinderDiscountSaving}>
                               {cylinderDiscountSaving ? 'Saving…' : 'Save'}
-                            </button>
-                            <button className="btn btn-secondary" type="button" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }} onClick={resetCylinderDiscountEditor}>
+                            </Button>
+                            <Button type="button" variant="secondary" size="sm" disabled={cylinderDiscountSaving} onClick={resetCylinderDiscountEditor}>
                               Cancel
-                            </button>
+                            </Button>
                           </div>
                         </form>
                       ) : (
@@ -928,17 +1037,12 @@ export default function Customers() {
                           </div>
 
                           <div className="discount-row-actions">
-                            <button className="btn btn-outline" type="button" style={{ width: 'auto', padding: '0 14px' }} onClick={() => startEditCylinderDiscount(discount)}>
+                            <Button type="button" variant="secondary" size="sm" icon={<Pencil />} onClick={() => startEditCylinderDiscount(discount)}>
                               Edit
-                            </button>
-                            <button
-                              className="btn btn-outline"
-                              type="button"
-                              style={{ width: 'auto', padding: '0 14px', color: 'var(--danger)' }}
-                              onClick={() => handleDeleteCylinderDiscount(customer, discount)}
-                            >
+                            </Button>
+                            <Button type="button" variant="danger" size="sm" icon={<Trash2 />} onClick={() => handleDeleteCylinderDiscount(customer, discount)}>
                               Remove
-                            </button>
+                            </Button>
                           </div>
                         </div>
                       )}
@@ -950,19 +1054,18 @@ export default function Customers() {
                   <div className="cylinder-discount-card new">
                     <div className="cylinder-discount-title">
                       <strong>New Cylinder Discount</strong>
-                      <span>Draft</span>
+                      <Badge size="sm" variant="outline">Draft</Badge>
                     </div>
 
                     <form onSubmit={(e) => handleSaveCylinderDiscount(e, customer)} className="discount-inline-form">
-                      <label className="discount-field">
-                        <span>Cylinder Size</span>
-                        <select value={cylinderDiscountCylinderId} onChange={(e) => setCylinderDiscountCylinderId(e.target.value)}>
+                      <Field label="Cylinder Size" className="discount-field">
+                        <Select value={cylinderDiscountCylinderId} required aria-invalid={Boolean(cylinderDiscountError) && !cylinderDiscountCylinderId} onChange={(e) => { setCylinderDiscountCylinderId(e.target.value); setCylinderDiscountError(''); }}>
                           <option value="">Select cylinder</option>
                           {cylinderOptions.map((type) => (
                             <option key={type.id} value={type.id}>{type.name}</option>
                           ))}
-                        </select>
-                      </label>
+                        </Select>
+                      </Field>
 
                       <div className="discount-field">
                         <span>Discount Type</span>
@@ -997,13 +1100,15 @@ export default function Customers() {
                         {renderSwitch(cylinderDiscountEnabled, setCylinderDiscountEnabled, cylinderDiscountEnabled ? 'On' : 'Off', true)}
                       </div>
 
+                      {cylinderDiscountError && <Alert tone="danger" role="alert" compact className="discount-span">{cylinderDiscountError}</Alert>}
+
                       <div className="discount-row-actions">
-                        <button className="btn btn-primary" type="submit" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }}>
+                        <Button type="submit" size="sm" disabled={cylinderDiscountSaving}>
                           {cylinderDiscountSaving ? 'Saving…' : 'Save'}
-                        </button>
-                        <button className="btn btn-secondary" type="button" disabled={cylinderDiscountSaving} style={{ width: 'auto', padding: '0 16px' }} onClick={resetCylinderDiscountEditor}>
+                        </Button>
+                        <Button type="button" variant="secondary" size="sm" disabled={cylinderDiscountSaving} onClick={resetCylinderDiscountEditor}>
                           Cancel
-                        </button>
+                        </Button>
                       </div>
                     </form>
                   </div>
@@ -1011,9 +1116,9 @@ export default function Customers() {
               </div>
             )}
 
-            <div className="discount-note">
-              Cylinder-wise discounts are used instead of the global discount for matching cylinders. Discounts are never stacked.
-            </div>
+            <Alert tone="info" compact>
+              Cylinder-wise discounts replace the global discount for matching cylinders. Agreed rates and discounts apply only to refill charges; the deposit stays unchanged.
+            </Alert>
           </div>
         )}
       </div>
@@ -1052,325 +1157,272 @@ export default function Customers() {
       ...[...groupMap.values()].map((g) => ({ kind: 'payment_group' as const, date: g.date, group: g })),
     ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
+    const emptiesOwedTotal = Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0);
+
     return (
-      <div>
-        <div className="page-title">
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', width: '100%' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <button className="icon-button" onClick={() => setSelected(null)}>
-                <ArrowLeft size={20} />
-              </button>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <h1 style={{ margin: 0 }}>{customer.name}</h1>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
-                  {customer.phone && (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Phone size={14} /> {customer.phone}
-                    </span>
-                  )}
-                  {customer.email && (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Mail size={14} /> {customer.email}
-                    </span>
-                  )}
-                  {customer.address && (
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <MapPin size={14} /> {customer.address}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <span className="badge" style={{ background: hasActiveDiscount(customer) ? 'rgba(37, 99, 235, 0.08)' : 'rgba(148, 163, 184, 0.12)', color: hasActiveDiscount(customer) ? '#2563eb' : '#475569' }}>
+      <div className="cd">
+        <PageHeader
+          className="cd-header"
+          leading={(
+            <IconButton label="Back to customers" variant="outline" onClick={() => setSelected(null)}>
+              <ArrowLeft size={20} />
+            </IconButton>
+          )}
+          title={<span className="cd-name">{customer.name}</span>}
+          meta={(
+            <>
+              {customer.phone && (
+                <span><Phone size={14} /> {customer.phone}</span>
+              )}
+              {customer.email && (
+                <span><Mail size={14} /> {customer.email}</span>
+              )}
+              {customer.address && (
+                <span><MapPin size={14} /> {customer.address}</span>
+              )}
+            </>
+          )}
+          actions={(
+            <>
+              <Badge tone={hasActiveDiscount(customer) ? 'primary' : 'neutral'} className="ui-badge--wrap">
                 {formatCustomerDiscount(customer)}
-              </span>
-              <button
-                className="btn btn-primary"
+              </Badge>
+              <Button
                 type="button"
-                style={{ width: 'auto', padding: '0 14px' }}
+                variant={discountId === customer.id ? 'secondary' : 'primary'}
+                icon={<IndianRupee />}
                 onClick={() => discountId === customer.id ? closeDiscount() : openDiscount(customer)}
               >
-                <IndianRupee size={16} />
                 {discountId === customer.id ? 'Close Discount' : 'Manage Discount'}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </>
+          )}
+        />
 
         {discountId === customer.id && renderDiscountManager(customer, true)}
 
         {/* Summary cards */}
-        <section className="stat-grid" style={{ marginBottom: '16px' }}>
-          <div className="metric-card strong">
-            <IndianRupee />
-            <span>Pending</span>
-            <strong>{money(customer.pending_balance)}</strong>
-            {customer.pending_balance > 0 && (
-              <button 
-                className="btn btn-primary" 
-                style={{ marginTop: '12px', width: '100%', padding: '6px' }}
+        <section className="cd-stats" aria-label="Customer summary">
+          <StatCard
+            label={Number(customer.credit_balance) > 0 ? 'Credit' : 'Pending'}
+            value={money(Number(customer.credit_balance) > 0 ? Number(customer.credit_balance) : customer.pending_balance)}
+            hint={Number(customer.credit_balance) > 0 ? 'Held for the customer; it offsets what they owe next.' : undefined}
+            icon={<IndianRupee />}
+            footer={customer.pending_balance > 0 ? (
+              <Button
+                type="button"
+                size="sm"
+                block
                 onClick={() => {
                   setPaymentAmount(String(customer.pending_balance));
                   setShowPaymentModal(true);
                 }}
               >
                 Receive Payment
-              </button>
-            )}
-          </div>
-          <div className={`metric-card ${Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? 'strong' : ''}`}
-            style={Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? { background: 'var(--danger)', color: 'white' } : {}}>
-            <RotateCcw style={Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? { color: 'white' } : {}} />
-            <span style={Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 ? { color: 'white' } : {}}>Empties Owed</span>
-            <strong>
-              {Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0)} cylinder{Object.values(customer.empties_owed || {}).reduce((s, x) => s + x.owed, 0) !== 1 ? 's' : ''}
-            </strong>
-          </div>
-          <div className="metric-card">
-            <Package />
-            <span>Total Sales</span>
-            <strong>{sales.length}</strong>
-          </div>
-          <div className="metric-card">
-            <IndianRupee />
-            <span>Total Billed</span>
-            <strong>{money(sales.reduce((s, x) => s + Number(x.total_amount), 0))}</strong>
-          </div>
+              </Button>
+            ) : undefined}
+          />
+          <StatCard
+            label="Empties Owed"
+            value={`${emptiesOwedTotal} cylinder${emptiesOwedTotal !== 1 ? 's' : ''}`}
+            icon={<RotateCcw />}
+            className={emptiesOwedTotal > 0 ? 'cd-stat--danger' : undefined}
+          />
+          <StatCard
+            label="Total Sales"
+            value={sales.length}
+            icon={<Package />}
+          />
+          <StatCard
+            label="Total Billed"
+            value={money(sales.reduce((s, x) => s + Number(x.total_amount), 0))}
+            icon={<IndianRupee />}
+          />
         </section>
 
         {Object.values(customer.empty_credits || {}).length > 0 && (
-          <div style={{ 
-            marginBottom: '16px', 
-            background: 'var(--success-soft)', 
-            border: '1px solid rgba(16, 185, 129, 0.2)', 
-            color: 'var(--success)', 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '16px', 
-            padding: '14px 20px',
-            borderRadius: '12px'
-          }}>
-            <RotateCcw size={20} />
-            <span style={{ fontWeight: 600, fontSize: '0.95rem', whiteSpace: 'nowrap' }}>Available Credits:</span>
-            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', flex: 1 }}>
+          <Alert tone="success" icon={<RotateCcw size={16} />} className="ui-alert--block-sm cd-cylinders-alert">
+            <span className="cd-cylinders-alert__title">Available Credits:</span>
+            <span className="cd-cylinders-alert__list">
               {Object.values(customer.empty_credits).map((c, i) => (
-                <span key={i} style={{ fontSize: '1.05rem' }}>
-                  <strong>{c.credit}</strong> <span style={{ opacity: 0.8, margin: '0 2px' }}>×</span> {c.name}
-                </span>
+                <span key={i}><strong>{c.credit}</strong> × {c.name}</span>
               ))}
-            </div>
-          </div>
+            </span>
+          </Alert>
         )}
 
         {/* Full-width Owed Banner */}
         {Object.values(customer.empties_owed || {}).length > 0 && (
-          <div style={{ 
-            marginBottom: '16px', 
-            background: 'var(--danger-soft)', 
-            border: '1px solid rgba(239, 68, 68, 0.2)', 
-            color: 'var(--danger)', 
-            display: 'flex', 
-            alignItems: 'center', 
-            gap: '16px', 
-            padding: '14px 20px',
-            borderRadius: '12px'
-          }}>
-            <RotateCcw size={20} />
-            <span style={{ fontWeight: 600, fontSize: '0.95rem', whiteSpace: 'nowrap' }}>Empties Owed:</span>
-            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', flex: 1 }}>
+          <Alert tone="danger" role="status" icon={<RotateCcw size={16} />} className="ui-alert--block-sm cd-cylinders-alert">
+            <span className="cd-cylinders-alert__title">Empties Owed:</span>
+            <span className="cd-cylinders-alert__list">
               {Object.values(customer.empties_owed).map((c, i) => (
-                <span key={i} style={{ fontSize: '1.05rem' }}>
-                  <strong>{c.owed}</strong> <span style={{ opacity: 0.8, margin: '0 2px' }}>×</span> {c.name}
-                </span>
+                <span key={i}><strong>{c.owed}</strong> × {c.name}</span>
+              ))}
+            </span>
+          </Alert>
+        )}
+
+        {/* Receive Payment Modal */}
+        <Modal
+          open={showPaymentModal}
+          onClose={() => setShowPaymentModal(false)}
+          title="Receive Payment"
+          size="sm"
+          footer={(
+            <>
+              <Button type="button" variant="secondary" onClick={() => setShowPaymentModal(false)}>Cancel</Button>
+              <Button type="submit" form="receive-payment-form" disabled={paymentSaving}>
+                {paymentSaving ? 'Saving...' : 'Confirm Payment'}
+              </Button>
+            </>
+          )}
+        >
+          <form id="receive-payment-form" onSubmit={handleReceivePayment} className="form-stack">
+            {showPaymentModal && pendingTransaction(`customer-balance-${customer.id}`) && <Alert tone="warning">A previous payment is awaiting confirmation. Confirm Payment will retry that exact saved collection.</Alert>}
+            <Field label="Amount Received (Rs.)" className={paymentMode === 'split' ? 'ui-hidden' : undefined}>
+              <Input
+                type="number"
+                step="0.01"
+                min="1"
+                max={customer.pending_balance}
+                required={paymentMode !== 'split'}
+                value={paymentAmount}
+                onChange={e => setPaymentAmount(e.target.value)}
+                autoFocus
+              />
+            </Field>
+            <Field label="Payment Mode">
+              <Select value={paymentMode} onChange={e => setPaymentMode(e.target.value)}>
+                <option value="cash">Cash</option>
+                <option value="bank">Bank Transfer</option>
+                <option value="gpay">GPay</option>
+                <option value="split">Split Payment</option>
+              </Select>
+            </Field>
+            {paymentMode === 'split' && (
+              <div className="split-grid">
+                <Field label="Cash">
+                  <Input type="number" min="0" value={paymentSplit.cash} onChange={e => setPaymentSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
+                </Field>
+                <Field label="GPay">
+                  <Input type="number" min="0" value={paymentSplit.gpay} onChange={e => setPaymentSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
+                </Field>
+                <Field label="Bank">
+                  <Input type="number" min="0" value={paymentSplit.bank} onChange={e => setPaymentSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
+                </Field>
+                <Field label="Credit Remaining">
+                  <Input type="number" disabled className="split-grid__remaining" value={Math.max(0, customer.pending_balance - (Number(paymentSplit.cash || 0) + Number(paymentSplit.gpay || 0) + Number(paymentSplit.bank || 0)))} />
+                </Field>
+              </div>
+            )}
+          </form>
+        </Modal>
+
+        {/* Booking History */}
+        <Card padding="none" className="cd-block">
+          <CardHeader title="Booking History" />
+          <div className="cd-card-body">
+            <div className="ui-tiles cd-tiles">
+              <div className="ui-tile">
+                <span className="ui-tile__label">Total Bookings</span>
+                <strong className="ui-tile__value">{bookings.length}</strong>
+              </div>
+              <div className="ui-tile">
+                <span className="ui-tile__label">Active Bookings</span>
+                <strong className="ui-tile__value">{bookings.filter(b => ['pending', 'approved', 'accepted', 'out_for_delivery'].includes(b.status)).length}</strong>
+              </div>
+              <div className="ui-tile">
+                <span className="ui-tile__label">Delivered</span>
+                <strong className="ui-tile__value">{bookings.filter(b => b.status === 'delivered').length}</strong>
+              </div>
+              <div className="ui-tile">
+                <span className="ui-tile__label">Pending</span>
+                <strong className="ui-tile__value">{bookings.filter(b => b.status === 'pending').length}</strong>
+              </div>
+            </div>
+
+            {bookings.length === 0 && <EmptyState compact icon={<ClipboardList size={24} />} title="No bookings found for this customer." />}
+            <div className="cd-bookings">
+              {bookings.map((booking) => (
+                <div key={`history-${booking.id}`} className="cd-booking">
+                  <div className="cd-booking__head">
+                    <div className="cd-booking__id">
+                      <strong>#{booking.id}</strong>
+                      <span className="ui-cell-sub">{booking.quantity} × {booking.cylinder_type_name}</span>
+                    </div>
+                    <div className="cd-booking__amount">
+                      {getBookingDiscountAmount(booking) > 0 && (
+                        <s className="cd-strike">{money(getBookingOriginalAmount(booking))}</s>
+                      )}
+                      <strong>{money(getBookingFinalAmount(booking))}</strong>
+                      {booking.order_items?.length ? <BookingItems items={booking.order_items} /> : <PricingBreakdown value={booking} />}
+                      {getBookingDiscountAmount(booking) > 0 && (
+                        <span className="cd-discount">Discount {money(getBookingDiscountAmount(booking))}</span>
+                      )}
+                      <Badge tone={bookingStatusTone(booking.status)}>{booking.status.replaceAll('_', ' ')}</Badge>
+                    </div>
+                  </div>
+
+                  <div className="cd-booking__meta">
+                    <span>
+                      <span className="cd-meta-label">Payment: </span>
+                      <span className="cd-meta-value">
+                        {(booking.payment_method?.toUpperCase() === 'ONLINE' && booking.payment_status?.toUpperCase() === 'PAID') ? 'Paid Online' :
+                         (booking.payment_method?.toUpperCase() === 'COD' && booking.payment_status?.toUpperCase() === 'COLLECTED') ? 'COD — Collected' :
+                         booking.payment_method?.toUpperCase() === 'COD' ? 'COD' :
+                         (booking.payment_method || 'COD')}
+                      </span>
+                    </span>
+                    <span>
+                      <span className="cd-meta-label">Staff: </span>
+                      <span className="cd-meta-value">{booking.assigned_staff_name || 'Unassigned'}</span>
+                    </span>
+                    <span>
+                      <BookingTimes booking={booking} />
+                    </span>
+                    <Button type="button" variant="secondary" size="sm" className="cd-booking__view" onClick={() => navigate(`/bookings?booking=${booking.id}`)}>View</Button>
+                  </div>
+                </div>
               ))}
             </div>
           </div>
-        )}
+        </Card>
 
         {/* Timeline */}
-        {/* Receive Payment Modal */}
-        {showPaymentModal && (
-          <div className="modal-overlay">
-            <div className="modal-content form-stack" style={{ maxWidth: '400px' }}>
-              <div className="section-head">
-                <h2>Receive Payment</h2>
-                <button className="icon-button" onClick={() => setShowPaymentModal(false)}>
-                  <X size={20} />
-                </button>
-              </div>
-              <form onSubmit={handleReceivePayment} className="form-stack">
-                <label style={{ display: paymentMode === 'split' ? 'none' : 'block' }}>
-                  <span>Amount Received (Rs.)</span>
-                  <input 
-                    type="number" 
-                    step="0.01" 
-                    min="1" 
-                    max={customer.pending_balance} 
-                    required={paymentMode !== 'split'} 
-                    value={paymentAmount} 
-                    onChange={e => setPaymentAmount(e.target.value)} 
-                    autoFocus 
-                  />
-                </label>
-                <label>
-                  <span>Payment Mode</span>
-                  <select value={paymentMode} onChange={e => setPaymentMode(e.target.value)}>
-                    <option value="cash">Cash</option>
-                    <option value="bank">Bank Transfer</option>
-                    <option value="gpay">GPay</option>
-                    <option value="split">Split Payment</option>
-                  </select>
-                </label>
-                {paymentMode === 'split' && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px' }}>
-                    <label>
-                      <span>Cash</span>
-                      <input type="number" min="0" value={paymentSplit.cash} onChange={e => setPaymentSplit(s => ({ ...s, cash: e.target.value }))} placeholder="0" />
-                    </label>
-                    <label>
-                      <span>GPay</span>
-                      <input type="number" min="0" value={paymentSplit.gpay} onChange={e => setPaymentSplit(s => ({ ...s, gpay: e.target.value }))} placeholder="0" />
-                    </label>
-                    <label>
-                      <span>Bank</span>
-                      <input type="number" min="0" value={paymentSplit.bank} onChange={e => setPaymentSplit(s => ({ ...s, bank: e.target.value }))} placeholder="0" />
-                    </label>
-                    <label>
-                      <span>Credit Remaining</span>
-                      <input type="number" disabled value={Math.max(0, customer.pending_balance - (Number(paymentSplit.cash || 0) + Number(paymentSplit.gpay || 0) + Number(paymentSplit.bank || 0)))} style={{ background: 'var(--surface-muted)', color: 'var(--danger)' }} />
-                    </label>
-                  </div>
-                )}
-                <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
-                  <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setShowPaymentModal(false)}>Cancel</button>
-                  <button type="submit" className="btn btn-primary" style={{ flex: 1 }} disabled={paymentSaving}>
-                    {paymentSaving ? 'Saving...' : 'Confirm Payment'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Booking History */}
-        <div className="card" style={{ marginBottom: '16px' }}>
-          <h2 style={{ marginBottom: '14px' }}>Booking History</h2>
-          
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '12px', marginBottom: '20px' }}>
-            <div className="metric-card" style={{ padding: '12px' }}>
-              <span style={{ fontSize: '0.85rem' }}>Total Bookings</span>
-              <strong>{bookings.length}</strong>
-            </div>
-            <div className="metric-card" style={{ padding: '12px' }}>
-              <span style={{ fontSize: '0.85rem' }}>Active Bookings</span>
-              <strong>{bookings.filter(b => ['pending', 'approved', 'accepted', 'out_for_delivery'].includes(b.status)).length}</strong>
-            </div>
-            <div className="metric-card" style={{ padding: '12px' }}>
-              <span style={{ fontSize: '0.85rem' }}>Delivered</span>
-              <strong>{bookings.filter(b => b.status === 'delivered').length}</strong>
-            </div>
-            <div className="metric-card" style={{ padding: '12px' }}>
-              <span style={{ fontSize: '0.85rem' }}>Pending</span>
-              <strong>{bookings.filter(b => b.status === 'pending').length}</strong>
-            </div>
-          </div>
-
-          {bookings.length === 0 && <p style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No bookings found for this customer.</p>}
-          <div className="ledger-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {bookings.map((booking) => (
-              <div key={`history-${booking.id}`} style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', padding: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '12px' }}>
-                  <div>
-                    <strong style={{ fontSize: '1.05rem' }}>#{booking.id}</strong>
-                    <div style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '4px' }}>
-                      {booking.quantity} × {booking.cylinder_type_name}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    {getBookingDiscountAmount(booking) > 0 && (
-                      <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', textDecoration: 'line-through', marginBottom: '4px' }}>
-                        {money(getBookingOriginalAmount(booking))}
-                      </div>
-                    )}
-                    <div style={{ fontWeight: 700, fontSize: '1.05rem', marginBottom: '4px' }}>{money(getBookingFinalAmount(booking))}</div>
-                    {getBookingDiscountAmount(booking) > 0 && (
-                      <div style={{ fontSize: '0.82rem', color: 'var(--success)' }}>
-                        Discount {money(getBookingDiscountAmount(booking))}
-                      </div>
-                    )}
-                    <span className={`badge ${
-                        booking.status === 'pending' ? 'badge-warning' :
-                        booking.status === 'approved' ? 'badge-info' :
-                        booking.status === 'accepted' ? 'badge-info' :
-                        booking.status === 'out_for_delivery' ? 'badge-warning' :
-                        booking.status === 'delivered' ? 'badge-success' : 'badge'
-                      }`}>
-                        {booking.status.replaceAll('_', ' ')}
-                    </span>
-                  </div>
-                </div>
-                
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                  <div>
-                    <strong>Payment: </strong>
-                    <span style={{ color: 'var(--text)' }}>
-                      {(booking.payment_method?.toUpperCase() === 'ONLINE' && booking.payment_status?.toUpperCase() === 'PAID') ? 'Paid Online' :
-                       (booking.payment_method?.toUpperCase() === 'COD' && booking.payment_status?.toUpperCase() === 'COLLECTED') ? 'COD — Collected' :
-                       booking.payment_method?.toUpperCase() === 'COD' ? 'COD' :
-                       (booking.payment_method || 'COD')}
-                    </span>
-                  </div>
-                  <div>
-                    <strong>Staff: </strong>
-                    <span style={{ color: 'var(--text)' }}>{booking.assigned_staff_name || 'Unassigned'}</span>
-                  </div>
-                  <div>
-                    <strong>Date: </strong>
-                    <span style={{ color: 'var(--text)' }}>{fmtDate(booking.created_at)}</span>
-                  </div>
-                  <div style={{ marginLeft: 'auto' }}>
-                    <button className="btn btn-outline" style={{ padding: '4px 12px', fontSize: '0.8rem' }} onClick={() => alert('View booking detail component not implemented in existing codebase')}>View</button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Timeline */}
-        <div className="card">
-          <h2 style={{ marginBottom: '14px' }}>Transaction History</h2>
-          {timeline.length === 0 && <p style={{ textAlign: 'center', padding: '24px' }}>No transactions yet.</p>}
-          <div className="ledger-list">
+        <Card padding="none" className="cd-block">
+          <CardHeader title="Transaction History" />
+          {timeline.length === 0 && <EmptyState compact icon={<Receipt size={24} />} title="No transactions yet." />}
+          <div className="cd-timeline">
             {timeline.map((entry) => {
               if (entry.kind === 'payment_group') {
                 const g = entry.group;
                 const isSplit = g.payments.length > 1;
+                const isCredit = g.payments.every((p) => p.kind === 'credit');
                 return (
-                  <div className="ledger-row" key={`payg-${g.payments[0].id}`}>
-                    <div>
-                      <strong style={{ color: 'var(--success)' }}>Payment Received</strong>
-                      <p>
-                        {fmtDate(g.date)}
-                        {isSplit
-                          ? ` · ${g.payments.map(p => `${p.payment_mode.toUpperCase()} ${p.amount}`).join(' + ')}`
-                          : ` · ${g.payments[0].payment_mode.toUpperCase()}`
-                        }
-                        {g.empties > 0 && ` · ${g.empties} empty cylinder${g.empties > 1 ? 's' : ''} collected`}
-                        {g.note ? ` · ${g.note}` : ''}
-                      </p>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <span className="badge badge-success">{money(g.total)}</span>
-                      {g.empties > 0 && (
-                        <div style={{ marginTop: '4px' }}>
-                          <span className="badge" style={{ background: 'var(--success-soft)', color: 'var(--success)' }}>
-                            <RotateCcw size={11} style={{ display: 'inline', marginRight: '3px' }} />
-                            {g.empties} empty back
-                          </span>
+                  <div className="cd-entry" key={`payg-${g.payments[0].id}`}>
+                    <div className="cd-entry__head">
+                      <div className="cd-entry__title">
+                        <span className="cd-entry__icon cd-entry__icon--success" aria-hidden="true"><Wallet size={16} /></span>
+                        <div>
+                          <strong className="cd-entry__name cd-entry__name--success">{isCredit ? 'Kept as Credit' : 'Payment Received'}</strong>
+                          <p className="cd-entry__meta">
+                            {fmtDate(g.date)}
+                            {isSplit
+                              ? ` · ${g.payments.map(p => `${p.payment_mode.toUpperCase()} ${p.amount}`).join(' + ')}`
+                              : ` · ${g.payments[0].payment_mode.toUpperCase()}`
+                            }
+                            {g.empties > 0 && ` · ${g.empties} empty cylinder${g.empties > 1 ? 's' : ''} collected`}
+                            {g.note ? ` · ${g.note}` : ''}
+                          </p>
                         </div>
-                      )}
+                      </div>
+                      <div className="cd-entry__side">
+                        <Badge tone="success">{money(g.total)}</Badge>
+                        {g.empties > 0 && (
+                          <Badge tone="success" icon={<RotateCcw />}>{g.empties} empty back</Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
                 );
@@ -1382,86 +1434,85 @@ export default function Customers() {
               const isPureReturn = Number(s.total_amount) === 0 && returnOnlyItems.length === s.items.length && s.items.length > 0;
 
               return (
-                <div key={`sale-${s.id}`} style={{ borderBottom: '1px solid var(--border)', paddingBottom: '14px', marginBottom: '2px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                    <div>
-                      <strong>{isPureReturn ? `Empty Return #${s.id}` : `Sale #${s.id}`}</strong>
-                      <p>
-                        {fmtDate(s.created_at)} · {s.location_name} · {s.payment_mode.toUpperCase()}
-                        {(s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0 && (
-                          <span className="badge" style={{ marginLeft: '6px', fontSize: '0.7rem', padding: '2px 6px', background: 'var(--surface-muted)' }}>
-                            {s.payments.length} Payments
-                          </span>
+                <div className="cd-entry" key={`sale-${s.id}`}>
+                  <div className="cd-entry__head">
+                    <div className="cd-entry__title">
+                      <span className="cd-entry__icon" aria-hidden="true">{isPureReturn ? <RotateCcw size={16} /> : <Receipt size={16} />}</span>
+                      <div>
+                        <strong className="cd-entry__name">{isPureReturn ? `Empty Return #${s.id}` : `Sale #${s.id}`}</strong>
+                        <p className="cd-entry__meta">
+                          {fmtDate(s.created_at)} · {s.location_name} · {s.payment_mode.toUpperCase()}
+                          {s.sold_by_full_name && ` · Recorded by ${s.sold_by_full_name}`}
+                          {s.handover_staff_name && ` · Handed over by ${s.handover_staff_name}`}
+                          {(s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0 && (
+                            <Badge size="sm" className="cd-entry__count">{s.payments.filter((p) => !p.kind || p.kind === 'payment').length} Payments</Badge>
+                          )}
+                        </p>
+                        {s.void && (
+                          <p className="cd-entry__meta">
+                            Cancelled {fmtDate(s.void.voided_at)}{s.void.voided_by_name && ` by ${s.void.voided_by_name}`} · {s.void.reason}
+                            {s.void.refund && ` · Refunded ${fmtDate(s.void.refund.confirmed_at)}`}
+                          </p>
                         )}
-                      </p>
+                      </div>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 700 }}>{isPureReturn ? '' : money(s.total_amount)}</div>
-                      {Number(s.balance_due) > 0
-                        ? <span className="badge badge-warning">On Credit {money(s.balance_due)}</span>
-                        : <span className="badge badge-success">{isPureReturn ? 'Recorded' : 'Paid'}</span>}
+                    <div className="cd-entry__side">
+                      {!isPureReturn && <strong className="cd-entry__amount">{money(s.total_amount)}</strong>}
+                      {s.void ? <VoidStatusBadges saleVoid={s.void} /> : Number(s.balance_due) > 0
+                        ? <Badge tone="warning">On Credit {money(s.balance_due)}</Badge>
+                        : <Badge tone="success">{isPureReturn ? 'Recorded' : 'Paid'}</Badge>}
                     </div>
                   </div>
-                  <div style={{ background: 'var(--surface-muted)', borderRadius: '6px', padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {(() => {
-                      const rows = [];
-                      
-                      regularItems.forEach((item, i) => {
-                        rows.push(
-                          <div key={`reg-${i}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem', alignItems: 'center' }}>
-                            <span>
-                              <strong>{item.quantity} × {item.cylinder_type_name}</strong>
-                              {item.empty_returned > 0 && (
-                                <span style={{ color: 'var(--success)', marginLeft: '8px' }}>
-                                  <RotateCcw size={12} style={{ display: 'inline', marginRight: '3px' }} />
-                                  {item.empty_returned} returned
-                                </span>
-                              )}
+                  <div className="cd-entry__items">
+                    <BookingItems items={s.accessory_items} />
+                    {regularItems.map((item, i) => (
+                      <div key={`reg-${i}`} className="cd-item">
+                        <span>
+                          <strong>{item.quantity} × {item.cylinder_type_name}</strong>
+                          {item.empty_returned > 0 && (
+                            <span className="cd-returned">
+                              <RotateCcw size={12} aria-hidden="true" />
+                              {item.empty_returned} returned
                             </span>
-                            <span style={{ color: 'var(--text-muted)' }}>@ {money(item.rate)}</span>
-                          </div>
-                        );
-                      });
+                          )}
+                        </span>
+                        <div>{!item.rate_type && <span className="cd-item__rate">@ {money(item.rate)}</span>}<PricingBreakdown value={item} /></div>
+                      </div>
+                    ))}
 
-                      if (returnOnlyItems.length > 0) {
-                        const totalReturns = returnOnlyItems.reduce((acc, i) => acc + i.empty_returned, 0);
-                        const names = returnOnlyItems.map(i => `${i.empty_returned} × ${i.cylinder_type_name}`).join(', ');
-                        
-                        rows.push(
-                          <div key="returns" style={{ display: 'flex', fontSize: '0.88rem', alignItems: 'center', marginTop: rows.length > 0 ? '4px' : '0' }}>
-                            <span style={{ color: 'var(--success)', fontWeight: 600 }}>
-                              <RotateCcw size={12} style={{ display: 'inline', marginRight: '4px' }} />
-                              {totalReturns} empty cylinder{totalReturns > 1 ? 's' : ''} returned <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>({names})</span>
-                            </span>
-                          </div>
-                        );
-                      }
-                      
-                      if ((s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0) {
-                        rows.push(
-                          <div key="payments" style={{ marginTop: '6px', paddingTop: '10px', borderTop: '1px dashed var(--border)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                              <span>Payment Breakdown</span>
-                              <span>Total Paid: {money(s.paid_amount)}</span>
-                            </div>
-                            {s.payments.map((p, idx) => (
-                              <div key={`pay-${idx}`} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
-                                <span>{p.date ? new Date(p.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }) : ''} · {p.mode.toUpperCase()}</span>
-                                <span style={{ color: 'var(--success)', fontWeight: 600 }}>{money(p.amount)}</span>
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      }
-
-                      return rows;
+                    {returnOnlyItems.length > 0 && (() => {
+                      const totalReturns = returnOnlyItems.reduce((acc, i) => acc + i.empty_returned, 0);
+                      const names = returnOnlyItems.map(i => `${i.empty_returned} × ${i.cylinder_type_name}`).join(', ');
+                      return (
+                        <div key="returns" className="cd-item cd-item--returns">
+                          <span className="cd-returned cd-returned--strong">
+                            <RotateCcw size={12} aria-hidden="true" />
+                            {totalReturns} empty cylinder{totalReturns > 1 ? 's' : ''} returned <span className="cd-item__rate">({names})</span>
+                          </span>
+                        </div>
+                      );
                     })()}
+
+                    {(s.payment_mode === 'split' || s.payment_mode === 'credit') && s.payments && s.payments.length > 0 && (
+                      <div key="payments" className="cd-breakdown">
+                        <div className="cd-breakdown__head">
+                          <span>Payment Breakdown</span>
+                          <span>Total Paid: {money(s.paid_amount)}</span>
+                        </div>
+                        {s.payments.map((p, idx) => (
+                          <div key={`pay-${idx}`} className="cd-breakdown__row">
+                            <span>{formatDateTime(p.date)} · {p.mode.toUpperCase()}</span>
+                            <span className="ui-num-success">{money(p.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
-        </div>
+        </Card>
       </div>
     );
   }
@@ -1470,311 +1521,338 @@ export default function Customers() {
 
   return (
     <div>
-      <div className="page-title">
-        <div>
-          <h1>Customers</h1>
-          <p>Cashbook — pending balances and cylinder history.</p>
-        </div>
-        <button
-          className="btn btn-primary"
-          style={{ width: 'auto', padding: '0 16px' }}
-          onClick={() => { setShowAdd((v) => !v); setAddError(''); setCredUserId(null); setCredMsg(''); setCreatedPhone(''); setCreatedUsername(''); }}
-        >
-          {showAdd ? <X size={18} /> : <UserPlus size={18} />}
-          {showAdd ? 'Cancel' : 'Add'}
-        </button>
-      </div>
+      <PageHeader
+        title="Customers"
+        description="Cashbook — pending balances and cylinder history."
+        actions={(
+          <Button
+            type="button"
+            variant={showAdd ? 'secondary' : 'primary'}
+            icon={showAdd ? <X /> : <UserPlus />}
+            onClick={() => { setShowAdd((v) => !v); setAddError(''); setCredUserId(null); setCredMsg(''); setCreatedPhone(''); setCreatedUsername(''); }}
+          >
+            {showAdd ? 'Cancel' : 'Add'}
+          </Button>
+        )}
+      />
 
       {/* Add customer form */}
       {showAdd && (
-        <form onSubmit={handleAddCustomer} className="card form-stack" style={{ marginBottom: '16px' }}>
-          <h2>New Customer</h2>
+        <form onSubmit={handleAddCustomer} className="ui-card ui-card--pad-md form-stack cust-add">
+          <h2 className="ui-card__title">New Customer</h2>
           <div className="grid-2">
-            <label>
-              <span>Name *</span>
-              <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="e.g. Ravi Kumar" required autoFocus />
-            </label>
-            <label>
-              <span>Phone *</span>
-              <input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} pattern="[0-9]*" title="Only digits allowed" placeholder="Required" required />
-            </label>
+            <Field label="Name *">
+              <Input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="e.g. Ravi Kumar" maxLength={LIMITS.name} required autoFocus />
+            </Field>
+            <Field label="Phone *">
+              <Input value={addPhone} onChange={(e) => setAddPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" placeholder="Required" required />
+            </Field>
           </div>
           <div className="grid-2">
-            <label>
-              <span>Username</span>
-              <input value={addUsername} onChange={(e) => setAddUsername(e.target.value)} placeholder="e.g. ravi" required />
-            </label>
-            <label>
-              <span>Password</span>
-              <input value="Auto-generated on create" disabled />
-            </label>
+            <Field label="Username">
+              <Input value={addUsername} onChange={(e) => setAddUsername(e.target.value)} placeholder="e.g. ravi" maxLength={LIMITS.username} autoComplete="off" required />
+            </Field>
+            <Field label="Password">
+              <Input value="Auto-generated on create" disabled />
+            </Field>
           </div>
           <div className="grid-2">
-            <label>
-              <span>Email</span>
-              <input type="email" value={addEmail} onChange={(e) => setAddEmail(e.target.value)} placeholder="Optional" />
-            </label>
-            <label>
-              <span>Address</span>
-              <input value={addAddress} onChange={(e) => setAddAddress(e.target.value)} placeholder="Optional" />
-            </label>
+            <Field label="Email">
+              <Input type="email" value={addEmail} onChange={(e) => setAddEmail(e.target.value)} placeholder="Optional" maxLength={LIMITS.email} />
+            </Field>
+            <Field label="Address">
+              <Input value={addAddress} onChange={(e) => setAddAddress(e.target.value)} placeholder="Optional" />
+            </Field>
           </div>
-          {addError && <p className="form-error">{addError}</p>}
-          <button className="btn btn-primary" type="submit" disabled={addSaving}>
-            <UserPlus size={18} /> {addSaving ? 'Saving…' : 'Save Customer'}
-          </button>
+          {addError && <Alert tone="danger" role="alert">{addError}</Alert>}
+          <div className="form-actions-row">
+            <Button type="submit" disabled={addSaving} icon={<UserPlus />}>
+              {addSaving ? 'Saving…' : 'Save Customer'}
+            </Button>
+          </div>
         </form>
       )}
 
-      <div className="input-with-icon" style={{ marginBottom: '16px' }}>
-        <Search size={18} />
-        <input
-          placeholder="Search by name or phone…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+      <div className="ui-toolbar">
+        <div className="ui-toolbar__grow">
+          <SearchInput
+            aria-label="Search customers"
+            placeholder="Search by name or phone…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
       </div>
 
-      {loading && <p style={{ textAlign: 'center', padding: '24px' }}>Loading…</p>}
+      {loading && <LoadingState label="Loading…" />}
 
-      <div className="card" style={{ padding: 0 }}>
-        {customers.length === 0 && !loading && (
-          <p style={{ textAlign: 'center', padding: '24px' }}>No customers found.</p>
+      {ledgerError && ledgerErrorId !== null && (
+        <ErrorState message={ledgerError} onRetry={() => openLedger(ledgerErrorId)} compact />
+      )}
+
+      {bookingsError && (
+        <Alert
+          tone="danger"
+          role="alert"
+          className="ui-alert--block-sm"
+          actions={<Button type="button" variant="link" size="sm" onClick={loadBookingData}>Retry</Button>}
+        >
+          Booking requests unavailable. {bookingsError}
+        </Alert>
+      )}
+
+      {listStatus === 'error' && <ErrorState message={listError} onRetry={() => void fetchCustomers()} />}
+
+      {listStatus !== 'error' && (
+      <Card padding="none" className="ui-list">
+        {listStatus === 'loading' && (
+          <div className="ui-card__skeleton"><SkeletonRows rows={6} columns={3} label="Loading customers…" /></div>
+        )}
+        {listStatus === 'ready' && customers.length === 0 && (
+          <EmptyState title="No customers found." hint={search ? 'Try a different name or phone number.' : undefined} />
         )}
 
-        {customers.map((c) => {
+        {listStatus === 'ready' && listPager.pageItems.map((c) => {
           const customerBookings = bookings
             .filter((b) => b.customer === c.id && b.status === 'pending')
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
           const pendingCount = customerBookings.length;
           const hasRequests = pendingCount > 0;
+          const inactive = c.is_active === false;
+          const rowBusy = deletingId === c.id;
+          const emptiesOwed = Object.values(c.empties_owed || {}).reduce((s, x) => s + x.owed, 0);
 
           return (
           <div key={c.id}>
             {/* ── Row ── */}
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '14px 18px', borderBottom: '1px solid var(--border)',
-            }}>
-              {/* Left: customer details */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                  <strong style={{ fontSize: '1rem' }}>{c.name}</strong>
+            <div className={`ui-list-row${inactive ? ' ui-list-row--muted' : ''}`}>
+              <div className="ui-list-row__main">
+                <div className="ui-list-row__title">
+                  <span className="ui-list-row__name">{c.name}</span>
+                  {inactive && <Badge variant="outline" size="sm">INACTIVE</Badge>}
                 </div>
-                <div style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                <div className="ui-list-row__meta">
                   {c.phone && <span>{c.phone}</span>}
                   {c.email && <span>{c.email}</span>}
                   {c.address && <span>{c.address}</span>}
                 </div>
               </div>
 
-              {/* Right: badges + action buttons + ledger arrow */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              {/* Badges (wrap onto their own line on phones) */}
+              <div className="ui-list-row__badges">
+                {Number(c.pending_balance) > 0 && (
+                  <Badge tone="warning">{money(c.pending_balance)}</Badge>
+                )}
+                {Number(c.credit_balance) > 0 && (
+                  <Badge tone="success">Credit {money(Number(c.credit_balance))}</Badge>
+                )}
+                {hasActiveDiscount(c) && (
+                  <Badge tone="primary">{formatCustomerDiscount(c)}</Badge>
+                )}
+                {emptiesOwed > 0 && (
+                  <Badge tone="danger" icon={<RotateCcw />}>{emptiesOwed} empty</Badge>
+                )}
+              </div>
+
+              {/* Action buttons + ledger arrow */}
+              <div className="ui-list-row__actions">
                 {hasRequests && (
-                  <button
-                    className="icon-button"
-                    title={`${pendingCount} new booking request${pendingCount > 1 ? 's' : ''}`}
+                  <IconButton
+                    label={`${pendingCount} new booking request${pendingCount > 1 ? 's' : ''}`}
+                    tone="primary"
+                    active={requestsId === c.id}
                     onClick={() => {
                       setRequestsMessage('');
                       setRequestsId((current) => current === c.id ? null : c.id);
                     }}
-                    style={{
-                      color: 'var(--success)',
-                      borderColor: 'rgba(16, 185, 129, 0.18)',
-                      background: requestsId === c.id ? 'rgba(16, 185, 129, 0.12)' : 'rgba(16, 185, 129, 0.06)',
-                      position: 'relative',
-                    }}
                   >
                     <ClipboardList size={16} />
-                    {pendingCount > 0 && (
-                      <span style={{
-                        position: 'absolute',
-                        top: '-6px',
-                        right: '-6px',
-                        minWidth: '18px',
-                        height: '18px',
-                        borderRadius: '999px',
-                        background: 'var(--success)',
-                        color: 'white',
-                        fontSize: '0.7rem',
-                        fontWeight: 700,
-                        display: 'grid',
-                        placeItems: 'center',
-                        padding: '0 4px',
-                      }}>
-                        {pendingCount}
-                      </span>
-                    )}
-                  </button>
+                    <span className="ui-count-dot" aria-hidden="true">{pendingCount}</span>
+                  </IconButton>
                 )}
-                {Number(c.pending_balance) > 0 && (
-                  <span className="badge badge-warning">{money(c.pending_balance)}</span>
-                )}
-                {hasActiveDiscount(c) && (
-                  <span className="badge" style={{ background: 'rgba(37, 99, 235, 0.08)', color: '#2563eb' }}>
-                    {formatCustomerDiscount(c)}
-                  </span>
-                )}
-                {Object.values(c.empties_owed || {}).reduce((s, x) => s + x.owed, 0) > 0 && (
-                  <span className="badge" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}>
-                    <RotateCcw size={11} style={{ display: 'inline', marginRight: '3px' }} />
-                    {Object.values(c.empties_owed || {}).reduce((s, x) => s + x.owed, 0)} empty
-                  </span>
-                )}
-
-                {/* Edit button */}
-                <button
-                  className="icon-button"
-                  title="Edit"
+                <IconButton
+                  label="Edit"
+                  active={editingId === c.id}
                   onClick={() => editingId === c.id ? cancelEdit() : startEdit(c)}
-                  style={editingId === c.id ? { color: 'var(--primary)' } : {}}
                 >
                   {editingId === c.id ? <X size={16} /> : <Pencil size={16} />}
-                </button>
-
-                <button
-                  className="icon-button"
-                  title="Customer Discount"
+                </IconButton>
+                <IconButton
+                  label="Customer Discount"
+                  active={discountId === c.id}
                   onClick={() => discountId === c.id ? closeDiscount() : openDiscount(c)}
-                  style={discountId === c.id ? { color: 'var(--primary)' } : {}}
                 >
                   <IndianRupee size={16} />
-                </button>
-
-                {/* Credentials button */}
-                <button
-                  className="icon-button"
-                  title="Credentials / Reset Password"
+                </IconButton>
+                <IconButton
+                  label="Credentials / Reset Password"
+                  active={credsId === c.id}
                   onClick={() => credsId === c.id ? closeCreds() : loadCreds(c.id)}
-                  style={credsId === c.id ? { color: 'var(--primary)' } : {}}
                 >
                   <KeyRound size={16} />
-                </button>
-
-                {/* Delete button */}
-                <button
-                  className="icon-button"
-                  title="Delete Customer"
-                  style={{ color: 'var(--danger)' }}
-                  disabled={deletingId === c.id}
+                </IconButton>
+                {inactive ? (
+                  <IconButton
+                    label="Reactivate Customer"
+                    tone="primary"
+                    disabled={rowBusy}
+                    onClick={() => reactivateCustomer(c.id)}
+                  >
+                    <UserCheck size={16} />
+                  </IconButton>
+                ) : (
+                  <IconButton
+                    label="Deactivate Customer"
+                    tone="danger"
+                    disabled={rowBusy}
+                    onClick={() => {
+                      if (window.confirm(`Deactivate ${c.name}? They will no longer be able to sign in or order. Ledger and order history are preserved.`)) void deactivateCustomer(c.id);
+                    }}
+                  >
+                    <UserX size={16} />
+                  </IconButton>
+                )}
+                <IconButton
+                  label="Delete Customer"
+                  tone="danger"
+                  disabled={rowBusy}
                   onClick={() => handleDeleteCustomer(c.id, c.name)}
                 >
                   <Trash2 size={16} />
-                </button>
-
-                {/* Open ledger */}
-                <button
-                  className="icon-button"
-                  title="View Ledger"
+                </IconButton>
+                <IconButton
+                  label="View Ledger"
+                  variant="outline"
                   onClick={() => openLedger(c.id)}
-                  style={{ color: 'var(--text-muted)' }}
                 >
                   <ChevronRight size={18} />
-                </button>
+                </IconButton>
               </div>
             </div>
 
+            {rowNotice?.id === c.id && (
+              <div className="ui-list-notice">
+                <Alert
+                  compact
+                  tone={rowNotice.tone === 'error' ? 'danger' : rowNotice.tone === 'confirm' ? 'warning' : 'info'}
+                  role={rowNotice.tone === 'error' ? 'alert' : 'status'}
+                  actions={(
+                    <>
+                      {rowNotice.tone === 'confirm' && !inactive && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          disabled={rowBusy}
+                          onClick={() => {
+                            if (window.confirm(`Deactivate ${c.name} instead? They will no longer be able to sign in or order. Ledger and order history are preserved.`)) void deactivateCustomer(c.id);
+                          }}
+                        >
+                          {rowBusy ? 'Deactivating…' : 'Deactivate instead'}
+                        </Button>
+                      )}
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setRowNotice(null)}>Dismiss</Button>
+                    </>
+                  )}
+                >
+                  {rowNotice.text}
+                </Alert>
+              </div>
+            )}
+
             {/* ── Inline Booking Requests panel ── */}
             {requestsId === c.id && hasRequests && (
-              <div
-                style={{
-                  padding: '16px 18px',
-                  borderBottom: '1px solid var(--border)',
-                  background: 'var(--surface-muted)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '12px',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
-                  <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <ClipboardList size={16} style={{ color: 'var(--success)' }} />
+              <div className="ui-list-panel req-panel">
+                <div className="req-panel__head">
+                  <h3>
+                    <ClipboardList size={16} aria-hidden="true" />
                     New Booking Requests
                   </h3>
-                  <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.08)', color: 'var(--success)' }}>
-                    {customerBookings.length} pending
-                  </span>
+                  <Badge tone="warning">{customerBookings.length} pending</Badge>
                 </div>
 
-                {requestsMessage && <p className="form-note" style={{ margin: 0 }}>{requestsMessage}</p>}
+                {requestsMessage && (
+                  <Alert tone={requestsMessageTone === 'error' ? 'danger' : 'success'} compact role={requestsMessageTone === 'error' ? 'alert' : 'status'}>
+                    {requestsMessage}
+                  </Alert>
+                )}
 
                 {customerBookings.map((booking) => (
-                  <div
-                    key={booking.id}
-                    style={{
-                      background: 'var(--surface)',
-                      border: '1px solid var(--border)',
-                      borderRadius: '12px',
-                      padding: '14px 16px',
-                      display: 'grid',
-                      gap: '12px',
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
-                      <div style={{ display: 'grid', gap: '4px' }}>
+                  <div key={booking.id} className="req-card">
+                    <div className="req-card__head">
+                      <div className="req-card__info">
                         <strong>Booking #{booking.id}</strong>
-                        <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>
+                        {booking.order_items?.length ? <BookingItems items={booking.order_items} /> : <PricingBreakdown value={booking} />}
+                        <span className="ui-cell-sub">
                           {booking.quantity} x {booking.cylinder_type_name} · {money(booking.rate)} each
                         </span>
                         {getBookingDiscountAmount(booking) > 0 && (
-                          <span style={{ fontSize: '0.85rem', color: 'var(--success)' }}>
+                          <span className="req-card__discount">
                             {money(getBookingOriginalAmount(booking))} - {money(getBookingDiscountAmount(booking))} = {money(getBookingFinalAmount(booking))}
                           </span>
                         )}
-                        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                        <span className="ui-cell-sub">
                           {fmtDate(booking.created_at)}
                         </span>
                         {booking.note && (
-                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{booking.note}</span>
+                          <span className="ui-cell-sub req-card__note">{booking.note}</span>
+                        )}
+                        {booking.status === 'pending' && booking.needs_reassignment && (
+                          <Badge tone="warning" square className="ui-badge--wrap">
+                            Declined by {booking.delivery_staff_name || 'staff'}
+                            {booking.delivery_rejection_reason ? `: ${booking.delivery_rejection_reason}` : ''}
+                          </Badge>
                         )}
                       </div>
-                      <span className={`badge ${
-                        booking.status === 'pending' ? 'badge-warning' :
-                        booking.status === 'approved' ? 'badge-info' :
-                        booking.status === 'accepted' ? 'badge-info' :
-                        booking.status === 'out_for_delivery' ? 'badge-warning' :
-                        booking.status === 'delivered' ? 'badge-success' : 'badge'
-                      }`}>
+                      <Badge tone={bookingStatusTone(booking.status)}>
                         {booking.status.replaceAll('_', ' ')}
-                      </span>
+                      </Badge>
                     </div>
 
                     {booking.status === 'pending' ? (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                        <select
+                      <div className="req-card__actions">
+                        <Select
+                          selectSize="sm"
+                          aria-label="Assign staff"
                           value={staffByBooking[booking.id] || ''}
                           onChange={(e) => setStaffByBooking((prev) => ({ ...prev, [booking.id]: e.target.value }))}
-                          style={{ minWidth: '220px' }}
                         >
-                          <option value="">Select staff</option>
-                          {staff.map((s) => (
-                            <option key={s.id} value={s.user}>
-                              {s.full_name || s.username}
-                            </option>
-                          ))}
-                        </select>
-                        <div style={{ display: 'inline-flex', gap: '8px' }}>
-                          <button
-                            className="icon-button"
-                            title="Approve & Assign"
-                            disabled={requestsBusyId === booking.id}
+                          <option value="">{booking.needs_reassignment ? 'Select staff (required)' : 'Select staff'}</option>
+                          {staff.map((s) => {
+                            const name = s.full_name || s.username;
+                            const declined = Boolean(booking.needs_reassignment && booking.delivery_staff_name && name === booking.delivery_staff_name);
+                            return (
+                              <option key={s.id} value={s.user} disabled={declined}>
+                                {declined ? `${name} (declined)` : name}
+                              </option>
+                            );
+                          })}
+                        </Select>
+                        <div className="req-card__buttons">
+                          <IconButton
+                            variant="outline"
+                            tone="primary"
+                            label={booking.needs_reassignment ? 'Reassign & Approve' : 'Approve & Assign'}
+                            disabled={requestsBusyId !== null}
+                            aria-busy={requestsBusyId === booking.id}
                             onClick={() => approveBooking(booking.id)}
                           >
                             <Check size={18} />
-                          </button>
-                          <button
-                            className="icon-button"
-                            title="Reject Booking"
-                            disabled={requestsBusyId === booking.id}
+                          </IconButton>
+                          <IconButton
+                            variant="outline"
+                            tone="danger"
+                            label="Reject Booking"
+                            disabled={requestsBusyId !== null}
                             onClick={() => rejectBooking(booking.id)}
                           >
                             <X size={18} />
-                          </button>
+                          </IconButton>
                         </div>
                       </div>
                     ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                        <Truck size={14} />
+                      <div className="req-card__staff">
+                        <Truck size={14} aria-hidden="true" />
                         <span>{booking.assigned_staff_name || 'Staff not assigned yet'}</span>
                       </div>
                     )}
@@ -1787,100 +1865,75 @@ export default function Customers() {
 
             {/* ── Inline Edit panel ── */}
             {editingId === c.id && (
-              <form
-                onSubmit={(e) => handleEdit(e, c.id)}
-                className="form-stack"
-                style={{
-                  padding: '16px 18px',
-                  borderBottom: '1px solid var(--border)',
-                  background: 'var(--surface-muted)',
-                }}
-              >
-                <h3 style={{ marginBottom: '10px' }}>Edit Customer</h3>
+              <form onSubmit={(e) => handleEdit(e, c.id)} className="ui-list-panel form-stack">
+                <h3>Edit Customer</h3>
                 <div className="grid-2">
-                  <label>
-                    <span>Name *</span>
-                    <input value={editName} onChange={(e) => setEditName(e.target.value)} required autoFocus />
-                  </label>
-                  <label>
-                    <span>Phone *</span>
-                    <input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} required />
-                  </label>
+                  <Field label="Name *">
+                    <Input value={editName} onChange={(e) => setEditName(e.target.value)} maxLength={LIMITS.name} required autoFocus />
+                  </Field>
+                  <Field label="Phone *">
+                    <Input value={editPhone} onChange={(e) => setEditPhone(e.target.value)} pattern="[0-9]*" inputMode="numeric" maxLength={LIMITS.phone} title="Only digits allowed" required />
+                  </Field>
                 </div>
                 <div className="grid-2">
-                  <label>
-                    <span>Email</span>
-                    <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
-                  </label>
-                  <label>
-                    <span>Address</span>
-                    <input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
-                  </label>
+                  <Field label="Email">
+                    <Input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} maxLength={LIMITS.email} />
+                  </Field>
+                  <Field label="Address">
+                    <Input value={editAddress} onChange={(e) => setEditAddress(e.target.value)} />
+                  </Field>
                 </div>
-                {editError && <p className="form-error">{editError}</p>}
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button className="btn btn-primary" type="submit" disabled={editSaving}>
-                    <Check size={16} /> {editSaving ? 'Saving…' : 'Save'}
-                  </button>
-                  <button className="btn btn-secondary" type="button" onClick={cancelEdit} disabled={editSaving}>
+                {editError && <Alert tone="danger" role="alert">{editError}</Alert>}
+                <div className="form-actions-row">
+                  <Button type="button" variant="secondary" onClick={cancelEdit} disabled={editSaving}>
                     Cancel
-                  </button>
+                  </Button>
+                  <Button type="submit" disabled={editSaving} icon={<Check />}>
+                    {editSaving ? 'Saving…' : 'Save'}
+                  </Button>
                 </div>
               </form>
             )}
 
             {/* ── Inline Credentials panel ── */}
             {credsId === c.id && (
-              <div
-                style={{
-                  padding: '12px 18px',
-                  borderBottom: '1px solid var(--border)',
-                  background: 'var(--surface-muted)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  flexWrap: 'wrap',
-                  gap: '16px'
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <KeyRound size={16} style={{ color: 'var(--primary)' }} />
-                  <span style={{ fontSize: '0.95rem', fontWeight: 500 }}>Login Credentials</span>
+              <div className="ui-list-panel cred-panel">
+                <div className="cred-panel__title">
+                  <KeyRound size={16} />
+                  <span>Login Credentials</span>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px', flex: 1, justifyContent: 'flex-end' }}>
-                  {credsError && <span className="form-error" style={{ margin: 0, paddingRight: '8px' }}>{credsError}</span>}
-                  
+                <div className="cred-panel__body">
+                  {credsError && <Alert tone="danger" compact>{credsError}</Alert>}
+
                   {creds && !pwMsg && (
-                    <button
-                      className="btn btn-primary"
+                    <Button
                       type="button"
+                      size="sm"
+                      icon={<Check />}
                       onClick={() => resetPassword(c.id)}
                       disabled={pwSaving}
-                      style={{ padding: '6px 16px', fontSize: '0.85rem', width: 'auto', margin: 0 }}
                     >
-                      <Check size={14} style={{ marginRight: '6px' }} /> {pwSaving ? 'Generating…' : 'Generate Temporary Password'}
-                    </button>
+                      {pwSaving ? 'Generating…' : 'Generate Temporary Password'}
+                    </Button>
                   )}
 
                   {creds && pwMsg && (
-                    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-                      {/* USERNAME */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>USERNAME</span>
-                        <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem' }}>{creds.username}</span>
+                    <div className="cred-panel__values">
+                      <div className="cred-panel__pair">
+                        <span className="cred-panel__label">USERNAME</span>
+                        <span className="cred-panel__value">{creds.username}</span>
                       </div>
-                      
-                      {/* TEMPORARY PASSWORD */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>TEMPORARY PASSWORD</span>
-                        <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem', letterSpacing: '0.5px' }}>{pwMsg}</span>
-                        
-                        <div style={{ display: 'flex', gap: '6px' }}>
-                          <button 
-                            className="icon-button" 
-                            style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
-                            title="Copy Details"
+
+                      <div className="cred-panel__pair">
+                        <span className="cred-panel__label">TEMPORARY PASSWORD</span>
+                        <span className="cred-panel__value cred-panel__value--mono">{pwMsg}</span>
+
+                        <div className="cred-panel__tools">
+                          <IconButton
+                            size="sm"
+                            variant="outline"
+                            label="Copy Details"
                             onClick={() => {
                               const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${creds.username}\nPassword: ${pwMsg}\n\nPlease login and change your password immediately.`;
                               navigator.clipboard.writeText(msg);
@@ -1888,25 +1941,12 @@ export default function Customers() {
                             }}
                           >
                             <Copy size={14} />
-                          </button>
+                          </IconButton>
                           <a
                             href={c.email ? `mailto:${c.email}?subject=${encodeURIComponent('Your GasBook Account Details')}&body=${encodeURIComponent(`Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${creds.username}\nPassword: ${pwMsg}\n\nPlease login and change your password immediately.\n\nBest regards,\nGasBook Admin`)}` : '#'}
-                            className="icon-button"
+                            className={`ui-iconbtn ui-iconbtn--outline ui-iconbtn--sm${c.email ? '' : ' cred-panel__link--disabled'}`}
                             title={c.email ? "Email Details" : "No email saved"}
-                            style={{ 
-                              display: 'flex', 
-                              alignItems: 'center', 
-                              justifyContent: 'center', 
-                              textDecoration: 'none', 
-                              color: 'inherit', 
-                              background: 'var(--surface)', 
-                              border: '1px solid var(--border)', 
-                              width: '28px', 
-                              height: '28px', 
-                              borderRadius: '6px',
-                              opacity: c.email ? 1 : 0.5,
-                              pointerEvents: c.email ? 'auto' : 'none'
-                            }}
+                            aria-label={c.email ? "Email Details" : "No email saved"}
                             onClick={(e) => {
                               if (!c.email) {
                                 e.preventDefault();
@@ -1916,11 +1956,11 @@ export default function Customers() {
                           >
                             <Mail size={14} />
                           </a>
-                          <button 
-                            className="icon-button" 
+                          <IconButton
                             type="button"
-                            style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
-                            title="Share Details"
+                            size="sm"
+                            variant="outline"
+                            label="Share Details"
                             onClick={async () => {
                               const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${creds.username}\nPassword: ${pwMsg}\n\nPlease login and change your password immediately.`;
                               if (navigator.share) {
@@ -1939,60 +1979,43 @@ export default function Customers() {
                             }}
                           >
                             <Share2 size={14} />
-                          </button>
+                          </IconButton>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  <button 
-                    className="icon-button" 
-                    onClick={closeCreds}
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', marginLeft: '4px', borderRadius: '6px' }}
-                  >
+                  <IconButton size="sm" variant="outline" label="Close" onClick={closeCreds}>
                     <X size={14} />
-                  </button>
+                  </IconButton>
                 </div>
               </div>
             )}
 
             {/* ── New-customer temp password banner ── */}
             {credUserId && credMsg && c.phone === createdPhone && (
-              <div
-                style={{
-                  padding: '12px 18px',
-                  borderBottom: '1px solid var(--border)',
-                  background: 'var(--surface-muted)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  flexWrap: 'wrap',
-                  gap: '16px'
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <KeyRound size={16} style={{ color: 'var(--primary)' }} />
-                  <span style={{ fontSize: '0.95rem', fontWeight: 500 }}>Login Credentials</span>
+              <div className="ui-list-panel cred-panel">
+                <div className="cred-panel__title">
+                  <KeyRound size={16} />
+                  <span>Login Credentials</span>
                 </div>
 
-                <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px', flex: 1, justifyContent: 'flex-end' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
-                    {/* USERNAME */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>USERNAME</span>
-                      <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem' }}>{createdUsername}</span>
+                <div className="cred-panel__body">
+                  <div className="cred-panel__values">
+                    <div className="cred-panel__pair">
+                      <span className="cred-panel__label">USERNAME</span>
+                      <span className="cred-panel__value">{createdUsername}</span>
                     </div>
-                    
-                    {/* TEMPORARY PASSWORD */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <span style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.5px' }}>TEMPORARY PASSWORD</span>
-                      <span style={{ background: 'var(--surface)', padding: '4px 10px', borderRadius: '20px', border: '1px solid var(--border)', fontSize: '0.9rem', letterSpacing: '0.5px' }}>{credMsg}</span>
-                      
-                      <div style={{ display: 'flex', gap: '6px' }}>
-                        <button 
-                          className="icon-button" 
-                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
-                          title="Copy Details"
+
+                    <div className="cred-panel__pair">
+                      <span className="cred-panel__label">TEMPORARY PASSWORD</span>
+                      <span className="cred-panel__value cred-panel__value--mono">{credMsg}</span>
+
+                      <div className="cred-panel__tools">
+                        <IconButton
+                          size="sm"
+                          variant="outline"
+                          label="Copy Details"
                           onClick={() => {
                             const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${createdUsername}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
                             navigator.clipboard.writeText(msg);
@@ -2000,25 +2023,12 @@ export default function Customers() {
                           }}
                         >
                           <Copy size={14} />
-                        </button>
+                        </IconButton>
                         <a
                           href={c.email ? `mailto:${c.email}?subject=${encodeURIComponent('Your GasBook Account Details')}&body=${encodeURIComponent(`Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${createdUsername}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.\n\nBest regards,\nGasBook Admin`)}` : '#'}
-                          className="icon-button"
+                          className={`ui-iconbtn ui-iconbtn--outline ui-iconbtn--sm${c.email ? '' : ' cred-panel__link--disabled'}`}
                           title={c.email ? "Email Details" : "No email saved"}
-                          style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            justifyContent: 'center', 
-                            textDecoration: 'none', 
-                            color: 'inherit', 
-                            background: 'var(--surface)', 
-                            border: '1px solid var(--border)', 
-                            width: '28px', 
-                            height: '28px', 
-                            borderRadius: '6px',
-                            opacity: c.email ? 1 : 0.5,
-                            pointerEvents: c.email ? 'auto' : 'none'
-                          }}
+                          aria-label={c.email ? "Email Details" : "No email saved"}
                           onClick={(e) => {
                             if (!c.email) {
                               e.preventDefault();
@@ -2028,11 +2038,11 @@ export default function Customers() {
                         >
                           <Mail size={14} />
                         </a>
-                        <button 
-                          className="icon-button" 
+                        <IconButton
                           type="button"
-                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', borderRadius: '6px' }}
-                          title="Share Details"
+                          size="sm"
+                          variant="outline"
+                          label="Share Details"
                           onClick={async () => {
                             const msg = `Hello ${c.name},\n\nHere are your GasBook login details:\n\nUsername: ${createdUsername}\nPassword: ${credMsg}\n\nPlease login and change your password immediately.`;
                             if (navigator.share) {
@@ -2051,25 +2061,27 @@ export default function Customers() {
                           }}
                         >
                           <Share2 size={14} />
-                        </button>
+                        </IconButton>
                       </div>
                     </div>
                   </div>
-                  
-                  <button 
-                    className="icon-button" 
-                    onClick={() => { setCredUserId(null); setCredMsg(''); setCreatedUsername(''); }}
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', width: '28px', height: '28px', marginLeft: '4px', borderRadius: '6px' }}
-                  >
+
+                  <IconButton size="sm" variant="outline" label="Close" onClick={() => { setCredUserId(null); setCredMsg(''); setCreatedUsername(''); }}>
                     <X size={14} />
-                  </button>
+                  </IconButton>
                 </div>
               </div>
             )}
           </div>
         );
         })}
-      </div>
+        {listStatus === 'ready' && listPager.pageCount > 1 && (
+          <CardFooter>
+            <Pager page={listPager.page} pageCount={listPager.pageCount} onChange={listPager.setPage} total={listPager.total} />
+          </CardFooter>
+        )}
+      </Card>
+      )}
     </div>
   );
 }

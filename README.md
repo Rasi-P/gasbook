@@ -123,8 +123,15 @@ VITE_API_BASE_URL=http://127.0.0.1:8001/api
 
 ### Gas Rates Panel
 - Floating ₹ button visible to admin on all pages
-- Shows today's selling price and refill rate per cylinder size
+- Shows today's new-cylinder deposit and refill rate per cylinder size
 - Inline edit — changes apply to all new sales immediately
+
+### Cylinder Types & Locations (Admin only)
+- **Products & Inventory → Cylinder Types**: add or edit a size with its picture, **refill price** and **new-cylinder deposit**. There is no separate selling price. A **refill** costs the refill price only; a **new connection** costs the refill price **plus** the deposit, each once per cylinder (a discount applies to the refill part only and never reduces the deposit). Prices apply to new transactions only; past bookings, sales and receipts keep the components they were charged. The deposit stays inside the billed total, as before; the Reports summary shows how much of gross sales is deposits. The old `selling_price` column is kept for older records but is read-only and unused for pricing.
+- **Products & Inventory → Locations**: add shops, godowns or a supplier without code changes. A new active location appears in stock, sales, delivery and report lists immediately. A location's type (stock location or supplier) and its generated code are fixed once created.
+- **Active / inactive**: inactive types and locations are refused by the API for new bookings, sales, deliveries and stock movements (not just hidden in the UI), but stay in history, receipts and reports. A location that still holds cylinders cannot be deactivated until they are moved; nothing is moved automatically. Existing stock of an inactive type can still be moved between stock locations, and cylinders can always be moved out of an inactive location.
+- A delivery takes stock from the staff member's configured location, else the shop; if neither is available and several stock locations are active, the app asks which one.
+- Cylinder pictures are stored with the other uploads (`MEDIA_ROOT/cylinder-images/`).
 
 ### Security
 - JWT authentication with 12-hour access token, 30-day refresh token
@@ -164,40 +171,75 @@ GET  /api/reports/?start=YYYY-MM-DD&end=YYYY-MM-DD
 /api/activity/
 ```
 
-## Deployment
+## Deployment — ₹0 personal demo
 
-### Render (Backend)
-- Use `render.yaml` — add a PostgreSQL database and set `DATABASE_URL`
-- Set `SECRET_KEY`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` environment variables
+Follow [the deployment runbook](docs/production-deployment.md) and its approval gates.
+Use fake customers, bookings and payment records only; no real orders, payments or customer data.
+Keep billing disabled and use provider-generated domains.
 
-### Vercel (Frontend)
-- Deploy the `frontend/` folder
-- Set `VITE_API_BASE_URL` to your Render backend URL ending in `/api`
+- **Backend:** the existing Render Free Docker service, using `backend/Dockerfile` and `render.demo.yaml` as a configuration reference.
+- **Database:** the separately verified, dedicated Neon Free demo project.
+- **Frontends:** separate Vercel Hobby projects for admin and customer, for personal non-commercial demonstration.
+- **Images:** keep uploads disabled until the personal ImageKit Free account and backend-only credentials are approved; the candidate supports durable catalog images and encrypted, authenticated staff images. No Render disk.
 
-### Docker
+`render.demo.yaml` is a review template, not permission to create or deploy a service.
+Keep `render.yaml` as the earlier commercial proposal; do not apply it to this ₹0 demo.
 
-The backend service reads `backend/.env`, which is gitignored — create it first:
+### Backend configuration
+
+Keep `GASBOOK_ENV=production` and `DEBUG=False`. The full-feature candidate permits `ACCESSORIES_ENABLED=True`; keep
+`DEMO_DISABLE_UPLOADS=True` until the runbook storage gate passes. Full image testing then uses `MEDIA_STORAGE_BACKEND=imagekit`
+and `DEMO_DISABLE_UPLOADS=False`, with backend-only ImageKit and media-encryption credentials.
+Privately configure `SECRET_KEY`, `DATABASE_URL`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` and
+`CSRF_TRUSTED_ORIGINS` using the verified backend and both frontend origins. Never commit their secret values.
+Supply the approved Neon connection with TLS through Render's environment; Django does not load root `.env.local`.
+The template pins Python, serves static files with WhiteNoise and runs Gunicorn. Build/start commands must not
+run migrations, bootstrap or seed commands.
+
+### Frontend configuration
+
+| Project | Repository / root | Install | Build | Output |
+| --- | --- | --- | --- | --- |
+| Admin | `gasbook` / `frontend` | `npm ci` | `npm run build` | `dist` |
+| Customer | `gasbook-customer` / `.` | `bun install --frozen-lockfile` | `bun run build` | `dist` |
+
+Use Node 24.x. Each build requires `VITE_API_BASE_URL` set to the actual Render HTTPS API URL ending in `/api`.
+Do not deploy a localhost or build-test placeholder URL. Preserve the admin Vercel SPA fallback for `/login`
+and `/admin-dashboard`; customer navigation uses application state/hash. Never put database credentials in `VITE_*`.
+
+### Separate approval steps
+
+1. Review the exact files and obtain explicit commit/push approval. Recheck Git deployment triggers before any push.
+   Resource creation, linking and each deployment require separate approval; linking can trigger an initial deployment.
+2. Verify the dedicated demo database identity, backup/restore status and complete migration plan before requesting
+   **migration approval**. Preserve migration 0015's legacy-order guard. Apply migrations only in the approved release
+   environment; `/ready/` remains 503 until the required migrations are applied.
+3. After migration verification, request **separate admin-bootstrap approval**. Use the interactive `bootstrap_admin`
+   command with a unique password and the business admin role. Keep `seed_demo` blocked in the hosted demo.
+   Enter only approved synthetic business data.
+4. Deploy the backend only after approval and verify its actual status, HTTPS, `/health/` and `/ready/`.
+   Then separately approve both frontend deployments using its verified URL and run the fake-data smoke tests.
+
+### Local Docker development
+
+Use `docker-compose.dev.yml` only with an explicitly verified local development database.
+Compose loads the gitignored `backend/.env`; its explicit development settings and internal database/cache addresses
+take precedence. Create the file only if it is missing; keep existing configuration:
 
 ```bash
-cp backend/.env.example backend/.env
+cp -n backend/.env.example backend/.env
 # then edit it: use the Docker hostnames
 #   DATABASE_URL=postgres://gasbook:gasbook123@db:5432/gasbook
 #   REDIS_URL=redis://redis:6379/0
-docker-compose up --build
+docker compose -f docker-compose.dev.yml up --build
 ```
 
 Frontend: http://localhost:8080 — Backend API: http://localhost:8001/api
 
-Seed demo data (one-off, optional):
+All published development ports bind to `127.0.0.1`: PostgreSQL 5434, Redis 6379, backend 8001 and frontend 8080.
+Container-to-container traffic still uses the Compose service names. Existing named volumes retain local data;
+do not remove volumes or treat this stack as a disposable test environment.
 
-```bash
-docker compose run --rm backend python manage.py seed_demo
-```
-
-For development with hot reload (frontend on http://localhost:5173):
-
-```bash
-docker compose -f docker-compose.dev.yml up --build
-```
-
-> For production: change the seed admin password, set a strong `SECRET_KEY`, and disable `DEBUG`.
+The startup command above starts local services only; it does not run migrations, seed data or bootstrap an admin.
+Each database operation needs its own verified target and explicit approval. Never point this stack at Neon,
+production or `gasbook_qa`, and never reuse its development credentials for the hosted demo.

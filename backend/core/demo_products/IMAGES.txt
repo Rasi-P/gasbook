@@ -1,0 +1,19 @@
+Development catalog images — generated with the built-in imagegen tool.
+These are synthetic product illustrations, not photographs of actual stock.
+No external image URLs, trademarks or runtime network dependencies.
+
+regulator.png
+Use case: product-mockup. Asset type: development-only GasBook accessory catalog image. Subject: one domestic LPG pressure regulator, silver metal round body with black adjustment lever and brass hose outlet. Realistic studio product photography, centered on plain white background with soft natural shadow, entire product visible, square framing, readable at thumbnail size. No branding, labels, text, numbers, watermark, packaging or unrelated objects.
+
+stove.png
+Use case: product-mockup. Asset type: development-only GasBook accessory catalog image. Subject: one stainless steel two-burner tabletop LPG gas stove with black pan supports and two black front knobs. Realistic studio product photography, centered on plain white background with soft natural shadow, entire product visible, square framing, readable at thumbnail size. No branding, labels, text, numbers, watermark, packaging or unrelated objects.
+
+hose.png
+Use case: product-mockup. Asset type: development-only GasBook accessory catalog image. Subject: one orange reinforced LPG rubber gas hose neatly coiled, with both open ends visible. Realistic studio product photography, centered on plain white background with soft natural shadow, entire product visible, square framing, readable at thumbnail size. No branding, labels, text, numbers, watermark, packaging or unrelated objects.
+
+clips.png
+Use case: product-mockup. Asset type: development-only GasBook accessory catalog image. Subject: two stainless steel worm-drive gas hose clamps with screw heads, one standing and one resting flat. Realistic studio product photography, centered on plain white background with soft natural shadow, entire product visible, square framing, readable at thumbnail size. No branding, labels, text, numbers, watermark, packaging or unrelated objects.
+
+burner.png
+Use case: product-mockup. Asset type: development-only GasBook accessory catalog image. Subject: one brass gas stove replacement burner ring with evenly spaced gas ports and a short mixing tube. Realistic studio product photography, centered on plain white background with soft natural shadow, entire product visible, square framing, readable at thumbnail size. No branding, labels, text, numbers, watermark, packaging or unrelated objects.
+
