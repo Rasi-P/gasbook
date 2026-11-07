@@ -4,6 +4,9 @@ No deployment is authorized by this document. The reviewed changes are local and
 Never use `gasbook_qa`, unrelated development databases, or default credentials. Synthetic data belongs only in the
 separately verified demo target; commercial production excludes demo data.
 
+> **Media storage has moved to a Render persistent disk.** See [Persistent media](#persistent-media). The ImageKit and
+> `DEMO_DISABLE_UPLOADS` material in the dated sections below is historical and superseded for media.
+
 ## Full-feature demo candidate — 2026-10-21 (local only)
 
 This section supersedes the older no-upload/no-accessory policy below. Historical account inventories and empty-database
@@ -447,7 +450,8 @@ Keep frontend support-contact variable names unchanged. All VITE variables becom
 | ALLOWED_HOSTS | exact approved API hostname(s), without scheme, wildcard, or port |
 | CORS_ALLOWED_ORIGINS | both exact HTTPS Vercel production origins, without paths or trailing slashes |
 | CSRF_TRUSTED_ORIGINS | exact HTTPS API/admin/customer origins; review previews separately, no Vercel wildcard |
-| MEDIA_ROOT | absolute disk mount path, proposed /var/data/media |
+| MEDIA_ROOT | absolute disk mount path, /var/data/media |
+| MEDIA_REQUIRE_MOUNT | default true; production `/ready/` fails unless MEDIA_ROOT is a mounted, writable disk |
 | PYTHON_VERSION | 3.12.15 for Render |
 | PORT | supplied by Render |
 | ACCESSORIES_ENABLED | enable only after reviewing the full migration chain and intended accessory workflows |
@@ -579,25 +583,45 @@ Readiness checks the migration ledger and connectivity; it is not a full schema-
 
 ## Persistent media
 
-The existing filesystem storage works with a single Render disk mounted at `/var/data/media`.
-Attach and verify the approved disk before accepting uploads; setting `MEDIA_ROOT` alone does not create or prove a persistent disk.
-The Blueprint intentionally does not create a database, choose a paid plan, or create a disk before resource identities/costs are approved.
+Images live on a Render persistent disk mounted at `/var/data/media`; PostgreSQL stores only each image's relative name.
+`MEDIA_STORAGE_BACKEND=filesystem` (the default) selects `core.media_filesystem.MediaFileSystemStorage`, which writes to `MEDIA_ROOT`.
 
-Runtime routes serve only PNG/JPEG/WebP files in `product-images`, `staff-images`, and `cylinder-images`, with decoded content validation,
-5 MB/4096-pixel limits, path containment, no directory listing, and restrictive content headers. Files are public by URL;
-staff photos must be intended for public delivery. This is not a private-document store. Older unsafe/oversized media returns 404.
-This simple handler validates each request and buffers at most 5 MB; monitor CPU/memory as image traffic grows.
-File replacement/deletion occurs after the database transaction commits. A failed upload transaction can leave an unreferenced new file;
-review cleanup separately instead of deleting files automatically during deployment.
+**Attach the disk before switching the backend.** In production `/ready/` returns 503 `media_unavailable` unless `MEDIA_ROOT` is a
+mount point and writable; otherwise uploads would silently land on the container's ephemeral filesystem and vanish on the next
+deploy. Set `MEDIA_REQUIRE_MOUNT=false` only on a host whose persistent directory is not a mount point. The check is on `/ready/`,
+not `/health/`, and is skipped when uploads are disabled.
 
-Only the disk mount persists. Existing repository/local uploads are not automatically copied into a new disk.
-After approval, transfer approved media preserving relative paths, compare checksums and image URLs, and retain an independent backup.
-Two images were already tracked before Phase B; ignore rules now prevent future untracked staff/cylinder uploads from entering Git,
-but do not remove those historical tracked files.
+Serving: only the `/media/` view serves files (whitenoise serves static files only), for `product-images`, `staff-images` and
+`cylinder-images`, with decoded validation, 5 MB/4096-pixel limits and path containment. Staff photos require an authenticated owner or
+administrator and are sent `private, no-store`. Product and cylinder images are public by URL because the customer catalog needs them.
+Their names are random and never reused, so they are cached as immutable; older names keep a five-minute cache.
 
-Render disks require paid services, allow one service instance, and introduce downtime during redeployment.
-They are unavailable in build/pre-deploy/one-off job filesystems. Copy files through the running service's approved access path.
-Maintain database and media backups together. Test an actual provider redeployment before claiming persistence.
+Stored names are random (the uploader's filename is not kept) and the extension follows the stored format. Before a file is written,
+`core/image_processing.py` keeps the upload byte-for-byte unless it must change, so quality never degrades by repetition:
+
+- EXIF rotation is applied and metadata (GPS, device) removed. Metadata-only JPEG changes reuse the original quantization tables.
+- Images longer than 500 px (staff) or 1200 px (product, cylinder) are shrunk, with 10% tolerance, keeping aspect ratio and the colour profile.
+- Opaque PNG over 300 KB becomes WebP q95 only if at least 40% smaller and within an RMS error of 3.0; transparent PNG only ever becomes lossless WebP.
+- Animated images, and anything already small and clean, are stored unchanged. A processing failure stores the validated original.
+
+Render disks: one service instance only; no zero-downtime deploys (each deploy has a short outage); not mounted during build,
+pre-deploy or one-off jobs; snapshots every 24 hours kept at least 7 days; a snapshot restore replaces the whole disk and cannot
+restore a single file; size can grow but not shrink. Snapshots are not a complete backup: also stream an archive of `MEDIA_ROOT` off the
+provider over the service's SSH access on a schedule, keep it with a database export from the same day, and rehearse a restore.
+Rows pointing at missing files degrade to the built-in pictures or an "Image unavailable" placeholder; orphan files are harmless.
+
+### Moving existing ImageKit images to the disk (temporary)
+
+`python manage.py migrate_media_to_disk` copies ImageKit objects to `MEDIA_ROOT`, decrypting staff photos, and never deletes anything
+remote. It is a dry run unless `--apply`; `--verify` rechecks hashes against `MEDIA_ROOT/.migration/manifest.csv`; `--revert --apply` points
+references back at the ImageKit names (disk files are kept). Run it in the running service's shell, since the disk exists only there.
+
+1. Deploy this code with no environment change (it still works with ImageKit), then attach the disk.
+2. Optional: set `DEMO_DISABLE_UPLOADS=True` first so users see the built-in pictures rather than broken images during the copy.
+3. Dry run, `--apply`, then `--verify`. Keep `IMAGEKIT_*` and `MEDIA_ENCRYPTION_KEY`; losing the key loses the staff photos.
+4. Set `MEDIA_STORAGE_BACKEND=filesystem` and `DEMO_DISABLE_UPLOADS=False`; confirm `/ready/` passes and spot-check both frontends.
+5. Keep the ImageKit objects and secrets for a rollback window. Images uploaded after the switch exist only on the disk.
+6. After sign-off, remove the ImageKit code, packages, variables and this command in a separate change.
 
 ## Migrations and old release tooling
 
