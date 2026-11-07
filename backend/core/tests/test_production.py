@@ -180,7 +180,9 @@ class StaffUploadSecurityTests(GasBookTestCase):
             response = self.client.patch(f'/api/auth/users/{self.staff_a.pk}/',
                 {'image': SimpleUploadedFile('valid.png', png(), content_type='image/png')}, format='multipart')
             self.assertEqual(response.status_code, 200)
-            self.assertTrue((Path(root) / 'staff-images/valid.png').exists())
+            stored = [path.name for path in (Path(root) / 'staff-images').iterdir()]
+            self.assertEqual(len(stored), 1)
+            self.assertRegex(stored[0], r'\A[a-f0-9]{32}\.png\Z')
 
 
 class AuthenticationSecurityTests(GasBookTestCase):

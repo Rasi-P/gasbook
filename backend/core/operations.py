@@ -1,7 +1,9 @@
 """Small public operational endpoints; never return configuration or exception text."""
 from functools import lru_cache
 from io import BytesIO
+import os
 from pathlib import Path
+import re
 
 from django.conf import settings
 from django.core.files.storage import default_storage, FileSystemStorage
@@ -23,9 +25,23 @@ def health(request):
     return JsonResponse({"status": "ok"})
 
 
+# Random upload names are never reused, so these URLs can be cached indefinitely.
+IMMUTABLE_MEDIA = re.compile(r"(cylinder|product)-images/[a-f0-9]{32}\.(png|jpg|webp)\Z")
+
+
 @lru_cache(maxsize=1)
 def required_migrations():
     return set(MigrationLoader(None).disk_migrations)
+
+
+def media_ready():
+    """An unmounted production disk would silently write to the container's ephemeral filesystem."""
+    if not settings.PRODUCTION or settings.MEDIA_STORAGE_BACKEND != "filesystem":
+        return True
+    root = str(settings.MEDIA_ROOT)
+    if settings.MEDIA_REQUIRE_MOUNT and not os.path.ismount(root):
+        return False
+    return os.access(root, os.W_OK | os.X_OK)
 
 
 @require_safe
@@ -37,6 +53,8 @@ def readiness(request):
         applied = set(MigrationRecorder(connection).applied_migrations())
         if required_migrations() - applied:
             response = JsonResponse({"status": "not_ready", "reason": "migrations_pending"}, status=503)
+        elif not media_ready():
+            response = JsonResponse({"status": "not_ready", "reason": "media_unavailable"}, status=503)
         else:
             response = JsonResponse({"status": "ready"})
     except DatabaseError:
@@ -77,7 +95,11 @@ def media_image(request, path):
         raise Http404 from None
     response["X-Content-Type-Options"] = "nosniff"
     response["Content-Security-Policy"] = "default-src 'none'; sandbox"
-    response["Cache-Control"] = "private, no-store" if private else "public, max-age=300"
+    response["Cache-Control"] = (
+        "private, no-store" if private
+        else "public, max-age=31536000, immutable" if IMMUTABLE_MEDIA.fullmatch(path)
+        else "public, max-age=300"
+    )
     if private:
         response["Vary"] = "Authorization, Cookie"
     return response

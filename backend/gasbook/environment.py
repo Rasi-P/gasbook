@@ -60,8 +60,6 @@ def media_configuration(*, production, disabled):
     if backend not in {"filesystem", "imagekit"}:
         raise ImproperlyConfigured("Unsupported MEDIA_STORAGE_BACKEND.")
     if backend == "filesystem":
-        if production and os.environ.get("RENDER_SERVICE_ID") == "srv-dbbk71tg1s2s7398rfag":
-            raise ImproperlyConfigured("The Free demo requires external media storage when uploads are enabled.")
         return backend
     endpoint = os.environ.get("IMAGEKIT_URL_ENDPOINT", "")
     if not re.fullmatch(r"https://ik\.imagekit\.io/[A-Za-z0-9_-]+", endpoint):
@@ -128,9 +126,9 @@ def demo_django_admin_enabled(*, production, debug, database, hosts, uploads_dis
         and os.environ.get("RENDER_SERVICE_ID") == "srv-dbbk71tg1s2s7398rfag"
         and hosts == ["gasbook-demo-api.onrender.com"]
         and _demo_database_target_matches(database)
-        # Feature availability is independent of identity. Enabled uploads must
-        # use the validated remote backend, never the Free container filesystem.
-        and (uploads_disabled or media_configuration(production=production, disabled=False) == "imagekit")
+        # Feature availability is independent of identity. Enabled uploads need durable media: a
+        # validated remote backend, or the filesystem (whose mount /ready/ verifies in production).
+        and (uploads_disabled or media_configuration(production=production, disabled=False) in {"imagekit", "filesystem"})
     ):
         raise ImproperlyConfigured(
             "DEMO_DJANGO_ADMIN_ENABLED is restricted to the approved GasBook demo "

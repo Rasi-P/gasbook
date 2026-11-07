@@ -39,8 +39,7 @@ class FullDemoConfigurationTests(SimpleTestCase):
         base = dict(RENDER_SERVICE_ID="srv-dbbk71tg1s2s7398rfag")
         with patch.dict(os.environ, base, clear=True):
             self.assertEqual(media_configuration(production=True, disabled=True), "disabled")
-            with self.assertRaises(ImproperlyConfigured):
-                media_configuration(production=True, disabled=False)
+            self.assertEqual(media_configuration(production=True, disabled=False), "filesystem")
         configured = {**base, "MEDIA_STORAGE_BACKEND": "imagekit", **{
             key: value for key, value in REMOTE_SETTINGS.items() if isinstance(value, str)}}
         with patch.dict(os.environ, configured, clear=True):

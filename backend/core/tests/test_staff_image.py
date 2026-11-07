@@ -102,6 +102,7 @@ class RemoveStaffImageTests(GasBookTestCase):
         self.assertIsNone(response.json()["staff_image_url"])
 
         old_path = self.give_image(self.staff_a_profile, name="before.png")
+        old_name = self.staff_a_profile.image.name
         upload = SimpleUploadedFile("after.png", PNG_BYTES, content_type="image/png")
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.patch(f"/api/auth/users/{self.staff_a.pk}/", {"image": upload}, format="multipart")
@@ -109,10 +110,12 @@ class RemoveStaffImageTests(GasBookTestCase):
         self.assertEqual(response.status_code, 200, response.data)
         url = response.json()["staff_image_url"]
         self.assertIsNotNone(url)
-        self.assertIn("after", url)
         self.assertFalse(os.path.exists(old_path))
         self.staff_a_profile.refresh_from_db()
-        self.assertIn("after", self.staff_a_profile.image.name)
+        new_name = self.staff_a_profile.image.name
+        self.assertNotEqual(new_name, old_name)
+        self.assertTrue(url.endswith("/media/" + new_name))
+        self.assertNotIn("after", new_name)
 
     def test_remove_is_admin_only(self):
         self.give_image(self.staff_a_profile, name="guarded.png")

@@ -50,10 +50,12 @@ class DemoAdminConfigurationTests(SimpleTestCase):
             self.assertTrue(self.config(accessories_enabled=True))
             for key, value in (
                 ("production", False), ("debug", True), ("hosts", ["real-business.example.com"]),
-                ("uploads_disabled", False),
             ):
                 with self.subTest(setting=key), self.assertRaises(ImproperlyConfigured):
                     self.config(**{key: value})
+            self.assertTrue(self.config(uploads_disabled=False))
+            with patch.dict(os.environ, {"MEDIA_STORAGE_BACKEND": "unknown"}), self.assertRaises(ImproperlyConfigured):
+                self.config(uploads_disabled=False)
             for database in (
                 {"NAME": "other"}, {"NAME": "gasbook_qa"}, {"ENGINE": "django.db.backends.sqlite3"},
                 {"HOST": "ep-another.neon.tech"}, {"HOST": "ep-calm-shape-b3nzc13z.attacker.example"},
@@ -301,7 +303,7 @@ class AdminLoginLimiterTests(SimpleTestCase):
 
 @override_settings(
     PRODUCTION=True, DEMO_DJANGO_ADMIN_ENABLED=True, SECURE_SSL_REDIRECT=True,
-    SESSION_COOKIE_SECURE=True, CSRF_COOKIE_SECURE=True,
+    SESSION_COOKIE_SECURE=True, CSRF_COOKIE_SECURE=True, MEDIA_STORAGE_BACKEND="disabled",
     PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"],
     STORAGES={
         "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},

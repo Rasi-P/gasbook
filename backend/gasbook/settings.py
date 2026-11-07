@@ -144,12 +144,14 @@ MEDIA_ENCRYPTION_KEY = os.environ.get("MEDIA_ENCRYPTION_KEY", "")
 STORAGES = {
     "default": {"BACKEND": {
         "disabled": "core.demo_media.DisabledMediaStorage",
-        "filesystem": "django.core.files.storage.FileSystemStorage",
+        "filesystem": "core.media_filesystem.MediaFileSystemStorage",
         "imagekit": "core.media_storage.ImageKitStorage",
     }[MEDIA_STORAGE_BACKEND]},
     "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
 }
 MEDIA_URL = "/media/"
+# Without this, an unmounted production disk would silently fall back to the ephemeral container filesystem.
+MEDIA_REQUIRE_MOUNT = boolean("MEDIA_REQUIRE_MOUNT", True)
 MEDIA_ROOT = "" if MEDIA_STORAGE_BACKEND != "filesystem" else (
     production_media_root() if PRODUCTION else Path(os.environ.get("MEDIA_ROOT", BASE_DIR / "media"))
 )
