@@ -1,0 +1,229 @@
+Minimal Product & Inventory implementation
+
+SCOPE
+One Products & Inventory admin page, one Accessories tab alongside the existing
+cylinder catalog, mixed items in the existing cart/checkout, and item details in
+the existing booking/delivery/history/receipt screens. No service appointments,
+technicians, separate commerce orders, accessory checkout, separate payments,
+returns system, suppliers, warehouses or additional dashboards.
+
+CLEANUP / PRESERVATION
+Both main working trees were clean on arrival: the user had already removed the
+previous commerce UI, endpoints and implementation files. No working changes
+were discarded. Existing Booking, Delivery, Sale, Payment, Direct Sale, cylinder
+pricing/stock, cancellation/refund and staff-ownership rules remain in place.
+Cylinder-only customer checkout retains its existing behavior.
+
+The database inspection contradicted the prompt: core.0014_commerce_catalog_orders
+was ALREADY APPLIED in development (database gasbook, db:5432 inside
+gasbook-backend-1). Its source had been deleted. The original Migration operations
+and dependency were recovered from its surviving Python bytecode and serialized
+with Django MigrationWriter. They were not replaced by a different 0014 schema.
+The old commerce order, line and service tables were empty at inspection.
+
+MIGRATION (GENERATED, NOT APPLIED TO DEVELOPMENT)
+0015_minimal_booking_inventory depends on the restored 0014. It adds BookingItem
+and a nullable booking reference on ProductMovement. A state-only operation retires
+CommerceOrder, CommerceLine, ServiceOffering and the movement's old order relation
+from the active Django models. Existing tables, columns and historical migrations
+are retained physically. There is no historical transaction backfill or repricing.
+A read-only migration guard refuses retirement if old commerce orders/lines exist.
+
+Product, ProductCategory and ProductMovement reuse the existing 0014 tables.
+Category is entered as simple text on the product form, without a category module.
+SKU and old threshold columns remain compatible with the existing schema but add
+no new UI/workflow. BookingItem snapshots preserve names, item type/reference,
+quantity, rate, amounts and cylinder deposit/refill components. The first cylinder
+line owns the unique checkout retry reference; no Booking/Sale schema is duplicated.
+
+API
+GET/POST /api/products/
+GET/PATCH /api/products/:id/
+POST /api/products/:id/stock/ — +1, -1 or explicit quantity, reason, retry UUID
+GET /api/products/:id/movements/ — admin-only paginated audit history
+POST /api/bookings/preview/ — existing endpoint extended for accessory IDs
+POST /api/bookings/checkout/ — creates ONE ordinary mixed Booking atomically
+Existing booking, delivery, staff history, customer history, customer ledger,
+Sale serialization and /api/receipts/booking/:id/ now include saved accessory lines.
+Existing assignment, acceptance, decline, start, completion and rejection routes
+remain the lifecycle. There is no new staff order queue.
+
+PRICING / FINANCIALS
+New cylinder = (configured deposit + configured/customer-agreed refill) × quantity,
+minus existing authorized discounts on the refill component only.
+Refill = configured/customer-agreed refill × quantity minus existing discounts;
+no deposit. Accessory = configured selling price × quantity; no cylinder discount.
+One combined Booking total is the sum of saved net lines. Signed customer-bound
+previews require review again if configured prices change before confirmation.
+Client-supplied prices/totals and duplicate lines are rejected.
+Delivery preserves snapshots and creates one existing Sale/payment set. Only real
+cylinder lines create SaleItems; accessory amounts stay on BookingItems. Reports,
+customer balances and financial integrity count the combined Sale exactly once.
+Existing Direct Sale void/refund rules remain unchanged; booking sales retain their
+existing prohibition on direct-sale voiding. No new return/refund workflow was added.
+
+STOCK
+On-hand stock is displayed to admins; customer responses expose only availability.
+Checkout reserves accessories under sorted PostgreSQL row locks. Completion reduces
+on-hand and reserved amounts together. Admin rejection releases reservations.
+Staff decline preserves reservations while the booking awaits reassignment.
+Admin adjustments cannot reduce on-hand below reserved quantities or below zero.
+Retry keys and locked terminal booking transitions prevent duplicate orders,
+adjustments, deductions and releases. Each stock change records actor, source,
+reason, timestamp and before/after balances. Cylinders still use their existing
+location-specific filled/empty stock. Mixed cylinder types collect empty returns
+separately within the existing delivery form.
+
+UI
+Admin: compact inventory table with image, type, price, stock +/- controls, explicit
+quantity setting, edit/activate, and stock movements on the same page. Cylinder
+stock/rates stay in their existing controls.
+Customer: All Products / Gas Cylinders / Accessories with dynamic counts; images,
+description, quantity and availability. Existing mobile/desktop cart and checkout
+are extended. Accessories require a cylinder in the same booking.
+Staff/admin/customer: shared saved-line components in existing detail/history
+screens. The existing receipt template and PDF path include the same saved lines.
+
+DEVELOPMENT DEMO DATA
+Five [DEMO] accessories were added to the positively verified development database:
+regulator, two-burner stove, LPG hose, hose clips and replacement burner. Each has
+an illustrative price/stock, a bundled generated PNG and an initial stock movement
+attributed to the existing admin. Existing products/customer/business rows were
+not modified. Images were opened and verified after seeding. No migration ran.
+
+Repeatable command, from gasbook:
+  docker exec -e GASBOOK_ENV=development gasbook-backend-1 python manage.py seed_accessories --database-name gasbook --actor admin
+It skips existing DEMO SKUs, requires DEBUG=True, an exact database-name match,
+a local development target and an existing active admin, and refuses QA. It supports
+the already-applied 0014 catalog columns as well as 0015; it never migrates.
+Image source files and exact prompts: backend/core/demo_products/IMAGES.txt.
+Built-in imagegen generated the five PNGs, copied into core/demo_products;
+runtime copies are under backend/media/product-images (gitignored).
+
+ACTIVATION / LIMITS
+0015 has NOT been applied to development. ACCESSORIES_ENABLED remains false until
+migration approval/application and feature activation. Demo rows already exist,
+but the new booking feature is not enabled on the running development backend.
+Compose startup no longer implicitly migrates or seeds; no service was restarted.
+Accessories are sold with a cylinder booking only. Fulfilment remains whole-booking.
+No automatic reservation expiry or post-delivery returns workflow was introduced.
+The retired commerce tables intentionally remain, preserving applied history.
+
+TEST COMMANDS
+From gasbook/backend, use gasbook.test_inventory_settings, which ignores the normal
+DATABASE_URL and permits only SQLite memory or a localhost inventory_test database:
+  INVENTORY_TEST_DATABASE_URL=postgres://postgres:<test-password>@127.0.0.1:55439/inventory_test .venv/bin/python manage.py test core.tests --settings=gasbook.test_inventory_settings --noinput
+The opt-in browser test requires production previews on 5192 (customer) and 5193
+(admin/staff), then the same command with RUN_INVENTORY_BROWSER=1 and test label
+core.tests.test_product_browser. Every API request is routed to Django's disposable
+live test server, never development. No browser/API dependency was added.
+
+Two pre-existing test fixtures had stale trusted refill rates; their fixture rates
+now match their submitted/expected rates. The 0012 refusal test wraps its rollback
+attempt in a transaction to preserve later test migrations on rejection. Production
+0012 and all existing pricing/void logic were not changed by those test corrections.
+
+VALIDATION RESULTS
+Full PostgreSQL backend suite: 449 discovered, 448 passed, 1 opt-in browser test
+skipped in that run. Includes 19 product/business tests, 5 real concurrency tests
+and existing cylinder booking, delivery, payment, pricing, Direct Sale, cancellation,
+refund, financial integrity and migration regressions.
+Separate live browser acceptance: 1 passed, using actual disposable backend data.
+Admin product create/edit/image/+/-/set, customer catalog images/counts, combined
+checkout, existing assignment and staff completion, customer/staff history and
+real PDF download were exercised. Responsive checks passed at 320, 375, 390, 414,
+768, 1024 and 1280 pixels; representative screenshots were visually reviewed.
+A transient macOS live-test-server socket-buffer error interrupted one image GET;
+the test now retries failed image GETs at most twice, never booking/stock mutations.
+The final live browser run passed.
+Existing receipt Playwright regressions: 5 passed.
+Customer unit/PDF tests: 54 passed. Admin/staff frontend tests: 17 passed.
+Both TypeScript/Vite production builds passed. Existing bundle-size warnings remain.
+Customer lint: no errors, two existing tracking-effect warnings.
+New admin files: lint passed. Full admin lint retains 19 errors and 3 warnings,
+confirmed against HEAD; no new lint findings. Django check, migration/model drift
+check and git diff --check passed.
+Seed tests: repeatability, real local image files, environment refusal and compatibility
+with the applied 0014 catalog passed. Five development demo image files were verified.
+
+FINAL SAFETY STATE
+Both repositories remain on main with uncommitted changes. No commit, push or
+deployment. No development migrations applied or reversed. No QA modifications.
+Only the five explicitly requested development DEMO products, their categories as
+needed, their images and initial stock movements were added; existing records were
+not altered. Temporary test database and frontend previews were stopped after testing.
+
+EXACT CHANGED FILES — gasbook
+.gitignore
+PRODUCT_INVENTORY_PLAN.txt
+PRODUCT_INVENTORY_REPORT.txt
+backend/.env.example
+backend/core/booking_items.py
+backend/core/demo_products/IMAGES.txt
+backend/core/demo_products/burner.png
+backend/core/demo_products/clips.png
+backend/core/demo_products/hose.png
+backend/core/demo_products/regulator.png
+backend/core/demo_products/stove.png
+backend/core/integrity.py
+backend/core/management/commands/seed_accessories.py
+backend/core/migrations/0014_commerce_catalog_orders.py
+backend/core/migrations/0015_minimal_booking_inventory.py
+backend/core/models.py
+backend/core/product_models.py
+backend/core/products.py
+backend/core/receipts.py
+backend/core/serializers.py
+backend/core/tests/test_migration_0012_guard.py
+backend/core/tests/test_product_browser.py
+backend/core/tests/test_product_concurrency.py
+backend/core/tests/test_products.py
+backend/core/tests/test_void_concurrency.py
+backend/core/urls.py
+backend/core/views.py
+backend/gasbook/settings.py
+backend/gasbook/test_inventory_settings.py
+docker-compose.dev.yml
+docker-compose.yml
+frontend/src/App.tsx
+frontend/src/components/BookingItems.tsx
+frontend/src/components/SaleItemsCell.tsx
+frontend/src/components/layout/AppShell.tsx
+frontend/src/pages/Customers.tsx
+frontend/src/pages/Sales.tsx
+frontend/src/pages/admin/AdminBookings.tsx
+frontend/src/pages/admin/ProductInventory.tsx
+frontend/src/pages/admin/Reports.tsx
+frontend/src/pages/admin/StaffHistory.tsx
+frontend/src/pages/staff/StaffMobileLayout.tsx
+frontend/src/styles/products.css
+frontend/tests/products.test.tsx
+
+EXACT CHANGED FILES — gasbook-customer
+e2e/products-live.mjs
+src/components/common/AccessoryCatalog.tsx
+src/components/common/BookingItems.tsx
+src/components/common/CartPricing.tsx
+src/components/desktop/DesktopCartView.tsx
+src/components/desktop/DesktopCheckoutView.tsx
+src/components/desktop/DesktopExploreView.tsx
+src/components/desktop/DesktopOrderSuccessView.tsx
+src/components/desktop/DesktopOrdersView.tsx
+src/components/desktop/DesktopTrackOrderView.tsx
+src/components/receipt/ReceiptDocument.tsx
+src/components/views/CartView.tsx
+src/components/views/CheckoutView.tsx
+src/components/views/ExploreView.tsx
+src/components/views/HomeScreen.tsx
+src/components/views/OrderSuccessView.tsx
+src/components/views/OrdersView.tsx
+src/components/views/TrackOrderView.tsx
+src/hooks/useAccessories.ts
+src/lib/auth.ts
+src/lib/pricing.ts
+src/lib/products.ts
+src/lib/uiState.ts
+src/styles/accessories.css
+src/types/index.ts
+tests/products.test.tsx
+tests/receipt.test.tsx

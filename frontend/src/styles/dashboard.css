@@ -1,0 +1,253 @@
+/*
+ * Dashboard page layout (pages/admin/Dashboard.tsx).
+ * Only grid/tile/bar composition lives here; cards, stat cards, badges, tables and buttons come from the primitives.
+ */
+.dash-stats {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: var(--space-6);
+}
+
+.dash-section {
+  margin-bottom: var(--space-6);
+}
+
+.dash-grid-2,
+.dash-grid-3 {
+  display: grid;
+  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Tiles below the readiness bar */
+.dash-tiles--spaced {
+  margin-top: var(--space-4);
+}
+
+/* Refresh-failed warning: a comfortable target for its Retry link, text kept aligned */
+.dash-alert .ui-btn--link {
+  margin-inline: calc(-1 * var(--space-2));
+  min-height: 32px;
+  padding-inline: var(--space-2);
+}
+
+/*
+ * Amounts in stat cards and tiles may wrap at the space after "Rs." but never inside the number.
+ * Long amounts (.dash-value--long, 13+ characters) also shrink with their card's width (cqi units;
+ * browsers without them keep the normal size).
+ */
+.dash-stats .ui-stat,
+.dash-section .ui-tile {
+  container-type: inline-size;
+}
+
+.dash-stats .ui-stat__value,
+.dash-section .ui-tile__value {
+  overflow-wrap: normal;
+  white-space: normal;
+}
+
+.dash-stats .ui-stat.dash-value--long .ui-stat__value {
+  font-size: min(var(--text-3xl), 9.5cqi);
+}
+
+.dash-section .ui-tile.dash-value--long .ui-tile__value {
+  font-size: min(var(--text-xl), 13cqi);
+}
+
+/* Horizontal bars (locations, top types, readiness) */
+.dash-bars {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.dash-bar {
+  display: grid;
+  gap: 6px;
+}
+
+.dash-bar__row {
+  align-items: baseline;
+  display: flex;
+  font-size: var(--text-sm);
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.dash-bar__label {
+  color: var(--text-body);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-bar__value {
+  color: var(--text);
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--weight-semibold);
+}
+
+.dash-bar__value small {
+  color: var(--text-secondary);
+  font-weight: var(--weight-regular);
+}
+
+.dash-bar__track {
+  background: var(--border);
+  border-radius: var(--radius-full);
+  height: 6px;
+  overflow: hidden;
+}
+
+.dash-bar__fill {
+  background: var(--primary);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+/* A zero value shows an empty track, not a sliver */
+.dash-bar__fill--zero {
+  min-width: 0;
+}
+
+/* Quick actions: full-width buttons, one per row */
+.dash-actions {
+  display: grid;
+  gap: var(--space-3);
+}
+
+@media (max-width: 679px) {
+  .dash-stats .ui-stat.dash-value--long .ui-stat__value {
+    font-size: min(var(--text-2xl), 13cqi);
+  }
+}
+
+/* One card per row: the icon goes back to the corner, so each card is shorter */
+@media (max-width: 359px) {
+  .dash-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dash-stats .ui-stat__icon {
+    margin-bottom: 0;
+    position: absolute;
+  }
+
+  .dash-stats .ui-stat__label,
+  .dash-stats .ui-stat__value,
+  .dash-stats .ui-stat__hint {
+    padding-right: 44px;
+  }
+}
+
+@media (min-width: 680px) {
+  .dash-grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-grid-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dash-grid-3 > :nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  /* The full-width cylinder-types card lays its bars out in two columns */
+  .dash-grid-3 > :nth-child(3) .dash-bars {
+    column-gap: var(--space-8);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .dash-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .dash-grid-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .dash-grid-3 > :nth-child(3) {
+    grid-column: auto;
+  }
+
+  .dash-grid-3 > :nth-child(3) .dash-bars {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Readiness takes two thirds, quick actions one third */
+  .dash-grid-2--wide-first {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 1440px) {
+  .dash-stats .ui-stat.dash-value--long .ui-stat__value {
+    font-size: min(var(--text-4xl), 9.5cqi);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-bar__fill {
+    transition: none;
+  }
+}
+
+/* Phones: Live stock fits the card width (no sideways scroll, no sticky column to fall out of line). */
+@media (max-width: 679px) {
+  .ui-table.dash-stock-table {
+    min-width: 0;
+    table-layout: fixed;
+    width: 100%;
+  }
+
+  .dash-stock-table th,
+  .dash-stock-table td {
+    font-size: var(--text-sm);
+    overflow-wrap: break-word;
+    padding: 10px 4px;
+    vertical-align: middle;
+    white-space: normal;
+  }
+
+  .dash-stock-table th {
+    font-size: 9px;
+    letter-spacing: 0;
+    line-height: 1.25;
+    overflow-wrap: normal;
+    padding-inline: 2px;
+  }
+
+  .dash-stock-table th:first-child { padding-left: 12px; }
+  .dash-stock-table th:last-child { padding-right: 14px; }
+
+  .dash-stock-table th:nth-child(1) { width: 27%; }
+  .dash-stock-table th:nth-child(2),
+  .dash-stock-table th:nth-child(3) { width: 18%; }
+  .dash-stock-table th:nth-child(4) { width: 20%; }
+  .dash-stock-table th:nth-child(5) { width: 17%; }
+
+  .dash-stock-table td:nth-child(2),
+  .dash-stock-table td:nth-child(3) { font-size: 13px; white-space: nowrap; }
+
+  .dash-stock-table th:first-child,
+  .dash-stock-table td:first-child {
+    padding-left: 12px;
+    position: static;
+  }
+
+  .dash-stock-table td:first-child { font-size: 12px; }
+
+  .dash-stock-table th:last-child,
+  .dash-stock-table td:last-child {
+    padding-right: 14px;
+  }
+}

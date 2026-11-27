@@ -1,8 +1,20 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, changePassword, getRoleHome } from '../lib/api';
-import sabcoLogo from '../assets/sabco_logo.png';
 import { Eye, EyeOff, Lock, ShieldCheck } from 'lucide-react';
+import { AuthHeader, AuthLayout } from '../components/AuthLayout';
+import { Alert } from '../components/ui/Alert';
+import { Button } from '../components/ui/Button';
+import { Field, Input } from '../components/ui/Field';
+import { IconButton } from '../components/ui/IconButton';
+
+function PasswordToggle({ shown, onToggle }: { shown: boolean; onToggle: () => void }) {
+  return (
+    <IconButton type="button" size="sm" label={shown ? 'Hide password' : 'Show password'} onClick={onToggle}>
+      {shown ? <EyeOff size={18} /> : <Eye size={18} />}
+    </IconButton>
+  );
+}
 
 export default function ChangePassword() {
   const [currentPassword, setCurrentPassword] = useState('');
@@ -49,106 +61,78 @@ export default function ChangePassword() {
 
   if (isSuccess) {
     return (
-      <div className="legacy-auth-shell" style={{ alignItems: 'center', justifyContent: 'center' }}>
-        <div className="login-screen" style={{ justifyContent: 'center', alignItems: 'center', padding: '40px 24px', textAlign: 'center' }}>
-          <div style={{ width: 100, height: 100, borderRadius: '50%', background: '#eff6ff', border: '1px solid #bfdbfe', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 24px', color: '#0f55d8' }}>
-            <ShieldCheck size={52} />
-          </div>
-          <h2 style={{ fontSize: 22, fontWeight: 800, color: '#0f172a', margin: '0 0 8px' }}>Password Updated Successfully</h2>
-          <p style={{ fontSize: 14, color: '#64748b', marginBottom: 32 }}>Your password has been changed successfully.</p>
-          <button type="button" className="btn-primary" style={{ width: '100%' }} onClick={handleContinue}>
+      <AuthLayout>
+        <div className="auth-success">
+          <span className="auth-success__icon" aria-hidden="true">
+            <ShieldCheck size={40} />
+          </span>
+          <AuthHeader title="Password Updated Successfully" subtitle="Your password has been changed successfully." />
+          <Button type="button" size="lg" block onClick={handleContinue}>
             CONTINUE
-          </button>
+          </Button>
         </div>
-      </div>
+      </AuthLayout>
     );
   }
 
   return (
-    <div className="legacy-auth-shell">
-      <div className="login-screen">
-        <div className="login-header">
-          <img src={sabcoLogo} className="login-brand-logo" alt="Sabco logo" />
-        </div>
+    <AuthLayout>
+      <AuthHeader title={<>Welcome {userName} 👋</>} subtitle="Please change your password to continue" />
 
-        <div className="login-card">
-          <div className="login-card-header">
-            <h2>Welcome {userName} 👋</h2>
-            <p>Please change your password to continue</p>
-          </div>
+      <form className="auth-form" onSubmit={handleSubmit}>
+        <Field label="Current Password" htmlFor="current-password">
+          <Input
+            id="current-password"
+            type={showCurrent ? 'text' : 'password'}
+            placeholder="Current Password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+            leadingIcon={<Lock size={18} />}
+            trailing={<PasswordToggle shown={showCurrent} onToggle={() => setShowCurrent(!showCurrent)} />}
+          />
+        </Field>
 
-          <form className="login-form" onSubmit={handleSubmit}>
-            <div className="form-group">
-              <label htmlFor="current-password">Current Password</label>
-              <div className="input-wrapper">
-                <Lock className="field-icon" size={20} />
-                <input
-                  id="current-password"
-                  type={showCurrent ? 'text' : 'password'}
-                  placeholder="Current Password"
-                  value={currentPassword}
-                  onChange={(e) => setCurrentPassword(e.target.value)}
-                  autoComplete="current-password"
-                  required
-                />
-                <button type="button" className="password-toggle" onClick={() => setShowCurrent(!showCurrent)}>
-                  {showCurrent ? <EyeOff size={20} /> : <Eye size={20} />}
-                </button>
-              </div>
-            </div>
+        <Field label="New Password" htmlFor="new-password">
+          <Input
+            id="new-password"
+            type={showNew ? 'text' : 'password'}
+            placeholder="New Password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+            leadingIcon={<Lock size={18} />}
+            trailing={<PasswordToggle shown={showNew} onToggle={() => setShowNew(!showNew)} />}
+          />
+        </Field>
 
-            <div className="form-group">
-              <label htmlFor="new-password">New Password</label>
-              <div className="input-wrapper">
-                <Lock className="field-icon" size={20} />
-                <input
-                  id="new-password"
-                  type={showNew ? 'text' : 'password'}
-                  placeholder="New Password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  autoComplete="new-password"
-                  required
-                />
-                <button type="button" className="password-toggle" onClick={() => setShowNew(!showNew)}>
-                  {showNew ? <EyeOff size={20} /> : <Eye size={20} />}
-                </button>
-              </div>
-            </div>
+        <Field label="Confirm Password" htmlFor="confirm-password">
+          <Input
+            id="confirm-password"
+            type={showConfirm ? 'text' : 'password'}
+            placeholder="Confirm Password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+            leadingIcon={<Lock size={18} />}
+            trailing={<PasswordToggle shown={showConfirm} onToggle={() => setShowConfirm(!showConfirm)} />}
+          />
+        </Field>
 
-            <div className="form-group">
-              <label htmlFor="confirm-password">Confirm Password</label>
-              <div className="input-wrapper">
-                <Lock className="field-icon" size={20} />
-                <input
-                  id="confirm-password"
-                  type={showConfirm ? 'text' : 'password'}
-                  placeholder="Confirm Password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  autoComplete="new-password"
-                  required
-                />
-                <button type="button" className="password-toggle" onClick={() => setShowConfirm(!showConfirm)}>
-                  {showConfirm ? <EyeOff size={20} /> : <Eye size={20} />}
-                </button>
-              </div>
-            </div>
+        <ul className="auth-hints">
+          <li>At least 8 characters</li>
+          <li>Include number &amp; symbol</li>
+        </ul>
 
-            <ul className="password-hints">
-              <li>At least 8 characters</li>
-              <li>Include number &amp; symbol</li>
-            </ul>
+        {error ? <Alert tone="danger" compact>{error}</Alert> : null}
 
-            {error ? <p className="form-feedback form-feedback--error">{error}</p> : null}
-
-            <button type="submit" className="btn-primary" disabled={saving}>
-              {saving ? 'SAVING...' : 'SAVE PASSWORD'}
-            </button>
-          </form>
-        </div>
-      </div>
-    </div>
+        <Button type="submit" size="lg" block disabled={saving} loading={saving}>
+          {saving ? 'SAVING...' : 'SAVE PASSWORD'}
+        </Button>
+      </form>
+    </AuthLayout>
   );
 }
-

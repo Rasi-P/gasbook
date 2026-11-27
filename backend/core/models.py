@@ -1,20 +1,17 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, UserManager
+from django.core.exceptions import PermissionDenied
 from django.db import models
+
+from .tenancy import (
+    PLATFORM_ROLE, TenantManager, TenantQuerySet, assert_writable, current_tenant_id, tenant_for_new_row,
+)
 
 
 def quantize_money(value):
     return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
-class User(AbstractUser):
-    role = models.ForeignKey("Role", on_delete=models.PROTECT, null=True, blank=True, related_name="users")
-    plain_password = models.CharField(max_length=128, blank=True, default="")
-    must_change_password = models.BooleanField(default=False)
-    phone = models.CharField(max_length=20, blank=True)
-    address = models.TextField(blank=True)
 
 
 class TimeStampedModel(models.Model):
@@ -23,6 +20,97 @@ class TimeStampedModel(models.Model):
 
     class Meta:
         abstract = True
+
+
+class Tenant(TimeStampedModel):
+    """One gas agency. All business data belongs to exactly one tenant."""
+
+    name = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=50, unique=True)
+    is_active = models.BooleanField(default=True)
+    # Printed on customer receipts; blank fields are left off.
+    address = models.CharField(max_length=300, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    email = models.EmailField(blank=True)
+    tax_id = models.CharField(max_length=30, blank=True)
+
+    objects = models.Manager()
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def is_default(self):
+        return self.slug == settings.DEFAULT_TENANT_SLUG
+
+    def receipt_details(self):
+        """Business block for receipts. The original agency falls back to the RECEIPT_BUSINESS_*
+        settings it used before tenants existed, so an existing deployment keeps its details."""
+        details = {"name": self.name}
+        fallback = settings.RECEIPT_BUSINESS_DETAILS if self.is_default else {}
+        for key in ("address", "phone", "email", "tax_id"):
+            value = getattr(self, key) or fallback.get(key, "")
+            if value:
+                details[key] = value
+        return details
+
+
+class TenantModel(TimeStampedModel):
+    """Base for tenant-owned rows: ``objects`` is scoped to the current tenant (see tenancy.py)."""
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, related_name="+", editable=False)
+
+    objects = TenantManager()
+
+    class Meta:
+        abstract = True
+
+    @classmethod
+    def all_rows(cls):
+        """Every tenant's rows. For platform tooling and tests only; request code uses ``objects``."""
+        return cls._base_manager.all()
+
+    def save(self, *args, **kwargs):
+        if self.tenant_id is None:
+            self.tenant_id = tenant_for_new_row()
+        assert_writable(self.tenant_id)
+        super().save(*args, **kwargs)
+
+
+class TenantUserManager(UserManager.from_queryset(TenantQuerySet)):
+    def get_queryset(self):
+        return super().get_queryset()._scoped()
+
+
+class User(AbstractUser):
+    # Null only for platform admins, who belong to no agency.
+    tenant = models.ForeignKey(Tenant, on_delete=models.PROTECT, null=True, blank=True, related_name="users")
+    role = models.ForeignKey("Role", on_delete=models.PROTECT, null=True, blank=True, related_name="users")
+    plain_password = models.CharField(max_length=128, blank=True, default="")
+    must_change_password = models.BooleanField(default=False)
+    phone = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
+
+    objects = TenantUserManager()
+    # Login, username uniqueness and platform tooling need every account regardless of tenant.
+    all_tenants = UserManager()
+
+    @property
+    def is_platform_admin(self):
+        return self.tenant_id is None and getattr(self.role, "code", "") == PLATFORM_ROLE
+
+    def save(self, *args, **kwargs):
+        is_platform_role = getattr(self.role, "code", "") == PLATFORM_ROLE
+        if is_platform_role and current_tenant_id() is not None:
+            raise PermissionDenied("Agency users cannot create or become platform admins.")
+        if self.tenant_id is None and not is_platform_role:
+            self.tenant_id = tenant_for_new_row()
+        if self.tenant_id is not None:
+            assert_writable(self.tenant_id)
+        super().save(*args, **kwargs)
 
 
 class Role(TimeStampedModel):
@@ -35,7 +123,7 @@ class Role(TimeStampedModel):
         return self.name
 
 
-class CylinderType(TimeStampedModel):
+class CylinderType(TenantModel):
     name = models.CharField(max_length=80)
     weight = models.DecimalField(max_digits=5, decimal_places=2)
     selling_price = models.DecimalField(max_digits=10, decimal_places=2)
@@ -43,8 +131,7 @@ class CylinderType(TimeStampedModel):
     refill_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     low_stock_threshold = models.PositiveIntegerField(default=5)
     is_active = models.BooleanField(default=True)
-
-    objects = models.Manager()
+    image = models.ImageField(upload_to="cylinder-images/", null=True, blank=True)
 
     class Meta:
         ordering = ["weight", "name"]
@@ -53,22 +140,21 @@ class CylinderType(TimeStampedModel):
         return self.name
 
 
-class StockLocation(TimeStampedModel):
+class StockLocation(TenantModel):
     name = models.CharField(max_length=80)
-    code = models.SlugField(max_length=40, unique=True)
+    code = models.SlugField(max_length=40)
     is_main_supplier = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
-    
-    objects = models.Manager()
 
     class Meta:
         ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["tenant", "code"], name="stocklocation_code_per_tenant")]
 
     def __str__(self):
         return self.name
 
 
-class Stock(TimeStampedModel):
+class Stock(TenantModel):
     class Status(models.TextChoices):
         FILLED = "filled", "Filled"
         EMPTY = "empty", "Empty"
@@ -78,8 +164,6 @@ class Stock(TimeStampedModel):
     status = models.CharField(max_length=10, choices=Status.choices)
     quantity = models.PositiveIntegerField(default=0)
     
-    objects = models.Manager()
-
     class Meta:
         unique_together = ("cylinder_type", "location", "status")
         ordering = ["location__name", "cylinder_type__weight", "status"]
@@ -88,7 +172,7 @@ class Stock(TimeStampedModel):
         return f"{self.location} - {self.cylinder_type} - {self.status}: {self.quantity}"
 
 
-class StockMovement(TimeStampedModel):
+class StockMovement(TenantModel):
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     from_location = models.ForeignKey(StockLocation, on_delete=models.PROTECT, related_name="outgoing_movements")
     to_location = models.ForeignKey(StockLocation, on_delete=models.PROTECT, related_name="incoming_movements")
@@ -97,13 +181,11 @@ class StockMovement(TimeStampedModel):
     moved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     note = models.CharField(max_length=200, blank=True)
 
-    objects = models.Manager()
-
     class Meta:
         ordering = ["-created_at"]
 
 
-class CustomerProfile(TimeStampedModel):
+class CustomerProfile(TenantModel):
     class DiscountType(models.TextChoices):
         PERCENTAGE = "percentage", "Percentage"
         FIXED = "fixed", "Fixed Amount"
@@ -119,8 +201,6 @@ class CustomerProfile(TimeStampedModel):
     global_discount_is_active = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     
-    objects = models.Manager()
-
     class Meta:
         ordering = ["user__username"]
 
@@ -133,7 +213,7 @@ class CustomerProfile(TimeStampedModel):
             custom = next((rate for rate in prefetched_rates if rate.cylinder_type_id == cylinder_type.id), None)
         else:
             custom = self.custom_rates.filter(cylinder_type=cylinder_type).first()
-        return custom.custom_price if custom else cylinder_type.selling_price
+        return custom.custom_price if custom else cylinder_type.refill_rate
 
     def get_active_discount_for_cylinder(self, cylinder_type):
         prefetched_discounts = getattr(self, "_prefetched_objects_cache", {}).get("cylinder_discounts")
@@ -204,23 +284,12 @@ class CustomerProfile(TimeStampedModel):
             "applied_discount_value": quantize_money(discount_value if has_discount else Decimal("0")),
         }
 
-    def calculate_booking_pricing(self, cylinder_type, quantity):
-        quantity_decimal = Decimal(quantity or 0)
-        base_rate = quantize_money(self.get_rate_for_cylinder(cylinder_type))
-        original_amount = quantize_money(base_rate * quantity_decimal)
-        pricing = self.calculate_discount_for_amount(original_amount, cylinder_type=cylinder_type)
-        pricing["rate"] = base_rate
-        pricing["quantity"] = int(quantity or 0)
-        pricing["effective_rate"] = (
-            quantize_money(pricing["final_amount"] / quantity_decimal)
-            if quantity_decimal > 0
-            else Decimal("0.00")
-        )
-        return pricing
+    def calculate_booking_pricing(self, cylinder_type, quantity, rate_type="refill"):
+        from .pricing import calculate_pricing
+        return calculate_pricing(self, cylinder_type, quantity, rate_type)
 
 
-class StaffProfile(TimeStampedModel):
-    objects = models.Manager()
+class StaffProfile(TenantModel):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="staff_profile")
     assigned_area = models.CharField(max_length=100, blank=True)
     vehicle_number = models.CharField(max_length=30, blank=True)
@@ -235,7 +304,7 @@ class StaffProfile(TimeStampedModel):
         return self.user.get_full_name() or self.user.username
 
 
-class Sale(TimeStampedModel):
+class Sale(TenantModel):
     class PaymentMode(models.TextChoices):
         CASH = "cash", "Cash"
         GPAY = "gpay", "GPay"
@@ -247,7 +316,7 @@ class Sale(TimeStampedModel):
         PICKUP = "pickup", "Pickup"
         DELIVERY = "delivery", "Home Delivery"
 
-    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="sales", null=True, blank=True)
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="sales", null=True, blank=True)
     location = models.ForeignKey(StockLocation, on_delete=models.PROTECT)
     original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -260,44 +329,145 @@ class Sale(TimeStampedModel):
     delivery_type = models.CharField(max_length=10, choices=DeliveryType.choices, default=DeliveryType.PICKUP)
     delivery_staff = models.CharField(max_length=80, blank=True)
     note = models.CharField(max_length=300, blank=True)
-    sold_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    
-    objects = models.Manager()
+    sold_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    # The staff member who physically handed the cylinders over, when known. Separate from
+    # sold_by (who recorded the sale) and from Payment.received_by (who took the money).
+    # delivery_staff keeps the name as text, as before.
+    handover_staff = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name="handover_sales"
+    )
+    # Idempotency key the client sends with each new sale: a retry with the same key returns
+    # the original sale instead of recording it twice. Null for sales made by completing a
+    # delivery and for sales made before the key existed.
+    client_ref = models.UUIDField(null=True, blank=True, unique=True, editable=False)
 
     class Meta:
         ordering = ["-created_at"]
 
 
-class SaleItem(TimeStampedModel):
+class SaleItem(TenantModel):
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="items")
+    # Null means a legacy transaction whose component breakdown was never recorded.
+    rate_type = models.CharField(max_length=10, choices=[("new", "New Cylinder"), ("refill", "Refill")], null=True, blank=True)
+    deposit_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    refill_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField()
     rate = models.DecimalField(max_digits=10, decimal_places=2)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     empty_returned = models.PositiveIntegerField(default=0)
 
-    objects = models.Manager()
-
     class Meta:
         ordering = ["id"]
 
 
-class Payment(TimeStampedModel):
-    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="payments")
+class Payment(TenantModel):
+    # The first receipt of one collection carries its retry key; historical rows stay null.
+    client_ref = models.UUIDField(null=True, blank=True, unique=True, editable=False)
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="payments")
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name="payments", null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     payment_mode = models.CharField(max_length=10, choices=Sale.PaymentMode.choices, default=Sale.PaymentMode.CASH)
-    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     note = models.CharField(max_length=200, blank=True)
     empty_collected = models.PositiveIntegerField(default=0)
-    
-    objects = models.Manager()
 
     class Meta:
         ordering = ["-created_at"]
 
 
-class Expense(TimeStampedModel):
+# A cancelled direct sale and what happens to its money. These three tables are insert-only:
+# the original sale, its lines and its payments are never edited or deleted. A voided sale
+# stays in its own day's gross sales; it no longer counts towards what the customer owes or
+# towards their empty cylinders. See services.void_sale and services.confirm_refund.
+class SaleVoid(TenantModel):
+    class Outcome(models.TextChoices):
+        NONE = "none", "Nothing was paid"
+        REFUND = "refund", "Refund"
+        CREDIT = "credit", "Customer credit"
+
+    sale = models.OneToOneField(Sale, on_delete=models.PROTECT, related_name="void")
+    reason = models.CharField(max_length=300)
+    outcome = models.CharField(max_length=10, choices=Outcome.choices)
+    # At the moment of the void: money the customer had paid on the sale, the unpaid balance
+    # that stops being due, and (refund outcome only) the money owed back to the customer.
+    paid_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    cancelled_balance = models.DecimalField(max_digits=10, decimal_places=2)
+    refund_due = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    voided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="sale_voids")
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(paid_amount__gte=0, cancelled_balance__gte=0, refund_due__gte=0),
+                name="salevoid_amounts_non_negative",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(outcome="none", paid_amount=0, refund_due=0)
+                    | models.Q(outcome="refund", paid_amount__gt=0, refund_due=models.F("paid_amount"))
+                    | models.Q(outcome="credit", paid_amount__gt=0, refund_due=0)
+                ),
+                name="salevoid_outcome_matches_amounts",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Void of sale #{self.sale_id} ({self.outcome})"
+
+
+class SaleRefund(TenantModel):
+    """The refund owed by a SaleVoid, actually paid back: once, in full."""
+
+    void = models.OneToOneField(SaleVoid, on_delete=models.PROTECT, related_name="refund")
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # Transaction reference per payment mode, e.g. {"gpay": "UTR…"}; cash may have none.
+    references = models.JSONField(default=dict, blank=True)
+    confirmed_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="sale_refunds")
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name="salerefund_amount_positive"),
+        ]
+
+    def __str__(self):
+        return f"Refund of Rs. {self.amount} for void #{self.void_id}"
+
+
+class PaymentReversal(TenantModel):
+    """Links an original payment to the negative payment that reverses it.
+
+    A credit outcome also links the unlinked positive payment that keeps the money as customer
+    credit; a refund links the SaleRefund instead. Each payment can be reversed once only.
+    """
+
+    original = models.OneToOneField(Payment, on_delete=models.PROTECT, related_name="reversal_link")
+    reversal = models.OneToOneField(Payment, on_delete=models.PROTECT, related_name="reverses_link")
+    credit = models.OneToOneField(Payment, on_delete=models.PROTECT, null=True, blank=True, related_name="credit_link")
+    sale_void = models.ForeignKey(SaleVoid, on_delete=models.PROTECT, related_name="payment_reversals")
+    sale_refund = models.ForeignKey(SaleRefund, on_delete=models.PROTECT, null=True, blank=True, related_name="payment_reversals")
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            # Either a refund (money paid back) or a credit (money kept for the customer), never both.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(sale_refund__isnull=False, credit__isnull=True)
+                    | models.Q(sale_refund__isnull=True, credit__isnull=False)
+                ),
+                name="paymentreversal_refund_xor_credit",
+            ),
+            models.CheckConstraint(condition=~models.Q(original=models.F("reversal")), name="paymentreversal_distinct_rows"),
+        ]
+
+    def __str__(self):
+        return f"Reversal of payment #{self.original_id} by #{self.reversal_id}"
+
+
+class Expense(TenantModel):
     class Category(models.TextChoices):
         FUEL = "fuel", "Fuel"
         SALARY = "salary", "Salary"
@@ -307,32 +477,26 @@ class Expense(TimeStampedModel):
     category = models.CharField(max_length=20, choices=Category.choices)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     note = models.CharField(max_length=200, blank=True)
-    spent_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-
-    objects = models.Manager()
+    spent_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
 
     class Meta:
         ordering = ["-created_at"]
 
 
-class ActivityLog(TimeStampedModel):
+class ActivityLog(TenantModel):
     action = models.CharField(max_length=80)
     description = models.CharField(max_length=255)
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     
-    objects = models.Manager()
-
     class Meta:
         ordering = ["-created_at"]
 
 
-class CustomerCylinderRate(TimeStampedModel):
+class CustomerCylinderRate(TenantModel):
     customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="custom_rates")
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.CASCADE)
     custom_price = models.DecimalField(max_digits=10, decimal_places=2)
-
-    objects = models.Manager()
 
     class Meta:
         unique_together = ("customer", "cylinder_type")
@@ -341,7 +505,7 @@ class CustomerCylinderRate(TimeStampedModel):
         return f"{self.customer} - {self.cylinder_type}: {self.custom_price}"
 
 
-class CustomerCylinderDiscount(TimeStampedModel):
+class CustomerCylinderDiscount(TenantModel):
     customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="cylinder_discounts")
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.CASCADE, related_name="customer_discounts")
     discount_type = models.CharField(max_length=20, choices=CustomerProfile.DiscountType.choices)
@@ -356,7 +520,7 @@ class CustomerCylinderDiscount(TimeStampedModel):
         return f"{self.customer} - {self.cylinder_type}: {self.discount_type} {self.discount_value}"
 
 
-class Booking(TimeStampedModel):
+class Booking(TenantModel):
     class Status(models.TextChoices):
         PENDING = "pending", "Pending Approval"
         APPROVED = "approved", "Approved"
@@ -366,9 +530,11 @@ class Booking(TimeStampedModel):
         DELIVERED = "delivered", "Delivered"
         CANCELLED = "cancelled", "Cancelled"
 
-    objects = models.Manager()
-
-    customer = models.ForeignKey(CustomerProfile, on_delete=models.CASCADE, related_name="bookings")
+    customer = models.ForeignKey(CustomerProfile, on_delete=models.PROTECT, related_name="bookings")
+    # Null means a legacy transaction whose component breakdown was never recorded.
+    rate_type = models.CharField(max_length=10, choices=[("new", "New Cylinder"), ("refill", "Refill")], null=True, blank=True)
+    deposit_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    refill_unit_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     cylinder_type = models.ForeignKey(CylinderType, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
     original_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -403,7 +569,7 @@ class Booking(TimeStampedModel):
         return f"GB{self.pk}"
 
 
-class Delivery(TimeStampedModel):
+class Delivery(TenantModel):
     class Status(models.TextChoices):
         ASSIGNED = "assigned", "Assigned"
         ACCEPTED = "accepted", "Accepted"
@@ -412,10 +578,8 @@ class Delivery(TimeStampedModel):
         DELIVERED = "delivered", "Delivered"
         CANCELLED = "cancelled", "Cancelled"
 
-    objects = models.Manager()
-
     booking = models.OneToOneField(Booking, on_delete=models.CASCADE, related_name="delivery")
-    staff = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="deliveries")
+    staff = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="deliveries")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ASSIGNED)
     rejection_reason = models.CharField(max_length=200, blank=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -432,7 +596,7 @@ class Delivery(TimeStampedModel):
         return f"Delivery #{self.pk} - {self.booking}"
 
 
-class Notification(TimeStampedModel):
+class Notification(TenantModel):
     recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="notifications")
     booking = models.ForeignKey(Booking, null=True, blank=True, on_delete=models.CASCADE, related_name="notifications")
     notification_type = models.CharField(max_length=50, blank=True, default="GENERAL")
@@ -440,7 +604,8 @@ class Notification(TimeStampedModel):
     body = models.CharField(max_length=300)
     is_read = models.BooleanField(default=False)
     
-    objects = models.Manager()
-
     class Meta:
         ordering = ["-created_at"]
+
+# Kept separate to keep accessory inventory out of cylinder stock accounting.
+from .product_models import ProductCategory, Product, ProductMovement, BookingItem, SaleAccessoryItem  # noqa: E402,F401

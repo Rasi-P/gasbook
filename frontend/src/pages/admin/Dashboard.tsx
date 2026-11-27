@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
-  ArrowRightCircle,
+  ArrowRight,
   Boxes,
-  CalendarDays,
   IndianRupee,
   PackageCheck,
   RefreshCw,
@@ -13,14 +12,33 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { api } from '../../lib/api';
+import { api, extractApiError } from '../../lib/api';
+import { ErrorState, InlineWarning } from '../../components/AsyncState';
+import { Badge } from '../../components/ui/Badge';
+import { Button } from '../../components/ui/Button';
+import { buttonClassName } from '../../components/ui/buttonClass';
+import { Card, CardHeader } from '../../components/ui/Card';
+import { EmptyState } from '../../components/ui/EmptyState';
+import { Select } from '../../components/ui/Field';
+import { PageHeader } from '../../components/ui/PageHeader';
+import { SectionHeader } from '../../components/ui/SectionHeader';
+import { SkeletonRows, SkeletonStatGrid, SkeletonText } from '../../components/ui/Skeleton';
+import { StatCard } from '../../components/ui/StatCard';
+import { FilledEmpty } from '../../components/FilledEmpty';
+import { Table, TableWrap, Td, Th } from '../../components/ui/Table';
 
 type DashboardData = {
   total_cylinders: number; filled_cylinders: number; empty_cylinders: number;
   shop_stock: number; kandam_stock: number;
+  /** Every stock location to show: active ones, plus any inactive one that still holds cylinders. */
+  locations: { id: number; code: string; name: string; is_active: boolean; stock: number }[];
   today_sales: number; today_collection: number; pending_payments: number;
+  today_cancelled?: number; today_net_sales?: number;
   low_stock: { cylinder_type: string; location: string; status: string; quantity: number; threshold: number }[];
-  stock_rows: { id: number; type: string; shop_filled: number; shop_empty: number; kandam_filled: number; kandam_empty: number; total: number; with_customers: number }[];
+  stock_rows: {
+    id: number; type: string; is_active?: boolean; total: number; with_customers: number;
+    locations: { id: number; code: string; name: string; is_active: boolean; filled: number; empty: number }[];
+  }[];
   recent_activity: { id: number; action: string; description: string; user_name: string }[];
 };
 
@@ -33,13 +51,22 @@ function percent(value: number, total: number) {
   return Math.min(100, Math.round((value / total) * 100));
 }
 
+/** Amounts of 13+ characters (Rs. 10 lakh and up) get a size that fits narrow cards; see dashboard.css. */
+function valueSize(value: ReactNode) {
+  return typeof value === 'string' && value.length >= 13 ? 'dash-value--long' : undefined;
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [error, setError] = useState('');
 
   const loadDashboard = useCallback(() => {
     api.get('/dashboard/')
-      .then((response: any) => setData(response.data))
-      .catch(() => undefined);
+      .then((response) => {
+        setData(response.data as DashboardData);
+        setError('');
+      })
+      .catch((err) => setError(extractApiError(err, [], 'Could not load the dashboard.')));
   }, []);
 
   useEffect(() => {
@@ -49,221 +76,239 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [loadDashboard]);
 
-  if (!data) return <p style={{ textAlign: 'center', padding: '40px' }}>Loading...</p>;
+  const header = (
+    <PageHeader
+      title="Overview"
+      description="Gas stock, sales, collections, and movement warnings in one place."
+      actions={(
+        <>
+          <Select aria-label="Branch filter" selectSize="sm">
+            <option>All Branches</option>
+            {(data?.locations ?? []).map((l) => <option key={l.id}>{l.name}</option>)}
+          </Select>
+          <Button type="button" variant="secondary" size="sm" icon={<RefreshCw />} onClick={loadDashboard}>
+            Refresh
+          </Button>
+        </>
+      )}
+    />
+  );
+
+  if (!data) {
+    if (error) {
+      return (
+        <div>
+          {header}
+          <ErrorState message={error} onRetry={loadDashboard} />
+        </div>
+      );
+    }
+    return (
+      <div>
+        {header}
+        <DashboardSkeleton />
+      </div>
+    );
+  }
 
   const filledPercent = percent(data.filled_cylinders, data.total_cylinders);
   const emptyPercent = percent(data.empty_cylinders, data.total_cylinders);
   const customerTotal = data.stock_rows.reduce((sum, item) => sum + item.with_customers, 0);
+  const lowStockCount = data.low_stock.length;
 
   return (
     <div>
-      <div className="page-title dashboard-title">
-        <div>
-          <h1>Overview</h1>
-          <p>Gas stock, sales, collections, and movement warnings in one place.</p>
-        </div>
-        <div className="dashboard-actions">
-          <select aria-label="Branch filter">
-            <option>All Branches</option>
-            <option>Main Shop</option>
-            <option>Kandam</option>
-          </select>
-          <button className="btn btn-compact" type="button" onClick={loadDashboard}>
-            <RefreshCw size={16} />
-            Refresh
-          </button>
-        </div>
-      </div>
+      {header}
 
-      <section className="stat-grid">
-        <div className="metric-card strong purple">
-          <IndianRupee />
-          <span>Today Sales</span>
-          <strong>{money(data.today_sales)}</strong>
-          <small>{money(data.today_collection)} collected</small>
+      {error && (
+        <div className="dash-alert">
+          <InlineWarning message={`Showing the last loaded data. Refresh failed: ${error}`} onRetry={loadDashboard} />
         </div>
-        <div className="metric-card blue">
-          <PackageCheck />
-          <span>Filled</span>
-          <strong>{data.filled_cylinders}</strong>
-          <small>{filledPercent}% of total cylinders</small>
-        </div>
-        <div className="metric-card green">
-          <Boxes />
-          <span>Empty</span>
-          <strong>{data.empty_cylinders}</strong>
-          <small>{emptyPercent}% ready to refill</small>
-        </div>
-        <div className="metric-card orange">
-          <AlertTriangle />
-          <span>Pending Payments</span>
-          <strong>{money(data.pending_payments)}</strong>
-          <small>{data.low_stock.length} stock warnings</small>
-        </div>
+      )}
+
+      <section className="dash-stats" aria-label="Key figures">
+        <StatCard
+          label="Today sales"
+          className={valueSize(money(data.today_sales))}
+          value={money(data.today_sales)}
+          hint={Number(data.today_cancelled) > 0
+            ? `${money(data.today_collection)} collected · ${money(data.today_cancelled ?? 0)} cancelled`
+            : `${money(data.today_collection)} collected`}
+          icon={<IndianRupee />}
+        />
+        <StatCard
+          label="Filled"
+          value={data.filled_cylinders}
+          hint={`${filledPercent}% of total cylinders`}
+          icon={<PackageCheck />}
+        />
+        <StatCard
+          label="Empty"
+          value={data.empty_cylinders}
+          hint={`${emptyPercent}% ready to refill`}
+          icon={<Boxes />}
+        />
+        <StatCard
+          label="Pending payments"
+          className={valueSize(money(data.pending_payments))}
+          value={money(data.pending_payments)}
+          hint={lowStockCount === 0 ? 'No stock warnings' : undefined}
+          attention={lowStockCount > 0 ? (
+            <Badge tone="warning">{lowStockCount} stock warning{lowStockCount === 1 ? '' : 's'}</Badge>
+          ) : undefined}
+          icon={<AlertTriangle />}
+        />
       </section>
 
-      <section className="dashboard-section">
-        <div className="section-kicker">
-          <ShoppingBag size={18} />
-          <div>
-            <h2>Stock overview</h2>
-            <p>Status mix and cylinder location breakdown</p>
-          </div>
-        </div>
+      <section className="dash-section">
+        <SectionHeader icon={<ShoppingBag />} title="Stock overview" description="Status mix and cylinder location breakdown" />
 
-        <div className="overview-grid">
-          <div className="card dashboard-card">
-            <div className="section-head">
-              <h2>Status breakdown</h2>
-              <span className="badge badge-success">{data.total_cylinders} total</span>
+        <div className="dash-grid-3">
+          <Card>
+            <CardHeader title="Status breakdown" meta={<Badge>{data.total_cylinders} total</Badge>} />
+            <div className="ui-tiles">
+              <Tile label="Filled" value={data.filled_cylinders} />
+              <Tile label="Empty" value={data.empty_cylinders} />
+              <Tile label="In locations" value={data.filled_cylinders + data.empty_cylinders} />
+              <Tile label="With customers" value={customerTotal} />
             </div>
-            <div className="status-grid">
-              <div className="status-tile green">
-                <span>Filled</span>
-                <strong>{data.filled_cylinders}</strong>
-              </div>
-              <div className="status-tile orange">
-                <span>Empty</span>
-                <strong>{data.empty_cylinders}</strong>
-              </div>
-              <div className="status-tile blue">
-                <span>At shop</span>
-                <strong>{data.shop_stock}</strong>
-              </div>
-              <div className="status-tile purple">
-                <span>With customers</span>
-                <strong>{customerTotal}</strong>
-              </div>
-            </div>
-          </div>
+          </Card>
 
-          <div className="card dashboard-card">
-            <div className="section-head">
-              <h2>Locations</h2>
-              <Warehouse size={18} />
-            </div>
-            <div className="progress-list">
-              <ProgressRow label="Main shop" value={data.shop_stock} total={data.total_cylinders} color="green" />
-              <ProgressRow label="Kandam" value={data.kandam_stock} total={data.total_cylinders} color="blue" />
-              <ProgressRow label="With customers" value={customerTotal} total={data.total_cylinders} color="orange" />
-            </div>
-          </div>
-
-          <div className="card dashboard-card">
-            <div className="section-head">
-              <h2>Top cylinder types</h2>
-              <TrendingUp size={18} />
-            </div>
-            <div className="progress-list">
-              {data.stock_rows.slice(0, 4).map((item) => (
-                <ProgressRow key={item.id} label={item.type} value={item.total} total={data.total_cylinders} color="green" />
+          <Card>
+            <CardHeader title="Locations" meta={<Warehouse size={18} className="ui-card-icon" aria-hidden="true" />} />
+            <div className="dash-bars">
+              {data.locations.map((l) => (
+                <Bar key={l.id} label={l.is_active ? l.name : `${l.name} (inactive)`} value={l.stock} total={data.total_cylinders} />
               ))}
+              <Bar label="With customers" value={customerTotal} total={data.total_cylinders} />
             </div>
-          </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Top cylinder types" meta={<TrendingUp size={18} className="ui-card-icon" aria-hidden="true" />} />
+            {data.stock_rows.length === 0 ? (
+              <EmptyState compact title="No cylinder types yet" />
+            ) : (
+              <div className="dash-bars">
+                {data.stock_rows.slice(0, 4).map((item) => (
+                  <Bar key={item.id} label={item.type} value={item.total} total={data.total_cylinders} />
+                ))}
+              </div>
+            )}
+          </Card>
         </div>
       </section>
 
-      <section className="dashboard-section">
-        <div className="section-kicker">
-          <ShieldCheck size={18} />
-          <div>
-            <h2>Operations overview</h2>
-            <p>Sales readiness, pending payments, and quick actions</p>
-          </div>
+      <section className="dash-section">
+        <SectionHeader icon={<ShieldCheck />} title="Operations overview" description="Sales readiness, pending payments, and quick actions" />
+
+        <div className="dash-grid-2 dash-grid-2--wide-first">
+          <Card>
+            <CardHeader title="Readiness" meta={<Badge tone="primary">{filledPercent}% filled</Badge>} />
+            <Bar label="Filled cylinders" value={data.filled_cylinders} total={data.total_cylinders} />
+            <div className="ui-tiles dash-tiles--spaced">
+              <Tile label="Collected today" value={money(data.today_collection)} />
+              <Tile label="Low stock alerts" value={lowStockCount} tone={lowStockCount > 0 ? 'warning' : undefined} />
+            </div>
+          </Card>
+
+          <Card>
+            <CardHeader title="Quick actions" />
+            <div className="dash-actions">
+              <Link className={buttonClassName({ variant: 'primary' })} to="/sales">
+                <span className="ui-btn__label">Add Sale</span>
+                <span className="ui-btn__icon" aria-hidden="true"><ArrowRight size={16} /></span>
+              </Link>
+              <Link className={buttonClassName({ variant: 'secondary' })} to="/stock">
+                <span className="ui-btn__label">Move Stock</span>
+                <span className="ui-btn__icon" aria-hidden="true"><ArrowRight size={16} /></span>
+              </Link>
+            </div>
+          </Card>
         </div>
-
-        <section className="grid-2">
-          <div className="card dashboard-card">
-            <div className="section-head">
-              <h2>Readiness</h2>
-              <span className="badge">{filledPercent}% filled</span>
-            </div>
-            <div className="wide-progress">
-              <div className="wide-progress-row">
-                <span>Filled cylinders</span>
-                <strong>{data.filled_cylinders} / {data.total_cylinders}</strong>
-              </div>
-              <div className="bar-track">
-                <span className="bar-fill green" style={{ width: `${filledPercent}%` }} />
-              </div>
-            </div>
-            <div className="mini-metrics">
-              <span><strong>{data.today_collection}</strong> collected today</span>
-              <span><strong>{data.low_stock.length}</strong> low stock alerts</span>
-            </div>
-          </div>
-
-          <div className="card dashboard-card">
-            <div className="section-head">
-              <h2>Quick actions</h2>
-              <CalendarDays size={18} />
-            </div>
-            <div className="action-stack">
-              <Link className="btn btn-primary" to="/sales">Add Sale <ArrowRightCircle size={20} /></Link>
-              <Link className="btn btn-outline" to="/stock">Move Stock <ArrowRightCircle size={20} /></Link>
-            </div>
-          </div>
-        </section>
       </section>
 
-      <div className="card dashboard-card">
-        <div className="section-head">
-          <h2>Live stock</h2>
-          <span className="badge badge-success">{data.total_cylinders} cylinders</span>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th style={{ textAlign: 'center' }}>Shop (F/E)</th>
-                <th style={{ textAlign: 'center' }}>Kandam (F/E)</th>
-                <th style={{ textAlign: 'right' }}>With Customers</th>
-                <th style={{ textAlign: 'right' }}>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.stock_rows.map((item) => (
-                <tr key={item.id}>
-                  <td><strong>{item.type}</strong></td>
-                  <td style={{ textAlign: 'center' }}>
-                    <span style={{ color: 'var(--success)', fontWeight: 600 }}>{item.shop_filled}</span>
-                    <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>/</span>
-                    <span style={{ color: 'var(--danger)' }}>{item.shop_empty}</span>
-                  </td>
-                  <td style={{ textAlign: 'center' }}>
-                    <span style={{ color: 'var(--success)', fontWeight: 600 }}>{item.kandam_filled}</span>
-                    <span style={{ color: 'var(--text-muted)', margin: '0 4px' }}>/</span>
-                    <span style={{ color: 'var(--danger)' }}>{item.kandam_empty}</span>
-                  </td>
-                  <td style={{ textAlign: 'right' }}>
-                    {item.with_customers > 0
-                      ? <span style={{ color: 'var(--warning)', fontWeight: 700 }}>{item.with_customers}</span>
-                      : <span style={{ color: 'var(--text-muted)' }}>-</span>}
-                  </td>
-                  <td style={{ textAlign: 'right', fontWeight: 'bold' }}>{item.total}</td>
+      <Card padding="none">
+        <CardHeader title="Live stock" meta={<Badge>{data.total_cylinders} cylinders</Badge>} />
+        {data.stock_rows.length === 0 ? (
+          <EmptyState title="No stock recorded yet" hint="Stock levels appear here once cylinders are loaded." />
+        ) : (
+          <TableWrap>
+            <Table compact stickyFirst className="dash-stock-table">
+              <thead>
+                <tr>
+                  <Th>Type</Th>
+                  {data.locations.map((l) => <Th key={l.id} align="center">{l.name} (F/E)</Th>)}
+                  <Th align="right">With customers</Th>
+                  <Th align="right">Total</Th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {data.stock_rows.map((item) => (
+                  <tr key={item.id}>
+                    <Td><strong>{item.type}</strong>{item.is_active === false && <span className="ui-cell-sub">Inactive</span>}</Td>
+                    {data.locations.map((l) => {
+                      const cell = item.locations.find((c) => c.id === l.id);
+                      return <Td key={l.id} align="center"><FilledEmpty filled={cell?.filled ?? 0} empty={cell?.empty ?? 0} /></Td>;
+                    })}
+                    <Td numeric>
+                      {item.with_customers > 0
+                        ? <span className="ui-num-warning">{item.with_customers}</span>
+                        : <span className="ui-num-placeholder">-</span>}
+                    </Td>
+                    <Td numeric><strong>{item.total}</strong></Td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          </TableWrap>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function Tile({ label, value, tone }: { label: string; value: ReactNode; tone?: 'warning' }) {
+  return (
+    <div className={['ui-tile', tone && `ui-tile--${tone}`, valueSize(value)].filter(Boolean).join(' ')}>
+      <span className="ui-tile__label">{label}</span>
+      <strong className="ui-tile__value">{value}</strong>
+    </div>
+  );
+}
+
+function Bar({ label, value, total }: { label: string; value: number; total: number }) {
+  const width = percent(value, total);
+
+  return (
+    <div className="dash-bar">
+      <div className="dash-bar__row">
+        <span className="dash-bar__label" title={label}>{label}</span>
+        <span className="dash-bar__value">{value} <small>/ {total}</small></span>
+      </div>
+      <div className="dash-bar__track" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={width}>
+        <span className={`dash-bar__fill${width === 0 ? ' dash-bar__fill--zero' : ''}`} style={{ width: `${width}%` }} />
       </div>
     </div>
   );
 }
 
-function ProgressRow({ label, value, total, color }: { label: string; value: number; total: number; color: 'green' | 'blue' | 'orange' }) {
-  const width = percent(value, total);
-
+function DashboardSkeleton() {
   return (
-    <div className="progress-row">
-      <div>
-        <span>{label}</span>
-        <strong>{value} <small>/ {total}</small></strong>
+    <div aria-busy="true">
+      <div className="dash-section">
+        <SkeletonStatGrid label="Loading dashboard" />
       </div>
-      <div className="bar-track">
-        <span className={`bar-fill ${color}`} style={{ width: `${width}%` }} />
+      <div className="dash-grid-3 dash-section" aria-hidden="true">
+        <Card><SkeletonText lines={4} /></Card>
+        <Card><SkeletonText lines={4} /></Card>
+        <Card><SkeletonText lines={4} /></Card>
       </div>
+      <Card padding="none" aria-hidden="true">
+        <div className="ui-card__skeleton">
+          <SkeletonRows rows={5} columns={5} />
+        </div>
+      </Card>
     </div>
   );
 }
