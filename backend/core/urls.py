@@ -35,6 +35,7 @@ from .views import (
 )
 
 from .staff_sales import StaffSaleViewSet
+from .platform import tenant_detail, tenants
 
 router = DefaultRouter()
 router.register('staff-sales', StaffSaleViewSet, basename='staff-sales')
@@ -70,4 +71,6 @@ urlpatterns = [
     path("dashboard/", dashboard),
     path("reports/", reports),
     path("customers/<int:pk>/credentials/", customer_credentials),
+    path("platform/tenants/", tenants),
+    path("platform/tenants/<int:pk>/", tenant_detail),
 ] + router.urls

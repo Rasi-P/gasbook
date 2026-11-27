@@ -1,7 +1,6 @@
 """Read-only customer receipts, normalized exclusively from saved transactions."""
 from decimal import Decimal
 
-from django.conf import settings
 from django.db.models import Q
 from django.http import Http404
 from django.shortcuts import get_object_or_404
@@ -12,7 +11,6 @@ from rest_framework.response import Response
 
 from .models import Booking, Sale
 from .serializers import get_booking_pricing_snapshot, get_sale_pricing_snapshot, serialize_decimal
-from .services import BUSINESS_DISPLAY_NAME
 
 
 def timestamp(value):
@@ -97,8 +95,7 @@ def normalize_receipt(record, source):
     method = ', '.join(methods) if methods else sale.get_payment_mode_display() if sale else {
         'COD': 'Cash on delivery', 'ONLINE': 'Online',
     }.get(booking.payment_method.upper(), booking.payment_method)
-    business = {'name': BUSINESS_DISPLAY_NAME}
-    business.update({key: value for key, value in settings.RECEIPT_BUSINESS_DETAILS.items() if value})
+    business = (booking or sale).tenant.receipt_details()
     return {
         'number': booking.order_id if booking else f'SALE-{sale.pk}',
         'source': source,

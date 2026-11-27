@@ -300,11 +300,6 @@ def location_delete_blockers(location):
 # Ways money is actually received; "credit" and "split" describe a sale, not a payment.
 RECEIPT_MODES = (Sale.PaymentMode.CASH, Sale.PaymentMode.GPAY, Sale.PaymentMode.BANK)
 
-# The name customers see for what the business itself did, such as a direct sale; internal
-# screens and reports name the actual users.
-BUSINESS_DISPLAY_NAME = "Sabco Gas"
-
-
 def is_admin_user(user):
     return getattr(getattr(user, "role", None), "code", "") == "admin" or user.is_superuser
 
@@ -1091,7 +1086,8 @@ def create_customer(contact, actor, via):
     user = None
     for attempt in range(5):
         candidate = username if attempt == 0 else f"{username}_{get_random_string(4)}"
-        if User.objects.filter(username=candidate).exists():
+        # Usernames are global (they identify the account at login), so check every tenant.
+        if User.all_tenants.filter(username=candidate).exists():
             continue
         try:
             with transaction.atomic():
