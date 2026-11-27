@@ -12,6 +12,7 @@
 @import "./styles/staff.css";
 @import "./styles/reports.css";
 @import "./styles/staff-app.css";
+@import "./styles/theme.css";
 
 @config "../tailwind.config.js";
 

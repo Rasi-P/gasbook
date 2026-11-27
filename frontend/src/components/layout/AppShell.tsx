@@ -2,11 +2,13 @@ import { AdminNotifications } from './AdminNotifications';
 import { useState, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import type { LucideIcon } from 'lucide-react';
-import { BarChart3, Bell, CalendarDays, Home, IndianRupee, LogOut, Package, ShoppingCart, Truck, Users, UserCog } from 'lucide-react';
+import { BarChart3, Bell, Building2, CalendarDays, Home, IndianRupee, LogOut, Package, ShoppingCart, Truck, Users, UserCog } from 'lucide-react';
 import { logout } from '../../lib/api';
 import { Badge } from '../ui/Badge';
 import { IconButton } from '../ui/IconButton';
 import RatesPanel from '../RatesPanel';
+import sabcoLogoWhite from '../../assets/sabco_logo.png';
+import sabcoLogoBlue from '../../assets/sabco_logo_blue.svg';
 
 type NavEntry = { to: string; label: string; Icon: LucideIcon };
 
@@ -27,8 +29,18 @@ const ADMIN_NAV: NavEntry[] = [
   { to: '/reports', label: 'Reports', Icon: BarChart3 },
 ];
 
+const PLATFORM_NAV: NavEntry[] = [
+  { to: '/platform', label: 'Agencies', Icon: Building2 },
+];
+
+function navFor(role: string) {
+  if (role === 'staff') return STAFF_NAV;
+  if (role === 'platform_admin') return PLATFORM_NAV;
+  return ADMIN_NAV;
+}
+
 function NavItems({ role }: { role: string }) {
-  const entries = role === 'staff' ? STAFF_NAV : ADMIN_NAV;
+  const entries = navFor(role);
   return (
     <>
       {entries.map(({ to, label, Icon }) => (
@@ -55,12 +67,23 @@ function handleLogout() {
  * Management shell: sticky header, desktop sidebar (≥980px), phone/tablet bottom navigation and the
  * rates trigger (header icon button below 980px, floating button above). Routes are rendered as children.
  */
-export function AppShell({ role, userName, children }: { role: string; userName: string; children: ReactNode }) {
+type AppShellProps = {
+  role: string;
+  userName: string;
+  tenantName?: string;
+  /** The original agency, whose logo ships with the app; other agencies are shown by name. */
+  showBrandLogo?: boolean;
+  children: ReactNode;
+};
+
+export function AppShell({ role, userName, tenantName, showBrandLogo = false, children }: AppShellProps) {
   const [ratesOpen, setRatesOpen] = useState(false);
   const today = new Date();
   const monthLabel = today.toLocaleDateString('en-IN', { month: 'short', day: '2-digit' });
   const yearLabel = today.getFullYear();
   const initials = (userName || role).slice(0, 2).toUpperCase();
+  const brand = tenantName || 'GasBook';
+  const roleLabel = role === 'platform_admin' ? 'platform' : role;
   const showRates = role === 'admin';
   const toggleRates = () => setRatesOpen((value) => !value);
 
@@ -68,15 +91,16 @@ export function AppShell({ role, userName, children }: { role: string; userName:
     <>
       <header className="shell-header">
         <div className="shell-brand">
-          <Package />
-          <span>Sabco Gas</span>
+          {showBrandLogo
+            ? <img src={sabcoLogoBlue} className="shell-brand__logo" alt={brand} />
+            : <><Package /><span title={brand}>{brand}</span></>}
         </div>
         <div className="shell-header__tools">
           <span className="shell-date">
             <CalendarDays size={16} />
             {monthLabel}, {yearLabel}
           </span>
-          <Badge variant="outline" className="shell-role">{role}</Badge>
+          <Badge variant="outline" className="shell-role">{roleLabel}</Badge>
           {showRates && (
             <IconButton
               type="button"
@@ -102,8 +126,9 @@ export function AppShell({ role, userName, children }: { role: string; userName:
       <aside className="shell-sidebar">
         <div className="shell-sidebar__brand">
           <div className="shell-brand">
-            <Package />
-            <span>Sabco Gas</span>
+            {showBrandLogo
+              ? <img src={sabcoLogoWhite} className="shell-brand__logo" alt={brand} />
+              : <><Package /><span title={brand}>{brand}</span></>}
           </div>
         </div>
         <nav className="shell-nav" aria-label="Main navigation">
@@ -113,7 +138,7 @@ export function AppShell({ role, userName, children }: { role: string; userName:
           <span className="shell-avatar" aria-hidden="true">{initials}</span>
           <div className="shell-sidebar__info">
             <span className="shell-sidebar__name" title={userName || 'User'}>{userName || 'User'}</span>
-            <span className="shell-sidebar__role">{role}</span>
+            <span className="shell-sidebar__role">{roleLabel}</span>
           </div>
           <IconButton type="button" label="Logout" tone="danger" onClick={handleLogout}>
             <LogOut size={18} />

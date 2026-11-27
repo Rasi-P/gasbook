@@ -1,22 +1,23 @@
 """Accessory inventory and saved mixed-booking lines. No separate order lifecycle."""
 from django.conf import settings
 from django.db import models
-from .models import TimeStampedModel
+from .models import TenantModel
 
 
-class ProductCategory(TimeStampedModel):
-    name = models.CharField(max_length=80, unique=True)
+class ProductCategory(TenantModel):
+    name = models.CharField(max_length=80)
     class Meta:
         ordering = ['name']
+        constraints = [models.UniqueConstraint(fields=['tenant', 'name'], name='productcategory_name_per_tenant')]
 
 
-class Product(TimeStampedModel):
+class Product(TenantModel):
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True, max_length=3000)
     image = models.ImageField(upload_to='product-images/', null=True, blank=True)
     selling_price = models.DecimalField(max_digits=10, decimal_places=2)
     is_active = models.BooleanField(default=True)
-    sku = models.CharField(max_length=50, unique=True)
+    sku = models.CharField(max_length=50)
     stock = models.PositiveIntegerField(default=0)
     reserved = models.PositiveIntegerField(default=0)
     low_stock_threshold = models.PositiveIntegerField(default=5)  # preserved historical field
@@ -24,12 +25,13 @@ class Product(TimeStampedModel):
     class Meta:
         ordering = ['name', 'id']
         constraints = [
+            models.UniqueConstraint(fields=['tenant', 'sku'], name='product_sku_per_tenant'),
             models.CheckConstraint(condition=models.Q(stock__gte=models.F('reserved')), name='product_stock_covers_reserved'),
             models.CheckConstraint(condition=models.Q(selling_price__gte=0), name='product_price_nonnegative'),
         ]
 
 
-class ProductMovement(TimeStampedModel):
+class ProductMovement(TenantModel):
     sale = models.ForeignKey('Sale', on_delete=models.PROTECT, null=True, blank=True)
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='movements')
     booking = models.ForeignKey('Booking', on_delete=models.PROTECT, null=True, blank=True)
@@ -47,7 +49,7 @@ class ProductMovement(TimeStampedModel):
         ordering = ['-created_at', '-id']
 
 
-class BookingItem(TimeStampedModel):
+class BookingItem(TenantModel):
     booking = models.ForeignKey('Booking', on_delete=models.PROTECT, related_name='order_items')
     cylinder_type = models.ForeignKey('CylinderType', on_delete=models.PROTECT, null=True, blank=True)
     product = models.ForeignKey(Product, on_delete=models.PROTECT, null=True, blank=True)
@@ -72,7 +74,7 @@ class BookingItem(TimeStampedModel):
         ]
 
 
-class SaleAccessoryItem(TimeStampedModel):
+class SaleAccessoryItem(TenantModel):
     """Saved accessory lines on the existing sale; no separate order/payment lifecycle."""
     sale = models.ForeignKey('Sale', on_delete=models.PROTECT, related_name='accessories')
     product = models.ForeignKey(Product, on_delete=models.PROTECT)

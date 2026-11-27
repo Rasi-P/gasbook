@@ -111,6 +111,7 @@ export function getRole() {
 export function getRoleHome(role = getRole()) {
   if (role === 'staff') return '/staff-dashboard';
   if (role === 'customer') return '/login';
+  if (role === 'platform_admin') return '/platform';
   return '/admin-dashboard';
 }
 
@@ -118,6 +119,8 @@ export function logout() {
   localStorage.removeItem('gasbook_access');
   localStorage.removeItem('gasbook_refresh');
   localStorage.removeItem('gasbook_role');
+  localStorage.removeItem('gasbook_tenant_name');
+  localStorage.removeItem('gasbook_tenant_default');
   localStorage.removeItem('gasbook_redirect');
   localStorage.removeItem(FORCE_PASSWORD_CHANGE_KEY);
 }

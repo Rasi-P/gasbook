@@ -115,6 +115,10 @@ if REDIS_URL:
 
 AUTH_USER_MODEL = "core.User"
 
+# Rows created outside any request (management commands, the Django admin) belong to this tenant.
+DEFAULT_TENANT_SLUG = os.environ.get("DEFAULT_TENANT_SLUG", "sabco")
+DEFAULT_TENANT_NAME = os.environ.get("DEFAULT_TENANT_NAME", "Sabco Gas")
+
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},

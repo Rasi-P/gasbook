@@ -12,6 +12,7 @@ import StaffDashboard from './pages/staff/StaffDashboard';
 import ChangePassword from './pages/ChangePassword';
 import AdminBookings from './pages/admin/AdminBookings';
 import ProductInventory from './pages/admin/ProductInventory';
+import Tenants from './pages/platform/Tenants';
 import { getRoleHome, isAuthenticated, logout, api, extractApiError, FORCE_PASSWORD_CHANGE_KEY } from './lib/api';
 import { ErrorState, LoadingState } from './components/AsyncState';
 import { AppShell } from './components/layout/AppShell';
@@ -33,6 +34,8 @@ export default function App() {
   const isAuthPage = location.pathname === '/login';
   const [role, setRole] = useState(() => localStorage.getItem('gasbook_role') || '');
   const [userName, setUserName] = useState(() => localStorage.getItem('gasbook_name') || '');
+  const [tenantName, setTenantName] = useState(() => localStorage.getItem('gasbook_tenant_name') || '');
+  const [tenantIsDefault, setTenantIsDefault] = useState(() => localStorage.getItem('gasbook_tenant_default') === '1');
   const [mustChange, setMustChange] = useState(() => localStorage.getItem(FORCE_PASSWORD_CHANGE_KEY) === '1');
   const [meError, setMeError] = useState('');
 
@@ -42,6 +45,11 @@ export default function App() {
       localStorage.setItem('gasbook_role', r.data.role);
       localStorage.setItem('gasbook_name', r.data.name);
       localStorage.setItem('gasbook_vehicle_location', r.data.vehicle_location_name || '');
+      localStorage.setItem('gasbook_tenant_name', r.data.tenant?.name || '');
+      setTenantName(r.data.tenant?.name || '');
+      const isDefault = Boolean(r.data.tenant?.is_default);
+      localStorage.setItem('gasbook_tenant_default', isDefault ? '1' : '0');
+      setTenantIsDefault(isDefault);
       const mc = Boolean(r.data.must_change_password);
       setMustChange(mc);
       if (mc) localStorage.setItem(FORCE_PASSWORD_CHANGE_KEY, '1');
@@ -111,9 +119,23 @@ export default function App() {
     );
   }
 
+  if (role === 'platform_admin') {
+    return (
+      <Protected>
+        <AppShell role={role} userName={userName} tenantName="GasBook Platform">
+          <Routes>
+            <Route path="/change-password" element={<ChangePassword />} />
+            <Route path="/platform" element={<Tenants />} />
+            <Route path="*" element={<Navigate to={getRoleHome(role)} replace />} />
+          </Routes>
+        </AppShell>
+      </Protected>
+    );
+  }
+
   return (
     <Protected>
-      <AppShell role={role} userName={userName}>
+      <AppShell role={role} userName={userName} tenantName={tenantName} showBrandLogo={tenantIsDefault}>
         <Routes>
           <Route path="/change-password" element={<ChangePassword />} />
           <Route path="/" element={<Navigate to={getRoleHome(role)} replace />} />

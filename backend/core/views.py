@@ -29,10 +29,10 @@ from .models import (
     StaffProfile, Stock, StockLocation, StockMovement, User, Role
 )
 from .exceptions import ApiError
+from .tenancy import PLATFORM_ROLE
 from .pagination import StandardPagination
 from .services import (
     OPEN_DELIVERY_STATUSES,
-    BUSINESS_DISPLAY_NAME,
     RECEIPT_MODES,
     admin_users,
     advisory_lock,
@@ -168,7 +168,7 @@ def direct_sale_history_status(sale):
 
 def direct_sale_cancellation_message(void):
     """What the customer is told about a cancelled direct sale, matching what was committed."""
-    head = f"Direct sale by {BUSINESS_DISPLAY_NAME} was cancelled."
+    head = f"Direct sale by {void.sale.tenant.name} was cancelled."
     if void.outcome == SaleVoid.Outcome.REFUND:
         try:
             void.refund
@@ -229,7 +229,7 @@ def build_direct_sale_history_entry(sale):
         "has_discount": pricing["has_discount"],
         "applied_discount_type": pricing["applied_discount_type"],
         "applied_discount_value": serialize_decimal(pricing["applied_discount_value"]),
-        "assigned_staff_name": BUSINESS_DISPLAY_NAME,
+        "assigned_staff_name": sale.tenant.name,
         "assigned_staff_phone": None,
         "payment_method": sale.payment_mode.upper(),
         "payment_status": payment_status,
@@ -240,7 +240,7 @@ def build_direct_sale_history_entry(sale):
         "item_count": display["item_count"] + len(accessories),
         "note": sale.note,
         "detail_message": direct_sale_cancellation_message(void) if void is not None else (
-            f"Direct sale by {BUSINESS_DISPLAY_NAME}."
+            f"Direct sale by {sale.tenant.name}."
             + (f" Balance due: Rs. {serialize_decimal(sale.balance_due)}." if sale.balance_due > 0 else "")
         ),
     }
@@ -253,10 +253,15 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
         username = (request.data.get("username") or "").strip()
-        user = User.objects.filter(username=username).select_related("role").first()
+        user = User.all_tenants.filter(username=username).select_related("role", "tenant").first()
         if not user:
             return response
         role = getattr(user.role, "code", "") or ""
+        if user.tenant is not None and not user.tenant.is_active:
+            return Response(
+                {"detail": "This agency's account is suspended.", "code": "tenant_inactive"},
+                status=drf_status.HTTP_403_FORBIDDEN,
+            )
         client = str(request.data.get("client") or "").strip().lower()
         if client == "customer" and role != "customer":
             return Response(
@@ -275,6 +280,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
         response.data["must_change_password"] = bool(getattr(user, "must_change_password", False))
         response.data["user_id"] = user.id
         response.data["role"] = role
+        response.data["tenant"] = user.tenant.name if user.tenant else None
         return response
 
 
@@ -675,6 +681,16 @@ class CustomerProfileViewSet(viewsets.ModelViewSet):
             user.email = contact["email"]
 
         user.save(update_fields=update_fields)
+
+
+def tenant_pk(model, raw, field):
+    """A client-supplied foreign key, accepted only if the row belongs to the caller's tenant."""
+    if raw in (None, ""):
+        return None
+    pk = parse_id_param(raw, field)
+    if not model.objects.filter(pk=pk).exists():
+        raise ApiError("Not found.", code="not_found", field=field)
+    return pk
 
 
 def parse_id_param(raw, field):
@@ -1092,7 +1108,7 @@ class BookingViewSet(
 
         direct_sales = (
             Sale.objects.filter(customer=profile, booking__isnull=True)
-            .select_related("customer__user", "location", "sold_by", "void__refund")
+            .select_related("tenant", "customer__user", "location", "sold_by", "void__refund")
             .prefetch_related("items__cylinder_type")
             .order_by("-created_at")
         )
@@ -1913,6 +1929,7 @@ def serialize_me(request):
         "admin": "/admin-dashboard",
         "staff": "/staff-dashboard",
         "customer": "/customer-dashboard",
+        PLATFORM_ROLE: "/platform",
     }
     location_name = None
     assigned_area = None
@@ -1942,6 +1959,15 @@ def serialize_me(request):
         "vehicle_number": vehicle_number,
         "staff_image_url": staff_image_url,
         "capabilities": {"accessories": settings.ACCESSORIES_ENABLED, "image_uploads": not settings.DEMO_DISABLE_UPLOADS},
+        "tenant": (
+            {
+                "id": request.user.tenant.id,
+                "name": request.user.tenant.name,
+                "slug": request.user.tenant.slug,
+                "is_default": request.user.tenant.is_default,
+            }
+            if request.user.tenant_id else None
+        ),
     }
 
 
@@ -1992,7 +2018,7 @@ def users_list(request):
 def roles_list(request):
     if (getattr(request.user.role, "code", "") != "admin") and not request.user.is_superuser:
         raise PermissionDenied("Only admins can view roles.")
-    roles = Role.objects.exclude(code="customer").values("code", "name").order_by("name")
+    roles = Role.objects.exclude(code__in=["customer", PLATFORM_ROLE]).values("code", "name").order_by("name")
     return Response(list(roles))
 
 
@@ -2323,10 +2349,13 @@ def register(request):
         return Response({"detail": "Username required.", "code": "required", "field": "username"}, status=drf_status.HTTP_400_BAD_REQUEST)
     if not phone:
         return Response({"detail": "Phone required.", "code": "required", "field": "phone"}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if User.objects.filter(username=username).exists():
+    # Usernames identify the account at login, so they stay unique across all tenants.
+    if User.all_tenants.filter(username=username).exists():
         return Response({"detail": "Username already exists."}, status=drf_status.HTTP_400_BAD_REQUEST)
-    if role not in [r.code for r in Role.objects.all()]:
+    if role not in [r.code for r in Role.objects.exclude(code=PLATFORM_ROLE)]:
         return Response({"detail": "Invalid role."}, status=drf_status.HTTP_400_BAD_REQUEST)
+    default_staff_id = tenant_pk(User, request.data.get("default_staff"), "default_staff")
+    vehicle_location_id = tenant_pk(StockLocation, request.data.get("vehicle_location"), "vehicle_location")
     if role == "customer":
         ensure_customer_phone_free(phone)
     first_name, last_name = split_full_name(full_name)
@@ -2346,7 +2375,7 @@ def register(request):
         CustomerProfile.objects.create(
             user=user,
             area=area,
-            default_staff_id=request.data.get("default_staff") or None,
+            default_staff_id=default_staff_id,
             credit_limit=request.data.get("credit_limit") or 0,
             deposit_cylinders=request.data.get("deposit_cylinders") or 0,
             opening_balance=request.data.get("opening_balance") or 0,
@@ -2356,7 +2385,7 @@ def register(request):
             user=user,
             assigned_area=area,
             vehicle_number=vehicle_number,
-            vehicle_location_id=request.data.get("vehicle_location") or None,
+            vehicle_location_id=vehicle_location_id,
             image=staff_image,
         )
     response_data = UserSerializer(user).data
